@@ -1,0 +1,38 @@
+# Node
+node_modules/
+npm-debug.log*
+pnpm-lock.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.env
+
+# Mac / Windows
+.DS_Store
+Thumbs.db
+
+# Docker and runtime
+*.pid
+*.log
+*.sock
+tmp/
+*.pid.lock
+
+# Build outputs
+dist/
+build/
+coverage/
+.next/
+out/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Environment files
+.env.local
+.env.*
+!.env.example
