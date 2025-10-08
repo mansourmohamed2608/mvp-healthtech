@@ -1,0 +1,17 @@
+fastapi~=0.115
+uvicorn[standard]~=0.30
+pydantic~=2.9
+
+# GPU / Kaggle (CUDA 12.1 wheels)
+torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+
+# CPU-only alternative:
+# torch==2.3.1
+# torchaudio==2.3.1
+
+# Whisper (install from GitHub)
+git+https://github.com/openai/whisper.git
+
+# Audio utilities
+ffmpeg-python~=0.2
