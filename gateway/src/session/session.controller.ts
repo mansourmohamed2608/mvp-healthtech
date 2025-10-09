@@ -8,3 +8,11 @@ export class SessionController {
     return this.svc.create();
   }
 }
+// import { UseGuards } from '@nestjs/common';
+// import { JwtGuard } from '../auth/jwt.guard';
+
+// @Post()
+// @UseGuards(JwtGuard)
+// create() {
+//   return this.svc.create();
+// }
