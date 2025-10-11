@@ -30,7 +30,7 @@ Target completion: **31 Dec 2025**, with ≥ 70 % precision and ≤ 2 s la
 
    ```bash
    git clone https://github.com/mansourmohamed2608/mvp-healthtech.git
-   cd mans-healthtech
+   cd mvp-healthtech
    ```
 
 2. Install prerequisites:
