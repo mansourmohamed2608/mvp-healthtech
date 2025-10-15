@@ -163,6 +163,12 @@ def main() -> None:
     # datasets.Audio in a different environment, uncomment the line below.
     # ds = ds.cast_column("audio", Audio(sampling_rate=16000))
 
+    # Determine directory of CSV.  Audio paths in the manifest may be
+    # relative; we join them with this base directory to form absolute
+    # filepaths.  Without this, torchaudio/soundfile will look in the
+    # current working directory and fail to find the files.
+    base_dir = os.path.dirname(os.path.abspath(args.csv_path))
+
     # Pre‑tokenize hint once for loss masking.  WhisperProcessor versions
     # after transformers 4.38 no longer implement `as_target_processor()`;
     # instead we use the tokenizer directly to obtain IDs.
@@ -173,7 +179,9 @@ def main() -> None:
     def preprocess(batch: Dict[str, Any]) -> Dict[str, Any]:
         # Convert audio to log‐mel features
         # Load waveform manually to avoid TorchCodec dependencies
-        audio_path = batch["audio"]
+        # Build absolute audio path
+        audio_rel = batch["audio"]
+        audio_path = os.path.join(base_dir, audio_rel)
         waveform = None
         orig_sr = 16000
         try:
