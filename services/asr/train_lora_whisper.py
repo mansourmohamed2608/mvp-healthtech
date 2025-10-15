@@ -157,11 +157,12 @@ def main() -> None:
         ds = ds.rename_column("text", "sentence")
     ds = ds.cast_column("audio", Audio(sampling_rate=16000))
 
-    # Pre‑tokenize hint once for loss masking
+    # Pre‑tokenize hint once for loss masking.  WhisperProcessor versions
+    # after transformers 4.38 no longer implement `as_target_processor()`;
+    # instead we use the tokenizer directly to obtain IDs.
     hint_ids: List[int] = []
     if args.use_hint and args.hint_prefix:
-        with processor.as_target_processor():
-            hint_ids = processor(args.hint_prefix).input_ids
+        hint_ids = processor.tokenizer(args.hint_prefix).input_ids
 
     def preprocess(batch: Dict[str, Any]) -> Dict[str, Any]:
         # Convert audio to log‐mel features
@@ -173,8 +174,9 @@ def main() -> None:
         if args.use_hint:
             target_text = f"{args.hint_prefix} {target_text}"
             prefix_len = len(hint_ids)
-        with processor.as_target_processor():
-            labels = processor(target_text).input_ids
+        # Tokenize target text using the underlying tokenizer.  Do not
+        # rely on `as_target_processor()` because it may not be present.
+        labels = processor.tokenizer(target_text).input_ids
         return {
             "input_features": inputs["input_features"][0],
             "labels": labels,
