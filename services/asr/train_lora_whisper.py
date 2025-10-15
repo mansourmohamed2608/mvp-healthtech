@@ -167,7 +167,10 @@ def main() -> None:
     # relative; we join them with this base directory to form absolute
     # filepaths.  Without this, torchaudio/soundfile will look in the
     # current working directory and fail to find the files.
-    base_dir = os.path.dirname(os.path.abspath(args.csv_path))
+    manifest_dir = os.path.dirname(os.path.abspath(args.csv_path))
+    # Compute dataset root (the parent of the manifest directory).  Audio
+    # filepaths in the CSV may reference paths relative to this root.
+    dataset_root = os.path.dirname(manifest_dir)
 
     # Pre‑tokenize hint once for loss masking.  WhisperProcessor versions
     # after transformers 4.38 no longer implement `as_target_processor()`;
@@ -179,9 +182,25 @@ def main() -> None:
     def preprocess(batch: Dict[str, Any]) -> Dict[str, Any]:
         # Convert audio to log‐mel features
         # Load waveform manually to avoid TorchCodec dependencies
-        # Build absolute audio path
+        # Build absolute audio path.  If the entry is already absolute,
+        # use it directly.  Otherwise, join it with ``dataset_root`` (one
+        # directory above the manifest).  This handles cases where the
+        # manifest is at ``/path/to/manifest.csv`` and the audio column
+        # contains ``subdir/file.mp3`` or ``tts_ar_med/file.mp3``.
         audio_rel = batch["audio"]
-        audio_path = os.path.join(base_dir, audio_rel)
+        if os.path.isabs(audio_rel):
+            # Already absolute
+            audio_path = audio_rel
+        else:
+            # Try resolving relative to the manifest directory.  If the
+            # file is not found there, fallback to the parent directory
+            # (dataset_root).  This handles both cases where the manifest
+            # is in the dataset root and where it is in a subdirectory.
+            candidate1 = os.path.join(manifest_dir, audio_rel)
+            if os.path.exists(candidate1):
+                audio_path = candidate1
+            else:
+                audio_path = os.path.join(dataset_root, audio_rel)
         waveform = None
         orig_sr = 16000
         try:
