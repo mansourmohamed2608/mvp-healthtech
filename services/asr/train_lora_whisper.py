@@ -179,6 +179,32 @@ def main() -> None:
     if args.use_hint and args.hint_prefix:
         hint_ids = processor.tokenizer(args.hint_prefix).input_ids
 
+    # Keep track of any audio files that cannot be found.  We will
+    # filter them out of the training set to avoid crashes during
+    # preprocessing.
+    missing_files: List[str] = []
+
+    def file_exists(batch: Dict[str, Any]) -> bool:
+        """
+        Check whether the audio file referenced in the manifest exists
+        on disk.  If it is missing, add it to ``missing_files`` and
+        return False to drop the example.
+        """
+        audio_rel = batch["audio"]
+        if os.path.isabs(audio_rel):
+            candidate = audio_rel
+        else:
+            # Try manifest_dir first, then dataset_root
+            cand1 = os.path.join(manifest_dir, audio_rel)
+            if os.path.exists(cand1):
+                candidate = cand1
+            else:
+                candidate = os.path.join(dataset_root, audio_rel)
+        if os.path.exists(candidate) and os.path.isfile(candidate):
+            return True
+        missing_files.append(audio_rel)
+        return False
+
     def preprocess(batch: Dict[str, Any]) -> Dict[str, Any]:
         # Convert audio to log‐mel features
         # Load waveform manually to avoid TorchCodec dependencies
@@ -242,6 +268,9 @@ def main() -> None:
             "prefix_len": prefix_len,
         }
 
+    # Filter out rows whose audio files do not exist.  This prevents
+    # crashes when loading missing files during preprocessing.
+    ds = ds.filter(file_exists)
     # Map and remove unused columns
     ds = ds.map(preprocess, remove_columns=ds.column_names)
 
@@ -272,6 +301,9 @@ def main() -> None:
         data_collator=collator,
     )
     # Train
+    if missing_files:
+        print(f"Warning: {len(missing_files)} audio files were missing and have been skipped.\n"
+              f"First 10 missing files: {missing_files[:10]}")
     print("Starting training…")
     trainer.train()
     # Save LoRA adapter and processor
