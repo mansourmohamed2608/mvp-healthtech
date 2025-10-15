@@ -200,8 +200,19 @@ def main() -> None:
                 candidate = cand1
             else:
                 candidate = os.path.join(dataset_root, audio_rel)
-        if os.path.exists(candidate) and os.path.isfile(candidate):
-            return True
+        # Ensure file exists, is a regular file, and has non‑zero size
+        if os.path.exists(candidate) and os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+            # Optionally attempt to open the file to catch corrupt or pipe files
+            try:
+                import soundfile as sf  # type: ignore
+                with sf.SoundFile(candidate) as _:
+                    pass
+                return True
+            except Exception:
+                # Could not open file; treat as missing/corrupt
+                missing_files.append(audio_rel)
+                return False
+        # Either missing, not a file, or zero‑length
         missing_files.append(audio_rel)
         return False
 
