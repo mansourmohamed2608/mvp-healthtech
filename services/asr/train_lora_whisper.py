@@ -155,7 +155,13 @@ def main() -> None:
         ds = ds.rename_column("audio_filepath", "audio")
     if "text" in ds.column_names:
         ds = ds.rename_column("text", "sentence")
-    ds = ds.cast_column("audio", Audio(sampling_rate=16000))
+    # Do **not** cast the audio column using datasets.Audio.  The default
+    # Audio feature tries to decode audio via TorchCodec/FFmpeg which
+    # often fails in restricted environments (e.g. Kaggle) due to
+    # missing shared libraries.  Instead we keep the path string and
+    # manually load the waveform in preprocess.  If you wish to use
+    # datasets.Audio in a different environment, uncomment the line below.
+    # ds = ds.cast_column("audio", Audio(sampling_rate=16000))
 
     # Pre‑tokenize hint once for loss masking.  WhisperProcessor versions
     # after transformers 4.38 no longer implement `as_target_processor()`;
@@ -166,8 +172,34 @@ def main() -> None:
 
     def preprocess(batch: Dict[str, Any]) -> Dict[str, Any]:
         # Convert audio to log‐mel features
-        audio = batch["audio"]["array"]
-        inputs = processor(audio=audio, sampling_rate=16000)
+        # Load waveform manually to avoid TorchCodec dependencies
+        audio_path = batch["audio"]
+        waveform = None
+        orig_sr = 16000
+        try:
+            import torchaudio  # type: ignore
+            waveform, sr = torchaudio.load(audio_path)
+            if waveform.ndim > 1:
+                waveform = waveform.mean(dim=0)
+            waveform = waveform.numpy()
+            orig_sr = sr
+        except Exception:
+            try:
+                import soundfile as sf  # type: ignore
+                waveform, sr = sf.read(audio_path)
+                orig_sr = sr
+            except Exception as e:
+                raise RuntimeError(f"Failed to load audio file {audio_path}: {e}")
+        # Resample to 16 kHz if necessary
+        if orig_sr != 16000:
+            try:
+                import librosa  # type: ignore
+                waveform = librosa.resample(waveform, orig_sr, 16000)
+            except Exception:
+                import numpy as np  # type: ignore
+                step = max(1, int(orig_sr // 16000))
+                waveform = waveform[::step]
+        inputs = processor(audio=waveform, sampling_rate=16000)
         # Target text with optional hint
         target_text = batch["sentence"]
         prefix_len = 0
