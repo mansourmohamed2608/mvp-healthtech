@@ -282,8 +282,16 @@ def main() -> None:
     # Filter out rows whose audio files do not exist.  This prevents
     # crashes when loading missing files during preprocessing.
     ds = ds.filter(file_exists)
-    # Map and remove unused columns
-    ds = ds.map(preprocess, remove_columns=ds.column_names)
+    # Map and remove unused columns.  Disable caching to avoid disk I/O
+    # errors on Kaggle when writing temporary Arrow files.  Setting
+    # ``load_from_cache_file=False`` and ``cache_file_name=None`` forces
+    # datasets to process in memory.
+    ds = ds.map(
+        preprocess,
+        remove_columns=ds.column_names,
+        load_from_cache_file=False,
+        cache_file_name=None,
+    )
 
     # Setup data collator
     collator = DataCollatorSpeechSeq2SeqWithPadding(
