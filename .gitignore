@@ -49,3 +49,7 @@ Thumbs.db
 # --- Docker ---
 **/.docker/
 **/docker-data/
+
+# --- Data---
+**/data/
+**/kaggle_upload/
