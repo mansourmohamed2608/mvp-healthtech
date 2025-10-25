@@ -1,19 +1,18 @@
+/* eslint-disable @typescript-eslint/no-unsafe-call */
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import {
-  FastifyAdapter,
-  NestFastifyApplication,
-} from '@nestjs/platform-fastify';
-import fastifyCors from '@fastify/cors';
-import fastifyHelmet from '@fastify/helmet';
+import { ValidationPipe, Logger } from '@nestjs/common';
+import { ThrottlerGuard } from '@nestjs/throttler';
+import * as morgan from 'morgan';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestFastifyApplication>(
-    AppModule,
-    new FastifyAdapter({ logger: true }),
-  );
-  await app.register(fastifyCors);
-  await app.register(fastifyHelmet);
-  await app.listen({ port: Number(process.env.PORT) || 3000, host: '0.0.0.0' });
+  const app = await NestFactory.create(AppModule);
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalGuards(app.get(ThrottlerGuard));
+  const logger = new Logger('Bootstrap');
+  const port = process.env.PORT || 3000;
+  app.use(morgan('combined'));
+  await app.listen(port);
+  logger.log(`Gateway listening on port ${port}`);
 }
 bootstrap();

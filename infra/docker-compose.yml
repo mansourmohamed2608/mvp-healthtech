@@ -1,19 +1,27 @@
-﻿services:
+﻿version: '3.8'
+services:
   gateway:
     build: ../gateway
     working_dir: /app
-    # just install + run; do NOT rm -rf node_modules
     command: sh -lc "pnpm install && pnpm start:dev"
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=development
       - PORT=3000
-      - CI=true                 # avoid pnpm interactive prompts
-      - PNPM_HOME=/root/.local/share/pnpm
+      - JWT_SECRET=change_me
+      - TWILIO_AUTH_TOKEN=change_me
+      - ASR_SERVICE_URL=http://asr:8000
+      - LLM_SERVICE_URL=http://orchestrator:9000   # orchestrator in front of LLM
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     volumes:
       - ../gateway:/app
-      - gateway_node_modules:/app/node_modules  # keep deps in container
+      - gateway_node_modules:/app/node_modules
+    depends_on:
+      - asr
+      - orchestrator
+      - redis
 
   frontend:
     build: ../frontend
@@ -24,21 +32,62 @@
     environment:
       - NODE_ENV=development
       - CI=true
-      # uncomment if HMR is flaky on Windows:
-      # - CHOKIDAR_USEPOLLING=true
     volumes:
       - ../frontend:/app
       - frontend_node_modules:/app/node_modules
 
+  asr:
+    build: ../services/asr
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]  # remove if no GPU
+    environment:
+      - TRANSFORMERS_CACHE=/cache
+    volumes:
+      - ../services/asr:/app
+      - ../services/asr/lora_ckpt:/app/lora_ckpt
+
+  llm:
+    build: ../services/llm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    environment:
+      - TRANSFORMERS_CACHE=/cache
+    volumes:
+      - ../services/llm:/app
+      - ../services/llm/lora-llama:/app/lora-llama
+
+  orchestrator:
+    build: ../services/llm
+    command: uvicorn orchestrator:app --host 0.0.0.0 --port 9000
+    depends_on:
+      - llm
+    environment:
+      - LLM_ENDPOINT=http://llm:8000/infer
+
+  tts:
+    build: ../services/tts
+    depends_on:
+      - llm
+    environment:
+      - PYTORCH_ENABLE_MPS_FALLBACK=1
+
   redis:
     image: redis:7
-    ports: ["6379:6379"]
+    ports:
+      - "6379:6379"
 
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_PASSWORD: postgres
-    ports: ["5432:5432"]
+     - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
 
 volumes:
   gateway_node_modules:
