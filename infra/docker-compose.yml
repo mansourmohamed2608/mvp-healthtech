@@ -11,8 +11,11 @@ services:
       - PORT=3000
       - JWT_SECRET=change_me
       - TWILIO_AUTH_TOKEN=change_me
-      - ASR_SERVICE_URL=http://asr:8000
-      - LLM_SERVICE_URL=http://orchestrator:9000   # orchestrator in front of LLM
+      - ASR_SERVICE_URL=http://asr:5000
+      - LLM_SERVICE_URL=http://llm:5001
+      - TTS_SERVICE_URL=http://tts:5002
+      - SOAP_SERVICE_URL=http://soap:5003
+      - FHIR_SERVICE_URL=http://fhir:5004
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     volumes:
@@ -20,24 +23,29 @@ services:
       - gateway_node_modules:/app/node_modules
     depends_on:
       - asr
-      - orchestrator
+      - llm
+      - tts
+      - soap
+      - fhir
       - redis
 
-  frontend:
-    build: ../frontend
+  frontend-vite:
+    build: ../frontend-vite
     working_dir: /app
-    command: sh -lc "pnpm install && pnpm dev --port 3000 --hostname 0.0.0.0"
+    command: sh -lc "pnpm install && pnpm dev --host 0.0.0.0"
     ports:
-      - "3001:3000"
+      - "5173:5173"
     environment:
       - NODE_ENV=development
-      - CI=true
+      - VITE_API_URL=http://localhost:3001
     volumes:
-      - ../frontend:/app
-      - frontend_node_modules:/app/node_modules
+      - ../frontend-vite:/app
+      - frontend_vite_node_modules:/app/node_modules
 
   asr:
     build: ../services/asr
+    ports:
+      - "5000:5000"
     deploy:
       resources:
         reservations:
@@ -48,9 +56,12 @@ services:
     volumes:
       - ../services/asr:/app
       - ../services/asr/lora_ckpt:/app/lora_ckpt
+      - huggingface_cache:/cache
 
   llm:
     build: ../services/llm
+    ports:
+      - "5001:5001"
     deploy:
       resources:
         reservations:
@@ -60,22 +71,49 @@ services:
       - TRANSFORMERS_CACHE=/cache
     volumes:
       - ../services/llm:/app
-      - ../services/llm/lora-llama:/app/lora-llama
-
-  orchestrator:
-    build: ../services/llm
-    command: uvicorn orchestrator:app --host 0.0.0.0 --port 9000
-    depends_on:
-      - llm
-    environment:
-      - LLM_ENDPOINT=http://llm:8000/infer
+      - ../services/llm/data:/app/data
+      - huggingface_cache:/cache
 
   tts:
     build: ../services/tts
-    depends_on:
-      - llm
+    ports:
+      - "5002:5002"
     environment:
       - PYTORCH_ENABLE_MPS_FALLBACK=1
+    volumes:
+      - ../services/tts:/app
+
+  soap:
+    build: ../services/soap
+    ports:
+      - "5003:5003"
+    volumes:
+      - ../services/soap:/app
+
+  fhir:
+    build: ../services/fhir
+    ports:
+      - "5004:5004"
+    environment:
+      - FHIR_BASE_URL=${FHIR_BASE_URL:-https://fhir.example.com}
+      - FHIR_CLIENT_ID=${FHIR_CLIENT_ID:-}
+      - FHIR_CLIENT_SECRET=${FHIR_CLIENT_SECRET:-}
+    volumes:
+      - ../services/fhir:/app
+
+  orchestrator:
+    build: ../services/llm
+    command: python orchestrator.py
+    ports:
+      - "5006:5006"
+    environment:
+      - LLM_ENDPOINT=http://llm:5001/infer
+      - TRANSFORMERS_CACHE=/cache
+    volumes:
+      - ../services/llm:/app
+      - huggingface_cache:/cache
+    depends_on:
+      - llm
 
   redis:
     image: redis:7
@@ -91,4 +129,5 @@ services:
 
 volumes:
   gateway_node_modules:
-  frontend_node_modules:
+  frontend_vite_node_modules:
+  huggingface_cache:

@@ -1,45 +1,251 @@
+# services/llm/orchestrator.py
+"""
+LLM Orchestrator Service - Week 2 Day 12
+Handles intent extraction, entity recognition, and routing for medical conversations
+Port: 5006
+"""
+import re
+from datetime import datetime
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 import os
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
 
 app = FastAPI(title="LLM Orchestrator")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Prometheus metrics
+orchestration_requests = Counter('orchestrator_requests_total', 'Total orchestration requests')
+intent_classification_duration = Histogram(
+    'orchestrator_intent_classification_ms',
+    'Time taken for intent classification',
+    buckets=[10, 25, 50, 75, 100, 150, 200, 300]
+)
+entity_extraction_duration = Histogram(
+    'orchestrator_entity_extraction_ms',
+    'Time taken for entity extraction',
+    buckets=[5, 10, 20, 30, 50, 75, 100]
+)
 
 class OrchestrateRequest(BaseModel):
     transcript: str
     sessionId: str
+    context: dict = {}
 
 class OrchestrateResponse(BaseModel):
     intent: str
-    entities: list[str]
+    entities: dict
     reply: str
+    confidence: float
+    routing: str
 
-LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://llm:8000/infer")
+LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:5001/infer")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "orchestrator"}
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/orchestrate", response_model=OrchestrateResponse)
 async def orchestrate(req: OrchestrateRequest):
-    # Build a detailed prompt in Arabic requesting intent and entities
-    prompt = (
-        "أنت مساعد طبي عربي. استخرج نية المستخدم والكيانات الطبية، ثم قدم ردًا مختصرًا.\n"
-        f"المستخدم: {req.transcript}\n"
-        "المساعد:"
-    )
+    """
+    Orchestrate LLM request with intent classification and entity extraction
+    
+    Intents:
+    - appointment: حجز موعد، تأجيل، إلغاء
+    - symptom: أعراض، ألم، صداع، حمى
+    - prescription: وصفة طبية، دواء، علاج
+    - medical_history: تاريخ مرضي، حساسية، عمليات سابقة
+    - emergency: حالة طارئة، نوبة قلبية، نزيف
+    - general: استفسارات عامة
+    
+    Entities:
+    - dates: تواريخ ومواعيد
+    - symptoms: أعراض محددة
+    - medications: أدوية
+    - body_parts: أجزاء الجسم
+    - durations: مدة الأعراض
+    """
+    orchestration_requests.inc()
+    import time
+    start_time = time.time()
+    
     try:
+        # Step 1: Intent Classification (keyword-based + confidence)
+        intent_start = time.time()
+        intent, confidence = classify_intent(req.transcript)
+        intent_duration_ms = (time.time() - intent_start) * 1000
+        intent_classification_duration.observe(intent_duration_ms)
+        
+        # Step 2: Entity Extraction
+        entity_start = time.time()
+        entities = extract_entities(req.transcript, intent)
+        entity_duration_ms = (time.time() - entity_start) * 1000
+        entity_extraction_duration.observe(entity_duration_ms)
+        
+        # Step 3: Determine routing strategy
+        routing = determine_routing(intent, entities, confidence)
+        
+        # Step 4: Call LLM for response generation
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 LLM_ENDPOINT,
-                json={"message": prompt, "sessionId": req.sessionId},
+                json={
+                    "message": req.transcript,
+                    "sessionId": req.sessionId,
+                    "intent": intent
+                },
                 timeout=30.0,
             )
         data = response.json()
-        # Parse reply; split on semicolons to extract intent and entities.
-        # Adjust according to your prompt format.
-        parts = data["reply"].split(";")
-        intent = parts[0].strip() if parts else ""
-        entities = (
-            [p.strip() for p in parts[1].split(",")] if len(parts) > 1 else []
-        )
-        reply = parts[-1].strip()
-        return {"intent": intent, "entities": entities, "reply": reply}
+        
+        print(f"🎯 Orchestration: intent={intent} ({confidence:.2f}), entities={len(entities)}, routing={routing}, latency={int((time.time()-start_time)*1000)}ms")
+        
+        return {
+            "intent": intent,
+            "entities": entities,
+            "reply": data.get("reply", ""),
+            "confidence": confidence,
+            "routing": routing
+        }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def classify_intent(message: str) -> tuple[str, float]:
+    """
+    Classify intent with confidence score
+    Returns: (intent, confidence)
+    """
+    message_lower = message.lower()
+    
+    # Emergency keywords (highest priority)
+    emergency_keywords = ["نوبة قلبية", "heart attack", "صعوبة تنفس", "نزيف شديد", "فقدان وعي", "جلطة", "سكتة"]
+    if any(kw in message_lower for kw in emergency_keywords):
+        return ("emergency", 0.95)
+    
+    # Appointment keywords
+    appointment_keywords = ["موعد", "حجز", "تأجيل", "إلغاء", "appointment", "book", "schedule"]
+    appointment_score = sum(1 for kw in appointment_keywords if kw in message_lower)
+    
+    # Symptom keywords
+    symptom_keywords = ["ألم", "صداع", "حمى", "أعراض", "مريض", "pain", "fever", "headache", "symptom"]
+    symptom_score = sum(1 for kw in symptom_keywords if kw in message_lower)
+    
+    # Prescription keywords
+    prescription_keywords = ["وصفة", "دواء", "علاج", "prescription", "medication", "drug"]
+    prescription_score = sum(1 for kw in prescription_keywords if kw in message_lower)
+    
+    # Medical history keywords
+    history_keywords = ["حساسية", "تاريخ", "عملية", "allergy", "history", "surgery"]
+    history_score = sum(1 for kw in history_keywords if kw in message_lower)
+    
+    # Calculate intent and confidence
+    scores = {
+        "appointment": appointment_score,
+        "symptom": symptom_score,
+        "prescription": prescription_score,
+        "medical_history": history_score
+    }
+    
+    max_intent = max(scores, key=scores.get)
+    max_score = scores[max_intent]
+    
+    if max_score == 0:
+        return ("general", 0.5)
+    
+    # Confidence based on keyword matches
+    confidence = min(0.6 + (max_score * 0.15), 0.95)
+    
+    return (max_intent, confidence)
+
+
+def extract_entities(message: str, intent: str) -> dict:
+    """
+    Extract medical entities from message
+    Returns dict with entity types and values
+    """
+    entities = {}
+    
+    # Extract dates (Arabic and numbers)
+    date_patterns = [
+        r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}',  # 01/01/2025
+        r'غدا|اليوم|أمس',  # tomorrow, today, yesterday
+        r'الأحد|الإثنين|الثلاثاء|الأربعاء|الخميس|الجمعة|السبت',  # days
+    ]
+    dates = []
+    for pattern in date_patterns:
+        matches = re.findall(pattern, message, re.IGNORECASE)
+        dates.extend(matches)
+    if dates:
+        entities['dates'] = dates
+    
+    # Extract symptoms (intent-specific)
+    if intent == "symptom":
+        symptom_keywords = ["ألم", "صداع", "حمى", "غثيان", "قيء", "إسهال", "سعال", "رشح"]
+        symptoms = [kw for kw in symptom_keywords if kw in message.lower()]
+        if symptoms:
+            entities['symptoms'] = symptoms
+    
+    # Extract body parts
+    body_parts = ["رأس", "صدر", "بطن", "ظهر", "يد", "رجل", "عين", "أذن", "أنف", "حلق"]
+    found_parts = [part for part in body_parts if part in message]
+    if found_parts:
+        entities['body_parts'] = found_parts
+    
+    # Extract durations
+    duration_pattern = r'(\d+)\s*(يوم|ساعة|أسبوع|شهر|day|hour|week|month)'
+    durations = re.findall(duration_pattern, message, re.IGNORECASE)
+    if durations:
+        entities['durations'] = [f"{num} {unit}" for num, unit in durations]
+    
+    # Extract medications (intent-specific)
+    if intent == "prescription":
+        # Common Arabic medication names
+        med_keywords = ["باراسيتامول", "أسبرين", "أيبوبروفين", "أموكسيسيلين", "أنتيبيوتك"]
+        medications = [med for med in med_keywords if med in message]
+        if medications:
+            entities['medications'] = medications
+    
+    return entities
+
+
+def determine_routing(intent: str, entities: dict, confidence: float) -> str:
+    """
+    Determine routing strategy based on intent and entities
+    
+    Routing strategies:
+    - direct: Direct response from LLM
+    - rag: Retrieve relevant medical knowledge
+    - escalate: Human handoff required
+    - appointment_system: Route to scheduling system
+    - pharmacy: Route to prescription system
+    """
+    if intent == "emergency":
+        return "escalate"
+    
+    if intent == "appointment" and confidence > 0.7:
+        return "appointment_system"
+    
+    if intent == "prescription" and confidence > 0.7:
+        return "pharmacy"
+    
+    if intent in ["symptom", "medical_history"] and confidence > 0.6:
+        return "rag"
+    
+    return "direct"
+
+
+if __name__ == "__main__":
+    import uvicorn
+    print("Starting LLM Orchestrator service on http://0.0.0.0:5006...")
+    uvicorn.run(app, host="0.0.0.0", port=5006)

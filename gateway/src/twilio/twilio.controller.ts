@@ -1,9 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument */
-/* eslint-disable @typescript-eslint/no-unsafe-return */
-/* eslint-disable @typescript-eslint/no-unsafe-call */
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
-/* eslint-disable @typescript-eslint/require-await */
 // gateway/src/twilio/twilio.controller.ts
 import {
   Body,
@@ -13,90 +7,154 @@ import {
   Req,
   Res,
   UnauthorizedException,
+  Logger,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { TwilioService } from './twilio.service';
-import { AsrService } from 'src/asr/asr.service';
-import { ConversationService } from 'src/conversation/conversation.service';
-import { LlmService } from 'src/llm/llm.service';
+import { SessionService } from '../session/session.service';
+import type { TwilioWebhookBody } from '../types/twilio';
 
 @Controller('twilio')
 export class TwilioController {
+  private readonly logger = new Logger(TwilioController.name);
+
   constructor(
     private readonly twilioService: TwilioService,
-    private readonly asrService: AsrService,
-    private readonly llmService: LlmService,
-    private readonly conversationService: ConversationService,
+    private readonly sessionService: SessionService,
   ) {}
 
   /**
-   * Called by Twilio when a call starts.  Validates the request and returns
+   * Called by Twilio when a call starts. Validates the request and returns
    * TwiML instructions to begin streaming audio.
    */
   @Post('voice/start')
+  @HttpCode(HttpStatus.OK)
   async start(
-    @Headers() headers: any,
-    @Body() body: any,
-    @Req() req,
-    @Res() res,
+    @Headers() headers: Record<string, string>,
+    @Body() body: TwilioWebhookBody,
+    @Req() req: Request,
+    @Res() res: Response,
   ) {
-    const signature =
-      headers['x-twilio-signature'] || headers['X-Twilio-Signature'];
+    const signature = headers['x-twilio-signature'] || headers['X-Twilio-Signature'];
+    const url = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+
+    // Validate Twilio signature
     const isValid = this.twilioService.validateTwilioRequest(
-      req.protocol + '://' + req.get('host') + req.originalUrl,
+      url,
       body,
-      signature,
+      signature || '',
     );
-    if (!isValid) {
+
+    if (!isValid && process.env.NODE_ENV !== 'development') {
+      this.logger.warn(`Invalid Twilio signature for call ${body.CallSid}`);
       throw new UnauthorizedException('Invalid Twilio signature');
     }
-    // Return TwiML instructions to start media streaming
-    const response = `<Response><Start><Stream url="${process.env.GATEWAY_PUBLIC_URL}/twilio/voice/stream?callSid=${body.CallSid}"/></Start></Response>`;
-    res.set('Content-Type', 'text/xml');
-    return res.send(response);
+
+    try {
+      // Extract call metadata
+      const metadata = this.twilioService.extractCallMetadata(body);
+      this.logger.log(`Call started: ${metadata.callSid} from ${metadata.from}`);
+
+      // Create session for this call
+      await this.sessionService.create({
+        callSid: metadata.callSid,
+        metadata,
+      });
+
+      // Generate WebSocket stream URL
+      const streamUrl = `${process.env.GATEWAY_PUBLIC_URL || 'wss://your-domain.ngrok.io'}/twilio/ws/${metadata.callSid}`;
+
+      // Return TwiML to start media streaming
+      const twiml = this.twilioService.generateStreamTwiML(
+        streamUrl,
+        metadata.callSid,
+      );
+
+      res.set('Content-Type', 'text/xml');
+      return res.send(twiml);
+    } catch (error) {
+      this.logger.error('Error starting call', error);
+      const errorTwiml = this.twilioService.generateHangupTwiML(
+        'عذرا، حدث خطأ في النظام',
+      );
+      res.set('Content-Type', 'text/xml');
+      return res.send(errorTwiml);
+    }
   }
 
   /**
-   * Twilio sends media frames as HTTP POST requests to the stream URL above.  Each
-   * request contains a single audio chunk encoded in base64.
+   * Generate Twilio access token for frontend Voice SDK
    */
-  @Post('voice/stream')
-  async stream(@Headers() headers: any, @Body() body: any) {
-    const callSid = body.callSid || body.CallSid;
-    const audio = body.media?.payload;
-    if (!audio) return { ok: false };
-
-    // 1. Get partial transcript from ASR
-    const asrResponse = await this.asrService.stream(audio, callSid);
-    const partial = asrResponse.partial;
-    if (!partial) {
-      return { ok: true };
+  @Post('token')
+  @HttpCode(HttpStatus.OK)
+  async getToken(
+    @Headers('x-twilio-identity') identity?: string,
+  ) {
+    try {
+      const userIdentity = identity || `user-${Date.now()}`;
+      const token = this.twilioService.generateAccessToken(userIdentity);
+      
+      this.logger.log(`Generated Twilio token for identity: ${userIdentity}`);
+      
+      return {
+        token,
+        identity: userIdentity,
+      };
+    } catch (error) {
+      this.logger.error('Error generating Twilio token', error);
+      throw error;
     }
+  }
 
-    // 2. Append user message to conversation history
-    await this.conversationService.appendMessage(callSid, 'user', partial);
+  /**
+   * Called by Twilio for call status updates
+   */
+  @Post('voice/status')
+  @HttpCode(HttpStatus.OK)
+  async status(
+    @Headers() headers: Record<string, string>,
+    @Body() body: TwilioWebhookBody,
+  ) {
+    const signature = headers['x-twilio-signature'] || headers['X-Twilio-Signature'];
+    const metadata = this.twilioService.extractCallMetadata(body);
 
-    // 3. Invoke the LLM service
-    const llmResponse = await this.llmService.infer(partial, callSid);
-
-    // 4. Append assistant reply to conversation history
-    await this.conversationService.appendMessage(
-      callSid,
-      'assistant',
-      llmResponse.reply,
+    this.logger.log(
+      `Call status update: ${metadata.callSid} - ${metadata.callStatus}`,
     );
 
-    // 5. (Week 3) send the reply back via TTS to the caller
+    // Update session based on call status
+    if (metadata.callStatus === 'completed' || metadata.callStatus === 'failed') {
+      try {
+        await this.sessionService.delete(metadata.callSid);
+        this.logger.log(`Session cleaned up for call: ${metadata.callSid}`);
+      } catch (error) {
+        this.logger.warn(`Failed to cleanup session: ${metadata.callSid}`, error);
+      }
+    }
 
-    return { ok: true };
+    return { ok: true, status: metadata.callStatus };
   }
 
   /**
-   * Called by Twilio when the call ends.  Cleanup resources.
+   * Called by Twilio when the call ends. Cleanup resources.
    */
   @Post('voice/stop')
-  async stop(@Headers() headers: any, @Body() body: any) {
-    const callSid = body.CallSid;
-    await this.conversationService.clear(callSid);
+  @HttpCode(HttpStatus.OK)
+  async stop(
+    @Headers() headers: Record<string, string>,
+    @Body() body: TwilioWebhookBody,
+  ) {
+    const metadata = this.twilioService.extractCallMetadata(body);
+    this.logger.log(`Call ended: ${metadata.callSid}`);
+
+    try {
+      await this.sessionService.delete(metadata.callSid);
+    } catch (error) {
+      this.logger.warn(`Failed to cleanup session on stop: ${metadata.callSid}`, error);
+    }
+
     return { ok: true, event: 'stop' };
   }
 }

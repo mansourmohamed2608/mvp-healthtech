@@ -1,20 +1,24 @@
 # services/asr/Dockerfile
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
+# Install system dependencies including CA certificates for SSL
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv \
-        ffmpeg libsndfile1 git && \
-    ln -sf /usr/bin/python3 /usr/bin/python && \
+        ffmpeg libsndfile1 git \
+        ca-certificates \
+        && ln -sf /usr/bin/python3 /usr/bin/python && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
+
+# Install Python packages (use system pip to avoid issues)
 RUN python -m pip install --no-cache-dir --upgrade pip && \
     python -m pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 
-EXPOSE 8000
-CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 5000
+CMD ["python", "app.py"]

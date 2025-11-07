@@ -1,10 +1,11 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument */
-/* eslint-disable @typescript-eslint/no-unused-vars */
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
 // gateway/src/twilio/twilio.service.ts
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { createHmac } from 'crypto';
-import axios from 'axios';
+import * as twilio from 'twilio';
+import { TwilioWebhookBody } from '../types/twilio';
+
+const AccessToken = twilio.jwt.AccessToken;
+const VoiceGrant = AccessToken.VoiceGrant;
 
 @Injectable()
 export class TwilioService {
@@ -14,27 +15,141 @@ export class TwilioService {
    * Validate the Twilio request using the signature and the auth token.
    * Docs: https://www.twilio.com/docs/usage/security#validating-requests
    */
-  validateTwilioRequest(url: string, params: any, signature: string): boolean {
+  validateTwilioRequest(
+    url: string,
+    params: Record<string, any>,
+    signature: string,
+  ): boolean {
     const authToken = process.env.TWILIO_AUTH_TOKEN || '';
-    const sorted = Object.keys(params)
-      .sort()
-      .map((k) => `${k}${params[k]}`)
-      .join('');
-    const data = url + sorted;
-    const computedSignature = createHmac('sha1', authToken)
-      .update(Buffer.from(data, 'utf-8'))
-      .digest('base64');
-    return computedSignature === signature;
+    
+    if (!authToken) {
+      this.logger.warn('TWILIO_AUTH_TOKEN not configured');
+      // In development, allow requests without validation
+      if (process.env.NODE_ENV === 'development') {
+        return true;
+      }
+      return false;
+    }
+
+    try {
+      // Use Twilio's official validation method
+      const isValid = twilio.validateRequest(
+        authToken,
+        signature,
+        url,
+        params,
+      );
+      
+      if (!isValid) {
+        this.logger.warn(`Invalid Twilio signature for URL: ${url}`);
+      }
+      
+      return isValid;
+    } catch (error) {
+      this.logger.error('Twilio signature validation error', error);
+      return false;
+    }
   }
 
-  async forwardAudioToAsr(mediaUrl: string, callSid: string) {
-    // Download the media and send to ASR service
-    const resp = await axios.get(mediaUrl, { responseType: 'arraybuffer' });
-    const audio = Buffer.from(resp.data);
-    await axios.post(
-      process.env.ASR_SERVICE_URL + '/transcribe',
-      { audio: audio.toString('base64'), callSid },
-      { headers: { 'Content-Type': 'application/json' } },
+  /**
+   * Generate TwiML to start a media stream
+   */
+  generateStreamTwiML(streamUrl: string, callSid: string): string {
+    const response = new twilio.twiml.VoiceResponse();
+    
+    // Say a greeting
+    response.say(
+      {
+        voice: 'Polly.Zeina',
+        language: 'ar-AE',
+      },
+      'مرحبا بك في النظام الصحي',
     );
+
+    // Start media streaming
+    const start = response.start();
+    start.stream({ url: streamUrl }).parameter({
+      name: 'callSid',
+      value: callSid,
+    });
+
+    // Pause to keep the stream open (10 minutes = 600 seconds)
+    response.pause({ length: 600 });
+
+    return response.toString();
+  }
+
+  /**
+   * Generate TwiML to end the call
+   */
+  generateHangupTwiML(message?: string): string {
+    const response = new twilio.twiml.VoiceResponse();
+    
+    if (message) {
+      response.say(
+        {
+          voice: 'Polly.Zeina',
+          language: 'ar-AE',
+        },
+        message,
+      );
+    }
+    
+    response.hangup();
+    return response.toString();
+  }
+
+  /**
+   * Extract call metadata from webhook body
+   */
+  extractCallMetadata(body: TwilioWebhookBody) {
+    return {
+      callSid: body.CallSid,
+      accountSid: body.AccountSid,
+      from: body.From,
+      to: body.To,
+      callStatus: body.CallStatus,
+      direction: body.Direction,
+    };
+  }
+
+  /**
+   * Generate Twilio Access Token for Voice SDK
+   * Docs: https://www.twilio.com/docs/iam/access-tokens
+   */
+  generateAccessToken(identity: string): string {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const apiKey = process.env.TWILIO_API_KEY;
+    const apiSecret = process.env.TWILIO_API_SECRET;
+    const twimlAppSid = process.env.TWILIO_TWIML_APP_SID;
+
+    if (!accountSid || !apiKey || !apiSecret || !twimlAppSid) {
+      const missing: string[] = [];
+      if (!accountSid) missing.push('TWILIO_ACCOUNT_SID');
+      if (!apiKey) missing.push('TWILIO_API_KEY');
+      if (!apiSecret) missing.push('TWILIO_API_SECRET');
+      if (!twimlAppSid) missing.push('TWILIO_TWIML_APP_SID');
+      
+      this.logger.error(`Missing Twilio credentials: ${missing.join(', ')}`);
+      throw new Error(`Missing Twilio environment variables: ${missing.join(', ')}`);
+    }
+
+    // Create an access token
+    const accessToken = new AccessToken(accountSid, apiKey, apiSecret, {
+      identity,
+      ttl: 3600, // 1 hour
+    });
+
+    // Create a Voice grant for this token
+    const voiceGrant = new VoiceGrant({
+      outgoingApplicationSid: twimlAppSid,
+      incomingAllow: true, // Allow incoming calls
+    });
+
+    // Add the grant to the token
+    accessToken.addGrant(voiceGrant);
+
+    // Serialize the token to a JWT
+    return accessToken.toJwt();
   }
 }

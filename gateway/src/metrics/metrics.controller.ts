@@ -1,13 +1,65 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
-/* eslint-disable @typescript-eslint/require-await */
-/* eslint-disable @typescript-eslint/no-unsafe-return */
-/* eslint-disable @typescript-eslint/no-unsafe-call */
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+// gateway/src/metrics/metrics.controller.ts
+/**
+ * Metrics Controller - Prometheus metrics export
+ * Week 3 Day 19 (Oct 13, 2025)
+ * Enhanced with custom metrics for ASR/LLM/TTS latency
+ */
 import { Controller, Get } from '@nestjs/common';
-import { Registry, collectDefaultMetrics } from 'prom-client';
+import {
+  Registry,
+  collectDefaultMetrics,
+  Counter,
+  Histogram,
+  Gauge,
+} from 'prom-client';
 
 const registry = new Registry();
 collectDefaultMetrics({ register: registry });
+
+// Custom metrics
+const asrLatency = new Histogram({
+  name: 'asr_latency_seconds',
+  help: 'ASR transcription latency in seconds',
+  labelNames: ['endpoint', 'status'],
+  buckets: [0.1, 0.3, 0.5, 1, 2, 5],
+  registers: [registry],
+});
+
+const llmLatency = new Histogram({
+  name: 'llm_latency_seconds',
+  help: 'LLM inference latency in seconds',
+  labelNames: ['endpoint', 'status'],
+  buckets: [0.1, 0.3, 0.5, 1, 2, 5],
+  registers: [registry],
+});
+
+const ttsLatency = new Histogram({
+  name: 'tts_latency_seconds',
+  help: 'TTS synthesis latency in seconds',
+  labelNames: ['endpoint', 'status'],
+  buckets: [0.1, 0.3, 0.5, 1, 2, 5],
+  registers: [registry],
+});
+
+const activeConversations = new Gauge({
+  name: 'active_conversations_total',
+  help: 'Number of active conversations',
+  registers: [registry],
+});
+
+const messagesProcessed = new Counter({
+  name: 'messages_processed_total',
+  help: 'Total number of messages processed',
+  labelNames: ['role', 'status'],
+  registers: [registry],
+});
+
+const twilioCallsTotal = new Counter({
+  name: 'twilio_calls_total',
+  help: 'Total number of Twilio calls',
+  labelNames: ['status'],
+  registers: [registry],
+});
 
 @Controller('metrics')
 export class MetricsController {
@@ -15,4 +67,30 @@ export class MetricsController {
   async metrics() {
     return registry.metrics();
   }
+
+  // Export metrics for other services to use
+  static getAsrLatency() {
+    return asrLatency;
+  }
+
+  static getLlmLatency() {
+    return llmLatency;
+  }
+
+  static getTtsLatency() {
+    return ttsLatency;
+  }
+
+  static getActiveConversations() {
+    return activeConversations;
+  }
+
+  static getMessagesProcessed() {
+    return messagesProcessed;
+  }
+
+  static getTwilioCallsTotal() {
+    return twilioCallsTotal;
+  }
 }
+

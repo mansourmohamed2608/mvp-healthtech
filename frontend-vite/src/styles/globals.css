@@ -1,0 +1,452 @@
+/* ============================================
+   HEALTHTECH 2025 - MODERN CSS FOUNDATION
+   Implementing: Blur/Grain, Low-Light, Kinetic Typography
+   ============================================ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   CSS VARIABLES - Tailwind v4 @theme approach
+   ============================================ */
+@layer base {
+  :root {
+    /* Low-light mode colors */
+    --bg-primary: 255 255 255;
+    --bg-secondary: 249 250 251;
+    --bg-tertiary: 243 244 246;
+    --text-primary: 17 24 39;
+    --text-secondary: 75 85 99;
+    --text-tertiary: 156 163 175;
+
+    /* Accent colors */
+    --accent-primary: 14 165 233;
+    --accent-secondary: 139 92 246;
+    --accent-success: 16 185 129;
+    --accent-warning: 245 158 11;
+    --accent-danger: 239 68 68;
+
+    /* Glass morphism */
+    --glass-bg: rgba(255, 255, 255, 0.7);
+    --glass-border: rgba(255, 255, 255, 0.18);
+
+    /* Grain texture opacity */
+    --grain-opacity: 0.03;
+  }
+
+  .dark {
+    /* Low-light dark mode (2025 trend) */
+    --bg-primary: 15 17 20;
+    --bg-secondary: 26 29 33;
+    --bg-tertiary: 33 37 41;
+    --text-primary: 248 250 252;
+    --text-secondary: 203 213 225;
+    --text-tertiary: 148 163 184;
+
+    /* Glass morphism dark */
+    --glass-bg: rgba(26, 29, 33, 0.6);
+    --glass-border: rgba(255, 255, 255, 0.08);
+
+    /* Grain texture opacity */
+    --grain-opacity: 0.05;
+  }
+
+  /* Smooth scroll with Lenis */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  html.lenis {
+    height: auto;
+  }
+
+  .lenis.lenis-smooth {
+    scroll-behavior: auto;
+  }
+
+  .lenis.lenis-smooth [data-lenis-prevent] {
+    overscroll-behavior: contain;
+  }
+
+  .lenis.lenis-stopped {
+    overflow: hidden;
+  }
+
+  body {
+    @apply bg-white dark:bg-dark-950 text-gray-900 dark:text-gray-50 font-sans antialiased;
+    @apply transition-colors duration-300;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /* Reduced motion support */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ============================================
+   GRAIN TEXTURE EFFECT (2025 Trend)
+   ============================================ */
+@layer utilities {
+  .grain-texture {
+    position: relative;
+  }
+
+  .grain-texture::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+    opacity: var(--grain-opacity);
+    pointer-events: none;
+    mix-blend-mode: overlay;
+    z-index: 1;
+  }
+}
+
+/* ============================================
+   GLASS MORPHISM & BLUR EFFECTS
+   ============================================ */
+@layer components {
+  .glass {
+    @apply backdrop-blur-xl bg-opacity-70 border border-white/10;
+    background: var(--glass-bg);
+    border-color: var(--glass-border);
+  }
+
+  .glass-card {
+    @apply glass rounded-2xl p-6 shadow-xl;
+    @apply transition-all duration-300 hover:shadow-2xl hover:scale-[1.02];
+  }
+
+  .blur-soft {
+    @apply backdrop-blur-md bg-white/50 dark:bg-dark-900/50;
+  }
+
+  .blur-strong {
+    @apply backdrop-blur-2xl bg-white/30 dark:bg-dark-900/30;
+  }
+}
+
+/* ============================================
+   KINETIC TYPOGRAPHY ANIMATIONS
+   ============================================ */
+@layer components {
+  .kinetic-text {
+    @apply inline-block;
+    animation: kinetic-float 3s ease-in-out infinite;
+  }
+
+  .kinetic-text-stagger > * {
+    @apply inline-block;
+    animation: kinetic-float 3s ease-in-out infinite;
+  }
+
+  .kinetic-text-stagger > *:nth-child(2) {
+    animation-delay: 0.1s;
+  }
+
+  .kinetic-text-stagger > *:nth-child(3) {
+    animation-delay: 0.2s;
+  }
+
+  .kinetic-text-stagger > *:nth-child(4) {
+    animation-delay: 0.3s;
+  }
+
+  @keyframes kinetic-float {
+    0%, 100% {
+      transform: translateY(0) rotateZ(0deg);
+    }
+    25% {
+      transform: translateY(-5px) rotateZ(1deg);
+    }
+    75% {
+      transform: translateY(5px) rotateZ(-1deg);
+    }
+  }
+
+  .shimmer-text {
+    @apply bg-gradient-to-r from-accent-400 via-accent-300 to-accent-500;
+    @apply bg-clip-text text-transparent;
+    @apply animate-gradient;
+    background-size: 200% auto;
+  }
+
+  .glow-text {
+    @apply text-accent-400;
+    text-shadow: 0 0 20px rgba(14, 165, 233, 0.5),
+                 0 0 40px rgba(14, 165, 233, 0.3),
+                 0 0 60px rgba(14, 165, 233, 0.2);
+  }
+}
+
+/* ============================================
+   MAGNETIC & INTERACTIVE EFFECTS
+   ============================================ */
+@layer components {
+  .magnetic-btn {
+    @apply relative inline-flex items-center justify-center;
+    @apply px-8 py-4 rounded-full font-semibold;
+    @apply bg-gradient-to-r from-accent-500 to-accent-600;
+    @apply text-white shadow-glow;
+    @apply transition-all duration-300;
+    @apply hover:shadow-glow-lg hover:scale-105;
+    @apply active:scale-95;
+    cursor: pointer;
+    will-change: transform;
+  }
+
+  .magnetic-btn::before {
+    content: '';
+    @apply absolute inset-0 rounded-full;
+    @apply bg-gradient-to-r from-accent-400 to-accent-500;
+    @apply opacity-0 transition-opacity duration-300;
+    z-index: -1;
+  }
+
+  .magnetic-btn:hover::before {
+    @apply opacity-100 animate-pulse;
+  }
+
+  .card-3d {
+    @apply relative transform-gpu transition-all duration-300;
+    @apply hover:z-10;
+    transform-style: preserve-3d;
+    perspective: 1000px;
+  }
+
+  .card-3d-inner {
+    @apply transition-transform duration-500;
+    transform-style: preserve-3d;
+  }
+}
+
+/* ============================================
+   BENTO GRID LAYOUTS (2025 Trend)
+   ============================================ */
+@layer components {
+  .bento-grid {
+    @apply grid gap-4 md:gap-6;
+    @apply grid-cols-1 md:grid-cols-2 lg:grid-cols-4;
+    @apply auto-rows-[200px] md:auto-rows-[240px];
+  }
+
+  .bento-item {
+    @apply glass-card overflow-hidden;
+    @apply transition-all duration-300;
+    @apply hover:shadow-2xl hover:-translate-y-1;
+  }
+
+  .bento-sm {
+    @apply col-span-1 row-span-1;
+  }
+
+  .bento-md {
+    @apply col-span-1 md:col-span-2 row-span-1;
+  }
+
+  .bento-lg {
+    @apply col-span-1 md:col-span-2 lg:col-span-2 row-span-2;
+  }
+
+  .bento-xl {
+    @apply col-span-1 md:col-span-2 lg:col-span-4 row-span-1;
+  }
+
+  .bento-tall {
+    @apply col-span-1 row-span-2;
+  }
+}
+
+/* ============================================
+   GRADIENT & SHIMMER EFFECTS
+   ============================================ */
+@layer utilities {
+  .gradient-mesh {
+    background:
+      radial-gradient(at 27% 37%, rgba(14, 165, 233, 0.1) 0px, transparent 50%),
+      radial-gradient(at 97% 21%, rgba(139, 92, 246, 0.1) 0px, transparent 50%),
+      radial-gradient(at 52% 99%, rgba(16, 185, 129, 0.1) 0px, transparent 50%),
+      radial-gradient(at 10% 29%, rgba(245, 158, 11, 0.1) 0px, transparent 50%),
+      radial-gradient(at 97% 96%, rgba(239, 68, 68, 0.1) 0px, transparent 50%),
+      radial-gradient(at 33% 50%, rgba(6, 182, 212, 0.1) 0px, transparent 50%),
+      radial-gradient(at 79% 53%, rgba(168, 85, 247, 0.1) 0px, transparent 50%);
+  }
+
+  .shimmer {
+    @apply relative overflow-hidden;
+  }
+
+  .shimmer::before {
+    content: '';
+    @apply absolute inset-0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.1) 50%,
+      transparent 100%
+    );
+    @apply animate-shimmer;
+  }
+
+  .conic-gradient-shimmer {
+    @apply relative;
+    background: conic-gradient(
+      from 90deg at 50% 50%,
+      rgba(14, 165, 233, 0) 0deg,
+      rgba(14, 165, 233, 0.8) 180deg,
+      rgba(14, 165, 233, 0) 360deg
+    );
+    @apply animate-spin-slow;
+  }
+}
+
+/* ============================================
+   SCROLL-LINKED ANIMATIONS & PARALLAX
+   ============================================ */
+@layer utilities {
+  .parallax-slow {
+    transform: translateY(var(--parallax-offset-slow, 0));
+    transition: transform 0.1s linear;
+  }
+
+  .parallax-medium {
+    transform: translateY(var(--parallax-offset-medium, 0));
+    transition: transform 0.1s linear;
+  }
+
+  .parallax-fast {
+    transform: translateY(var(--parallax-offset-fast, 0));
+    transition: transform 0.1s linear;
+  }
+}
+
+/* ============================================
+   CUSTOM SCROLLBAR (Low-light theme)
+   ============================================ */
+@layer base {
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-gray-100 dark:bg-dark-900;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 dark:bg-dark-700 rounded-full;
+    @apply hover:bg-gray-400 dark:hover:bg-dark-600;
+    @apply transition-colors duration-200;
+  }
+}
+
+/* ============================================
+   LOADING & SKELETON STATES
+   ============================================ */
+@layer components {
+  .skeleton {
+    @apply bg-gradient-to-r from-gray-200 via-gray-300 to-gray-200;
+    @apply dark:from-dark-800 dark:via-dark-700 dark:to-dark-800;
+    @apply animate-shimmer bg-[length:200%_100%];
+  }
+
+  .pulse-ring {
+    @apply relative;
+  }
+
+  .pulse-ring::before,
+  .pulse-ring::after {
+    content: '';
+    @apply absolute inset-0 rounded-full;
+    @apply border-2 border-accent-400;
+    @apply animate-ping;
+  }
+
+  .pulse-ring::after {
+    animation-delay: 0.5s;
+  }
+}
+
+/* ============================================
+   RTL SUPPORT (Arabic)
+   ============================================ */
+@layer base {
+  [dir="rtl"] {
+    direction: rtl;
+  }
+
+  [dir="rtl"] .rtl\:mirror {
+    transform: scaleX(-1);
+  }
+}
+
+/* ============================================
+   ACCESSIBILITY & FOCUS STATES
+   ============================================ */
+@layer base {
+  .focus-visible {
+    @apply outline-none ring-4 ring-accent-400/50 ring-offset-2;
+    @apply dark:ring-offset-dark-950;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    @apply focus-visible;
+  }
+}
+
+/* ============================================
+   PERFORMANCE OPTIMIZATIONS
+   ============================================ */
+@layer utilities {
+  .gpu-accelerated {
+    transform: translateZ(0);
+    will-change: transform;
+  }
+
+  .smooth-rendering {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+/* ============================================
+   UTILITY ANIMATIONS
+   ============================================ */
+@layer utilities {
+  .animate-spin-slow {
+    animation: spin 3s linear infinite;
+  }
+
+  .animate-bounce-slow {
+    animation: bounce 2s infinite;
+  }
+
+  .animate-fade-in-up {
+    animation: fade-in-up 0.6s ease-out;
+  }
+
+  @keyframes fade-in-up {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}

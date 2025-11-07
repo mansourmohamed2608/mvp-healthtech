@@ -1,0 +1,4 @@
+# Quality Evaluation Requirements
+jiwer==3.0.3
+httpx==0.27.2
+numpy==1.26.4

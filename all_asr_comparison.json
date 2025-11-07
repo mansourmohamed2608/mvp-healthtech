@@ -1,0 +1,28 @@
+{
+  "whisper": {
+    "transcription": {
+      "text": "السلام عليكم يا دكتور وعليكم السلام إزايك عاملة إيه؟ والله مش حاسة أني كويسة الليسة عندي بقت حمرى ومتهيجة ولما بخسل سناني الليسة بتنزف طيب خلينا نشوف من كلامك واضح أن عندك التهاب في الليسة وممكن كمان يكون فيه جيوب لسوية وده يعني أن فيه مسافة ما بين الليسة والأسنان ودي بتتكون بسبب تراكم الجير والقراصيم على مرور الوقت",
+      "processing_time": 80.13401508331299,
+      "duration": 134.229375,
+      "rtf": 0.5969931327126643,
+      "load_time": 18.0412335395813
+    },
+    "wer_metrics": {
+      "wer": 0.8442028985507246,
+      "mer": 0.8442028985507246,
+      "wil": 0.8864529599606976,
+      "substitutions": 16,
+      "deletions": 217,
+      "insertions": 0,
+      "hits": 43,
+      "reference_words": 276,
+      "hypothesis_words": 59
+    }
+  },
+  "whisperx": {
+    "error": "Requested float16 compute type, but the target device or backend do not support efficient float16 computation."
+  },
+  "whisperx_lora": {
+    "error": "Requested float16 compute type, but the target device or backend do not support efficient float16 computation."
+  }
+}
