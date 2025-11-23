@@ -23,6 +23,11 @@ import { TtsService } from './tts/tts.service';
 import { ConversationService } from './conversation/conversation.service';
 import { VectorCacheService } from './cache/vector-cache.service';
 import { KvCacheService } from './cache/kv-cache.service';
+import { JwtAuthGuard } from './auth/jwt.guard';
+import { RolesGuard } from './auth/roles.guard';
+import { MiddlewareConsumer, Module, RequestMethod } from '@nestjs/common';
+import { CorrelationMiddleware } from './middleware/correlation.middleware';
+import { AuditService } from './audit/audit.service';
 
 @Module({
   imports: [
@@ -57,13 +62,22 @@ import { KvCacheService } from './cache/kv-cache.service';
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
+    {
+      provide: APP_GUARD,
+      useClass: RolesGuard,
+    },
+    JwtAuthGuard,
     AsrService,
     LlmService,
     TtsService,
     ConversationService,
     VectorCacheService,
     KvCacheService,
+    AuditService,
   ],
 })
-export class AppModule {}
-
+export class AppModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(CorrelationMiddleware).forRoutes({ path: '*', method: RequestMethod.ALL });
+  }
+}

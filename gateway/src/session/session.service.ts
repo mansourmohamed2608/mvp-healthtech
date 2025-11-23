@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { createClient, RedisClientType } from 'redis';
+import { Pool } from 'pg';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { Session, SessionData } from './session.entity';
 import {
@@ -16,9 +17,22 @@ export class SessionService {
   private readonly SESSION_TTL = 7200; // 2 hours in seconds
   private readonly SESSION_PREFIX = 'session:';
   private redisAvailable = false;
+  private readonly pool: Pool | null;
 
   constructor() {
+    this.pool = this.createPool();
     this.initializeRedis();
+  }
+
+  private createPool(): Pool | null {
+    try {
+      const url = process.env.DATABASE_URL;
+      if (!url) return null;
+      return new Pool({ connectionString: url });
+    } catch (e) {
+      this.logger.warn('Postgres pool not initialized for sessions');
+      return null;
+    }
   }
 
   private initializeRedis() {
@@ -56,7 +70,7 @@ export class SessionService {
   }
 
   async create(dto: CreateSessionDto): Promise<CreateSessionResponseDto> {
-    const sessionId = randomUUID();
+    const sessionId = dto.callSid || randomUUID();
     const now = new Date();
     const expiresAt = new Date(now.getTime() + this.SESSION_TTL * 1000);
 
@@ -74,6 +88,7 @@ export class SessionService {
     if (!this.redisAvailable || !this.redisClient) {
       this.inMemoryStore.set(sessionId, session);
       this.logger.log(`Session created (in-memory): ${sessionId}`);
+      await this.persistToDb(session).catch((e) => this.logger.warn(`DB persist failed: ${e}`));
       return {
         sessionId,
         issuedAt: now.toISOString(),
@@ -90,6 +105,7 @@ export class SessionService {
       );
 
       this.logger.log(`Session created: ${sessionId}`);
+      await this.persistToDb(session).catch((e) => this.logger.warn(`DB persist failed: ${e}`));
 
       return {
         sessionId,
@@ -184,6 +200,7 @@ export class SessionService {
       }
 
       this.logger.log(`Session deleted: ${sessionId}`);
+      await this.markEnded(sessionId).catch(() => {});
     } catch (error) {
       if (error instanceof NotFoundException) {
         throw error;
@@ -233,5 +250,28 @@ export class SessionService {
     if (this.redisClient) {
       await this.redisClient.quit();
     }
+    if (this.pool) {
+      await this.pool.end();
+    }
+  }
+
+  private async persistToDb(session: SessionData): Promise<void> {
+    if (!this.pool) return;
+    const patient = session.metadata?.patientId || 'unknown';
+    const clinician = session.metadata?.clinicianId || 'unknown';
+    await this.pool.query(
+      `INSERT INTO sessions (session_id, patient_id, clinician_id, started_at, ended_at)
+       VALUES ($1, $2, $3, now(), NULL)
+       ON CONFLICT (session_id) DO UPDATE SET patient_id=EXCLUDED.patient_id, clinician_id=EXCLUDED.clinician_id`,
+      [session.sessionId, patient, clinician],
+    );
+  }
+
+  private async markEnded(sessionId: string): Promise<void> {
+    if (!this.pool) return;
+    await this.pool.query(
+      `UPDATE sessions SET ended_at = now() WHERE session_id = $1`,
+      [sessionId],
+    );
   }
 }

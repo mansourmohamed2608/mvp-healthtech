@@ -211,7 +211,7 @@ export default function ClinicalNotes() {
       const formData = new FormData();
       formData.append('audio', recording.file);
       
-      const transcriptResponse = await api.transcribeAudio(formData);
+      const transcriptResponse: any = await api.transcribeAudio(formData as any);
       const transcript = transcriptResponse.transcript || transcriptResponse.text || '';
 
       // Step 2: Generate SOAP note

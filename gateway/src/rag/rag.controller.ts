@@ -3,8 +3,11 @@
  * RAG Controller - Endpoints for storing and retrieving knowledge
  * Week 5 Day 31 (Oct 25, 2025)
  */
-import { Controller, Post, Get, Body, Query } from '@nestjs/common';
+import { Controller, Post, Get, Body, Query, UseGuards } from '@nestjs/common';
 import { VectorCacheService } from '../cache/vector-cache.service';
+import { JwtAuthGuard } from '../auth/jwt.guard';
+import { Roles } from '../auth/roles.decorator';
+import { camelResponse, wrapError } from '../utils/http-utils';
 
 interface StoreKnowledgeDto {
   key: string;
@@ -17,6 +20,8 @@ interface SearchDto {
   limit?: number;
 }
 
+@UseGuards(JwtAuthGuard)
+@Roles('clinician')
 @Controller('rag')
 export class RAGController {
   constructor(private readonly vectorCache: VectorCacheService) {}
@@ -28,24 +33,28 @@ export class RAGController {
     
     await this.vectorCache.store(dto.key, vector, dto.text, dto.metadata || {});
     
-    return { ok: true, key: dto.key };
+    return camelResponse({ ok: true, key: dto.key });
   }
 
   @Post('search')
   async searchSimilar(@Body() dto: SearchDto) {
-    const queryVector = this.generateSimpleEmbedding(dto.query);
-    const limit = dto.limit || 5;
-    
-    const results = await this.vectorCache.findSimilar(queryVector, limit);
-    
-    return {
-      query: dto.query,
-      results: results.map(r => ({
-        id: r.id,
-        text: r.text,
-        metadata: r.metadata,
-      })),
-    };
+    try {
+      const queryVector = this.generateSimpleEmbedding(dto.query);
+      const limit = dto.limit || 5;
+      
+      const results = await this.vectorCache.findSimilar(queryVector, limit);
+      
+      return camelResponse({
+        query: dto.query,
+        results: results.map(r => ({
+          id: r.id,
+          text: r.text,
+          metadata: r.metadata,
+        })),
+      });
+    } catch (error) {
+      wrapError(error);
+    }
   }
 
   @Get('stats')

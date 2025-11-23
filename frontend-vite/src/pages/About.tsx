@@ -3,7 +3,6 @@ import { useThemeStore } from '@store/themeStore';
 import {
   IconTarget,
   IconHeart,
-  IconUsers,
   IconAward,
   IconTrendingUp,
   IconShieldCheck

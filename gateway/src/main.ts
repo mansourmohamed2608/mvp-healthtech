@@ -4,8 +4,10 @@ import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import morgan from 'morgan';
 import { LatencyMiddleware } from './middleware/latency.middleware';
+import { initOtel } from './observability/otel';
 
 async function bootstrap() {
+  await initOtel();
   const app = await NestFactory.create(AppModule);
 
   // Enable CORS for frontend

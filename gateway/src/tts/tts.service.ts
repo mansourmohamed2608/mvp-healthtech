@@ -6,6 +6,7 @@
  */
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { v4 as uuidv4 } from 'uuid';
 
 interface SynthesizeRequest {
   text: string;
@@ -18,19 +19,25 @@ interface SynthesizeResponse {
   audio: string; // Base64 encoded
   duration: number;
   sampleRate: number;
+  format?: string;
 }
 
 @Injectable()
 export class TtsService {
   private readonly logger = new Logger(TtsService.name);
   private readonly serviceUrl = process.env.TTS_SERVICE_URL || 'http://localhost:5002';
+  private readonly internalSecret = (() => {
+    if (!process.env.INTERNAL_SECRET) throw new Error('INTERNAL_SECRET not set');
+    return process.env.INTERNAL_SECRET;
+  })();
 
   /**
    * Synthesize speech from text
-   * Returns audio stream
+   * Returns base64 audio (mulaw/mp3/wav depending on engine)
    */
-  async synthesize(text: string, sessionId?: string): Promise<Buffer> {
+  async synthesize(text: string, sessionId?: string): Promise<{ audioBase64: string; format?: string }> {
     try {
+      const corr = uuidv4();
       const response = await axios.post(
         `${this.serviceUrl}/synthesize`,
         {
@@ -39,13 +46,13 @@ export class TtsService {
           voice: 'ar-EG-SalmaNeural', // Arabic Egyptian female
         } as SynthesizeRequest,
         {
-          responseType: 'arraybuffer',
-          timeout: 10000, // 10s timeout
+          timeout: 15000,
+          headers: { 'x-correlation-id': corr, 'x-internal-secret': this.internalSecret },
         },
       );
 
-      this.logger.log(`Synthesized ${text.length} chars in ${response.headers['x-duration']}s`);
-      return Buffer.from(response.data);
+      this.logger.log(`Synthesized ${text.length} chars`);
+      return { audioBase64: response.data.audio, format: response.data.format || 'mulaw' };
     } catch (error) {
       this.logger.error(`TTS synthesis failed: ${error}`);
       throw error;
@@ -68,6 +75,7 @@ export class TtsService {
         {
           responseType: 'arraybuffer',
           timeout: 15000, // 15s timeout for streaming
+          headers: { 'x-internal-secret': this.internalSecret },
         },
       );
 
@@ -83,7 +91,7 @@ export class TtsService {
    */
   async getVoices(): Promise<any> {
     try {
-      const response = await axios.get(`${this.serviceUrl}/voices`);
+      const response = await axios.get(`${this.serviceUrl}/voices`, { headers: { 'x-internal-secret': this.internalSecret } });
       return response.data;
     } catch (error) {
       this.logger.error(`Failed to fetch voices: ${error}`);

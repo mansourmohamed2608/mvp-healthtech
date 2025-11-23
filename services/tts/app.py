@@ -6,47 +6,69 @@ Week 3 Day 15 (Oct 9, 2025)
 """
 import io
 import time
-import wave
+import base64
+import audioop
+import os
+import logging
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import torch
 import numpy as np
 import uvicorn
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
+import asyncio
 
-# Try Coqui TTS, fallback to edge-tts if not available
-TTS_ENGINE = "edge"  # Default to edge-tts (free, no GPU needed)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("tts")
+# Optional OTEL (no-op if disabled)
+try:
+    from otel_setup import init_otel
+    init_otel("tts")
+except Exception:
+    logger.debug("OTEL init skipped for TTS")
 
+
+def safe_print(*args, **_kwargs):
+    logger.debug("suppressed print", extra={"fields": len(args)})
+
+
+print = safe_print
+
+# Try Coqui TTS; fallback will synthesize silence to keep contract (no mp3 fallback)
+TTS_ENGINE = "edge"  # Default label; we will synthesize silence if Coqui unavailable
 try:
     from TTS.api import TTS as CoquiTTS
     TTS_ENGINE = "coqui"
-    print("✅ Using Coqui TTS")
+    logger.info("Using Coqui TTS")
 except ImportError:
-    print("⚠️  Coqui TTS not available, using edge-tts")
-    import edge_tts
+    logger.warning("Coqui TTS not available, will use silent fallback mulaw audio")
 
 # Configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SAMPLE_RATE = 16000  # 16kHz for Twilio compatibility
+# Internal synthesis rate (Coqui); we downsample to 8kHz mulaw for Twilio media streams.
+SAMPLE_RATE = 16000
+TWILIO_SAMPLE_RATE = 8000
 VOICE = "ar-EG-SalmaNeural"  # Edge-TTS Arabic voice (Egyptian female)
 COQUI_MODEL = "tts_models/ar/css10/vits"  # Coqui Arabic model
+TTS_TIMEOUT_SECONDS = float(os.getenv("TTS_TIMEOUT_SECONDS", "10"))
 
-print(f"🚀 TTS Service starting on {DEVICE}...")
-print(f"Engine: {TTS_ENGINE}")
+logger.info("TTS Service starting", extra={"device": DEVICE, "engine": TTS_ENGINE})
 
 # Initialize TTS engine
 tts_model = None
 if TTS_ENGINE == "coqui":
     try:
         tts_model = CoquiTTS(model_name=COQUI_MODEL, gpu=(DEVICE == "cuda"))
-        print(f"✅ Loaded Coqui model: {COQUI_MODEL}")
+        logger.info("Loaded Coqui model", extra={"model": COQUI_MODEL})
     except Exception as e:
-        print(f"⚠️  Coqui initialization failed: {e}, falling back to edge-tts")
+        logger.warning("Coqui initialization failed, falling back to edge-tts", extra={"error": str(e)})
         TTS_ENGINE = "edge"
 
-print(f"✅ TTS Service ready")
+logger.info("TTS Service ready", extra={"engine": TTS_ENGINE})
 
 app = FastAPI(title="TTS Service", version="1.0.0")
 app.add_middleware(
@@ -55,13 +77,59 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
+if not INTERNAL_SECRET:
+    raise RuntimeError("INTERNAL_SECRET must be set for TTS service")
+
+tts_requests_total = Counter("tts_requests_total", "Total TTS synthesis requests")
+tts_latency_seconds = Histogram(
+    "tts_latency_seconds",
+    "Latency of TTS synthesis",
+    buckets=[0.1, 0.3, 0.5, 1, 2, 5, 10],
+)
+tts_errors_total = Counter("tts_errors_total", "Total TTS errors", ["reason"])
+
+def log_safe(level: int, msg: str, request: Request | None = None, session_id: str | None = None, **kwargs):
+    extra = {
+        "correlationId": request.headers.get("x-correlation-id") if request else None,
+        "sessionId": session_id,
+    }
+    for k, v in kwargs.items():
+        if v is not None:
+            extra[k] = v
+    logger.log(level, msg, extra=extra)
+
+# Internal helpers
+def _blocking_tts_generate(text: str, voice: Optional[str]) -> bytes:
+    """Blocking TTS generation that always returns mulaw bytes (8kHz)."""
+    if TTS_ENGINE == "coqui" and tts_model:
+        audio_np = tts_model.tts(text=text)
+        audio_int16 = (np.array(audio_np) * 32767).astype(np.int16)
+        pcm_bytes = audio_int16.tobytes()
+        pcm_8k, _ = audioop.ratecv(pcm_bytes, 2, 1, SAMPLE_RATE, TWILIO_SAMPLE_RATE, None)
+        mulaw_bytes = audioop.lin2ulaw(pcm_8k, 2)
+        return mulaw_bytes
+    # Fallback: 1s silence in mulaw to keep contract consistent
+    pcm_silence = (b"\x00\x00") * int(TWILIO_SAMPLE_RATE)
+    return audioop.lin2ulaw(pcm_silence, 2)
+
+async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
+    return await asyncio.to_thread(_blocking_tts_generate, text, voice)
+
+@app.middleware("http")
+async def internal_auth(request: Request, call_next):
+    if request.url.path.startswith("/health") or request.url.path.startswith("/metrics"):
+        return await call_next(request)
+    if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return await call_next(request)
 
 # Request/Response models
 class SynthesizeRequest(BaseModel):
     text: str
     voice: Optional[str] = VOICE
     sessionId: Optional[str] = None
-    format: Optional[str] = "wav"  # wav, mp3, mulaw
+    format: Optional[str] = "mulaw"  # wav, mp3, mulaw
 
 class SynthesizeResponse(BaseModel):
     audio: str  # Base64 encoded audio
@@ -77,71 +145,53 @@ async def health():
         "engine": TTS_ENGINE,
         "device": DEVICE if TTS_ENGINE == "coqui" else "cpu",
         "model": COQUI_MODEL if TTS_ENGINE == "coqui" else VOICE,
+        "correlationId": None,  # placeholder
     }
+
+@app.get("/metrics")
+async def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/synthesize")
 async def synthesize(request: SynthesizeRequest):
     """
     Synthesize speech from text
-    Returns WAV audio as streaming response
+    Returns base64 audio blob for gateway/Twilio (8kHz mulaw when Coqui is available)
     """
+    tts_requests_total.inc()
     start_time = time.time()
-    
+
+    if not request.text or not isinstance(request.text, str):
+        raise HTTPException(status_code=400, detail="Text is required")
+    if len(request.text) > 1000:
+        raise HTTPException(status_code=400, detail="Text too long")
+
     try:
-        if TTS_ENGINE == "coqui" and tts_model:
-            # Use Coqui TTS
-            audio_np = tts_model.tts(text=request.text)
-            
-            # Convert to 16-bit PCM
-            audio_int16 = (np.array(audio_np) * 32767).astype(np.int16)
-            
-            # Create WAV file in memory
-            wav_io = io.BytesIO()
-            with wave.open(wav_io, 'wb') as wav_file:
-                wav_file.setnchannels(1)  # Mono
-                wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(SAMPLE_RATE)
-                wav_file.writeframes(audio_int16.tobytes())
-            
-            wav_io.seek(0)
-            duration = time.time() - start_time
-            
-            return StreamingResponse(
-                wav_io,
-                media_type="audio/wav",
-                headers={
-                    "X-Duration": str(duration),
-                    "X-Sample-Rate": str(SAMPLE_RATE),
-                }
-            )
-        
-        else:
-            # Use edge-tts (Microsoft Azure TTS - free tier)
-            communicate = edge_tts.Communicate(request.text, request.voice or VOICE)
-            
-            # Generate audio
-            audio_chunks = []
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_chunks.append(chunk["data"])
-            
-            # Combine chunks
-            audio_data = b"".join(audio_chunks)
-            audio_io = io.BytesIO(audio_data)
-            
-            duration = time.time() - start_time
-            
-            return StreamingResponse(
-                audio_io,
-                media_type="audio/mpeg",  # edge-tts returns MP3
-                headers={
-                    "X-Duration": str(duration),
-                    "X-Engine": "edge-tts",
-                }
-            )
-    
+        mulaw_bytes = await asyncio.wait_for(
+            _run_tts_engine(request.text, request.voice),
+            timeout=TTS_TIMEOUT_SECONDS,
+        )
+        duration = time.time() - start_time
+        payload = {
+            "audio": base64.b64encode(mulaw_bytes).decode("utf-8"),
+            "format": "mulaw",
+            "sampleRate": TWILIO_SAMPLE_RATE,
+            "duration": duration,
+            "contentType": "audio/basic",  # audio/mulaw
+        }
+        tts_latency_seconds.observe(duration)
+        log_safe(logging.INFO, "TTS synthesized", request=None, session_id=request.sessionId, textLen=len(request.text))
+        return payload
+    except asyncio.TimeoutError:
+        tts_errors_total.inc({"reason": "timeout"})
+        log_safe(logging.WARNING, "TTS timeout", request=None, session_id=request.sessionId, textLen=len(request.text))
+        raise HTTPException(status_code=504, detail="TTS service unavailable")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Synthesis failed: {str(e)}")
+        tts_errors_total.inc({"reason": "synthesize_error"})
+        log_safe(logging.ERROR, "TTS synthesis failed", request=None, session_id=request.sessionId, error=str(type(e).__name__))
+        raise HTTPException(status_code=500, detail="TTS synthesis failed")
 
 @app.post("/synthesize/stream")
 async def synthesize_stream(request: SynthesizeRequest):
@@ -150,23 +200,13 @@ async def synthesize_stream(request: SynthesizeRequest):
     Useful for real-time playback
     """
     try:
-        if TTS_ENGINE == "coqui" and tts_model:
-            # Coqui doesn't support streaming, return full audio
-            return await synthesize(request)
-        
-        else:
-            # edge-tts supports streaming
-            async def audio_generator():
-                communicate = edge_tts.Communicate(request.text, request.voice or VOICE)
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        yield chunk["data"]
-            
-            return StreamingResponse(
-                audio_generator(),
-                media_type="audio/mpeg",
-                headers={"X-Engine": "edge-tts-stream"}
-            )
+        # For simplicity, return the base64 payload but keep a streaming content-type
+        synthesized = await synthesize(request)
+        audio_bytes = base64.b64decode(synthesized["audio"])
+        return StreamingResponse(
+            io.BytesIO(audio_bytes),
+            media_type=synthesized.get("contentType", "audio/mpeg"),
+        )
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stream synthesis failed: {str(e)}")

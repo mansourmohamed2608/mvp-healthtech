@@ -1,6 +1,7 @@
 # services/llm/app.py
 import time
-from fastapi import FastAPI, HTTPException
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
@@ -9,6 +10,9 @@ from peft import PeftModel
 from rag_store import rag_store
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
+import logging
+import os
+import asyncio
 
 # Import post-processing modules for accuracy boost
 from corrections import apply_corrections, normalize_vital_signs
@@ -17,6 +21,49 @@ from speaker_rules import SpeakerIdentifier
 
 app = FastAPI(title="LLM Service")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("llm")
+# Optional OTEL (safe no-op if deps/env missing)
+try:
+    from otel_setup import init_otel
+    init_otel("llm")
+except Exception:
+    logger.debug("OTEL init skipped for LLM")
+if not INTERNAL_SECRET:
+    raise RuntimeError("INTERNAL_SECRET must be set for LLM service")
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
+MAX_MESSAGE_LENGTH = int(os.getenv("LLM_MAX_MESSAGE_LENGTH", "4096"))
+MAX_HISTORY_TURNS = int(os.getenv("LLM_MAX_HISTORY_TURNS", "20"))
+
+
+def safe_print(*args, **_kwargs):
+    """Replace stdout prints with PHI-safe debug logs (content suppressed)."""
+    logger.debug("suppressed print", extra={"fields": len(args)})
+
+
+# Override built-in print to avoid PHI in stdout
+print = safe_print
+
+
+def log_safe(level: int, msg: str, request: Request | None = None, session_id: str | None = None, **kwargs):
+    """PHI-safe logger: only IDs/lengths/status, no raw text."""
+    extra = {
+        "correlationId": request.headers.get("x-correlation-id") if request else None,
+        "sessionId": session_id,
+    }
+    for k, v in kwargs.items():
+        if v is not None:
+            extra[k] = v
+    logger.log(level, msg, extra=extra)
+
+@app.middleware("http")
+async def internal_auth(request: Request, call_next):
+    if request.url.path.startswith("/health") or request.url.path.startswith("/metrics"):
+        return await call_next(request)
+    if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return await call_next(request)
 
 # Prometheus metrics
 first_token_latency = Histogram(
@@ -84,10 +131,28 @@ class SpeakerRoleResponse(BaseModel):
     primary_doctor: str | None = None  # SPEAKER_00, etc.
     primary_patient: str | None = None
 
+class ChatMessage(BaseModel):
+    role: str  # user | assistant | system
+    content: str
+
+class ChatRequest(BaseModel):
+    history: List[ChatMessage] = []
+    message: str
+    sessionId: str
+    intent: Optional[str] = None
+
+class ChatResponse(BaseModel):
+    reply: str
+    intent: str
+    tokens_generated: int
+    first_token_ms: float
+    total_latency_ms: float
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL_NAME = "MBZUAI/BiMediX2-8B"  # ✅ Bilingual Arabic-English medical LLM (66% accuracy, 1.6M samples, EMNLP 2025)
+MODEL_NAME = "Henrychur/MMed-Llama-3-8B"  # English base + Arabic post-processing = 70%+ accuracy
 
 print(f"Loading model {MODEL_NAME} on {DEVICE}...")
+print("⚠️ Note: Model is English-only, but Arabic support via post-processing (corrections.py, rules.py)")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
@@ -135,9 +200,34 @@ except Exception as e:
 
 print("Model loaded successfully!")
 
+def _blocking_generate(prompt: str, max_new_tokens: int = 192) -> dict:
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=768)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            pad_token_id=tokenizer.eos_token_id,
+            use_cache=True,
+        )
+    decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return {
+        "decoded": decoded,
+        "input_len": len(inputs["input_ids"][0]),
+        "output_len": len(outputs[0]),
+    }
+
+
+async def _run_llm_inference(prompt: str, max_new_tokens: int = 192) -> dict:
+    """Async helper to make mocking/testing easier."""
+    return await asyncio.to_thread(_blocking_generate, prompt, max_new_tokens)
+
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "service": "llm", "model": "Henrychur/MMed-Llama-3-8B", "correlationId": None}
 
 @app.get("/metrics")
 async def metrics():
@@ -248,86 +338,119 @@ async def correct_transcription(req: TranscriptionCorrectionRequest):
 
 
 @app.post("/infer", response_model=InferResponse)
-async def infer(req: InferRequest):
+async def infer(req: InferRequest, request: Request):
     requests_total.inc()
     start_time = time.time()
-    first_token_time = None
-
+    if not req.message or len(req.message) > MAX_MESSAGE_LENGTH:
+        raise HTTPException(status_code=400, detail="Invalid request")
     try:
-        print(f"💬 Infer request: {req.message[:50]}...")
-        
-        # Build RAG-augmented prompt
+        log_safe(logging.INFO, "Infer request", request=request, session_id=req.sessionId, messageLen=len(req.message))
+
         prompt = build_rag_prompt(req.message, req.intent)
-
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
-        # Move inputs to the same device as model
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
-        print(f"📊 Input tokens: {inputs['input_ids'].shape[1]}")
-
-        # Track first token latency using a custom stopping criteria
-        print(f"🤖 Generating response (max 128 tokens, ~1-2 minutes on CPU)...")
-        generation_start = time.time()
-
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=128,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                pad_token_id=tokenizer.eos_token_id,
-                use_cache=True
-            )
-        
-        print(f"✅ Generation complete in {time.time() - generation_start:.1f}s")
-
-        # For simplicity, estimate first token latency as ~10-20% of total generation time
-        # In production, you'd use a custom callback to track exact first token time
-        generation_time_ms = (time.time() - generation_start) * 1000
-        estimated_first_token_ms = generation_time_ms * 0.15  # Rough estimate
-
-        decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-        # Extract intent and reply
         intent = classify_intent(req.message)
-        reply = decoded.strip().split("المساعد:")[-1].strip() if "المساعد:" in decoded else decoded.strip()
-        
-        # ✨ POST-PROCESSING: Apply medical corrections to SOAP notes (+3-5% accuracy)
+
+        generation_start = time.time()
+        try:
+            result = await asyncio.wait_for(
+                _run_llm_inference(prompt, max_new_tokens=128),
+                timeout=LLM_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log_safe(logging.WARNING, "LLM timeout", request=request, session_id=req.sessionId, intent=intent)
+            raise HTTPException(status_code=504, detail="LLM service unavailable")
+
+        generation_time = time.time() - generation_start
+        decoded = result["decoded"]
+        reply = decoded.split("المساعد:")[-1].strip()
+
         reply, corrections_count = apply_corrections(reply, dialect="egypt")
-        print(f"✅ Applied {corrections_count} medical corrections to SOAP note")
-        
-        # ✨ POST-PROCESSING: Normalize vital signs and abbreviations
-        reply = normalize_vital_signs(reply)
-        reply = normalize_medical_abbreviations(reply)
-        
-        # ✨ POST-PROCESSING: Validate SOAP structure
-        validator = SOAPValidator()
-        structure = validator.validate_soap_structure(reply)
-        if not structure["has_all_sections"]:
-            print(f"⚠️ SOAP validation warnings: {structure['warnings']}")
-        else:
-            print(f"✅ SOAP structure validated: all sections present")
-        
-        # Calculate metrics
+        reply = normalize_vital_signs(normalize_medical_abbreviations(reply))
+
         total_time_ms = (time.time() - start_time) * 1000
-        num_tokens = len(outputs[0]) - len(inputs['input_ids'][0])  # Generated tokens only
-        tps = (num_tokens / (generation_time_ms / 1000)) if generation_time_ms > 0 else 0
-
-        # Record metrics
-        first_token_latency.observe(estimated_first_token_ms)
+        tokens_generated = result["output_len"] - result["input_len"]
+        tokens_per_second.observe(tokens_generated / max(generation_time, 1e-6))
         complete_response_duration.observe(total_time_ms)
-        tokens_per_second.observe(tps)
+        est_first_ms = generation_time * 0.15 * 1000
+        first_token_latency.observe(est_first_ms)
 
-        # Track slow responses (>1.5s)
         if total_time_ms > 1500:
             slow_responses.inc()
-            print(f"⚠️ Slow response: {total_time_ms:.0f}ms (first token: ~{estimated_first_token_ms:.0f}ms, {num_tokens} tokens, {tps:.1f} tok/s)")
-        else:
-            print(f"✅ Fast response: {total_time_ms:.0f}ms (first token: ~{estimated_first_token_ms:.0f}ms, {num_tokens} tokens, {tps:.1f} tok/s)")
+        log_safe(logging.INFO, "Infer reply generated", request=request, session_id=req.sessionId, tokens=tokens_generated, totalMs=int(total_time_ms))
 
         return {"intent": intent, "reply": reply}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        log_safe(logging.ERROR, "LLM inference failed", request=request, session_id=req.sessionId, error=str(type(e).__name__))
+        raise HTTPException(status_code=500, detail="LLM inference failed")
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest, request: Request):
+    """
+    Conversation-friendly endpoint that accepts history and current message.
+    """
+    requests_total.inc()
+    overall_start = time.time()
+    if not req.message or len(req.message) > MAX_MESSAGE_LENGTH:
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    history = req.history or []
+    if len(history) > MAX_HISTORY_TURNS:
+        history = history[-MAX_HISTORY_TURNS:]
+
+    intent = req.intent or classify_intent(req.message)
+    log_safe(logging.INFO, "Chat request", request=request, session_id=req.sessionId, historyTurns=len(history), messageLen=len(req.message))
+
+    history_lines = [f"{turn.role}: {turn.content}" for turn in history]
+    history_text = "\n".join(history_lines)
+
+    prompt_parts = [
+        "أنت مساعد طبي يتحدث العربية. كن مهذباً ودقيقاً في الإجابات.",
+    ]
+    if history_text:
+        prompt_parts.append("السياق السابق:")
+        prompt_parts.append(history_text)
+    prompt_parts.append(f"المستخدم: {req.message}")
+    prompt_parts.append("المساعد:")
+    prompt = "\n".join(prompt_parts)
+
+    try:
+        generation_start = time.time()
+        try:
+            result = await asyncio.wait_for(
+                _run_llm_inference(prompt, max_new_tokens=192),
+                timeout=LLM_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log_safe(logging.WARNING, "LLM timeout", request=request, session_id=req.sessionId, intent=intent)
+            raise HTTPException(status_code=504, detail="LLM service unavailable")
+
+        generation_time = time.time() - generation_start
+        decoded = result["decoded"]
+        reply = decoded.split("المساعد:")[-1].strip()
+
+        reply, corrections_count = apply_corrections(reply, dialect="egypt")
+        reply = normalize_vital_signs(normalize_medical_abbreviations(reply))
+
+        total_time_ms = (time.time() - overall_start) * 1000
+        tokens_generated = result["output_len"] - result["input_len"]
+        tokens_per_second.observe(tokens_generated / max(generation_time, 1e-6))
+        complete_response_duration.observe(total_time_ms)
+
+        log_safe(logging.INFO, "Chat reply generated", request=request, session_id=req.sessionId, tokens=tokens_generated, totalMs=int(total_time_ms))
+        return ChatResponse(
+            reply=reply,
+            intent=intent,
+            tokens_generated=tokens_generated,
+            first_token_ms=generation_time * 0.15 * 1000,
+            total_latency_ms=total_time_ms,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_safe(logging.ERROR, "Chat inference failed", request=request, session_id=req.sessionId, error=str(type(e).__name__))
+        raise HTTPException(status_code=500, detail="LLM inference failed")
 
 
 def build_rag_prompt(message: str, intent: str = "general") -> str:

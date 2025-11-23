@@ -3,12 +3,13 @@ import { Controller, Get, Post, UseGuards, Req, Res, Logger, HttpCode, HttpStatu
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import type { Request, Response } from 'express';
+import { AuditService } from '../audit/audit.service';
 
 @Controller('auth')
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
 
-  constructor(private readonly authService: AuthService) {}
+  constructor(private readonly authService: AuthService, private readonly auditService: AuditService) {}
 
   /**
    * JWT Authentication - Login endpoint
@@ -24,6 +25,13 @@ export class AuthController {
 
     const token = await this.authService.generateToken(userId, metadata);
     this.logger.log(`JWT token generated for user: ${userId}`);
+    await this.auditService.log({
+      actorId: userId,
+      action: 'LOGIN',
+      resourceType: 'user',
+      resourceId: userId,
+      metadata: { method: 'password', roles: metadata?.roles || [] },
+    });
     
     return token;
   }
@@ -53,6 +61,13 @@ export class AuthController {
         email: user.email,
         name: user.displayName,
         provider: user.provider,
+      });
+      await this.auditService.log({
+        actorId: user.oidcId,
+        action: 'LOGIN',
+        resourceType: 'user',
+        resourceId: user.oidcId,
+        metadata: { method: 'oidc', provider: user.provider, roles: user.roles || [] },
       });
 
       // In production, redirect to frontend with token

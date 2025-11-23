@@ -1,6 +1,10 @@
 // gateway/src/asr/asr.controller.ts
-import { Controller, Post, Body, Logger } from '@nestjs/common';
+import { Controller, Post, Body, Logger, UseGuards, Req } from '@nestjs/common';
 import { AsrService, TranscriptionResponse, StreamResponse } from './asr.service';
+import { JwtAuthGuard } from '../auth/jwt.guard';
+import { wrapError, camelResponse } from '../utils/http-utils';
+import { Request } from 'express';
+import { MetricsController } from '../metrics/metrics.controller';
 
 class TranscribeDto {
   audio: string;
@@ -14,15 +18,18 @@ class StreamDto {
   dialect?: string;
 }
 
+@UseGuards(JwtAuthGuard)
 @Controller('asr')
 export class AsrController {
   private readonly logger = new Logger(AsrController.name);
+  private readonly asrLatency = MetricsController.getAsrLatency();
 
   constructor(private readonly asrService: AsrService) {}
 
   @Post('transcribe')
-  async transcribe(@Body() dto: TranscribeDto): Promise<TranscriptionResponse> {
+  async transcribe(@Body() dto: TranscribeDto, @Req() req: Request): Promise<TranscriptionResponse> {
     this.logger.log(`Transcribe request: callSid=${dto.callSid}, dialect=${dto.dialect}`);
+    const start = process.hrtime();
     try {
       // Pass true to enable speaker role identification (default)
       const result = await this.asrService.transcribe(
@@ -30,22 +37,30 @@ export class AsrController {
         dto.callSid || `call-${Date.now()}`,
         true  // Enable speaker role detection
       );
-      return result;
+      this.asrLatency.observe({ endpoint: 'transcribe', status: 'ok' }, this.durationSeconds(start));
+      return camelResponse(result);
     } catch (error) {
-      this.logger.error('ASR transcribe error:', error);
-      throw error;
+      this.asrLatency.observe({ endpoint: 'transcribe', status: 'error' }, this.durationSeconds(start));
+      wrapError(error, req);
     }
   }
 
   @Post('stream')
-  async stream(@Body() dto: StreamDto): Promise<StreamResponse> {
-    this.logger.log(`Stream request: callSid=${dto.callSid}`);
+  async stream(@Body() dto: StreamDto, @Req() req: Request): Promise<StreamResponse> {
+    this.logger.log(`Stream request (legacy alias of /transcribe): callSid=${dto.callSid}`);
+    const start = process.hrtime();
     try {
       const result = await this.asrService.stream(dto.audio, dto.callSid);
-      return result;
+      this.asrLatency.observe({ endpoint: 'stream', status: 'ok' }, this.durationSeconds(start));
+      return camelResponse(result);
     } catch (error) {
-      this.logger.error('ASR stream error:', error);
-      throw error;
+      this.asrLatency.observe({ endpoint: 'stream', status: 'error' }, this.durationSeconds(start));
+      wrapError(error, req);
     }
+  }
+
+  private durationSeconds(start: [number, number]) {
+    const diff = process.hrtime(start);
+    return diff[0] + diff[1] / 1e9;
   }
 }

@@ -120,8 +120,6 @@ import api from '@utils/api';const Demo = () => {
     const length = audioBuffer.length * numberOfChannels * 2;
     const buffer = new ArrayBuffer(44 + length);
     const view = new DataView(buffer);
-    const channels: Float32Array[] = [];
-    let offset = 0;
     let pos = 0;
 
     // Write WAV header

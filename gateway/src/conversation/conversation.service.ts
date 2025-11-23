@@ -6,6 +6,10 @@
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { createClient, RedisClientType } from 'redis';
+import { LlmService } from '../llm/llm.service';
+import { TtsService } from '../tts/tts.service';
+import { AsrService } from '../asr/asr.service';
+import { MetricsController } from '../metrics/metrics.controller';
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -26,13 +30,21 @@ export class ConversationService {
   private readonly logger = new Logger(ConversationService.name);
   private readonly client: RedisClientType | null = null;
   private readonly inMemoryStore = new Map<string, Message[]>();
+  private readonly inflight = new Map<string, number>();
+  private readonly asrMetric = MetricsController.getAsrLatency();
+  private readonly llmMetric = MetricsController.getLlmLatency();
+  private readonly ttsMetric = MetricsController.getTtsLatency();
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_DELAY_MS = 1000;
   private readonly MAX_MESSAGES = 20; // Keep last 20 messages
   private readonly CONVERSATION_TTL = 7200; // 2 hours
   private redisAvailable = false;
 
-  constructor() {
+  constructor(
+    private readonly llmService: LlmService,
+    private readonly ttsService: TtsService,
+    private readonly asrService: AsrService,
+  ) {
     // Try to connect to Redis, but don't block if it fails
     try {
       this.client = createClient({
@@ -271,80 +283,61 @@ export class ConversationService {
     audio: string; // base64 encoded
     format: string; // 'mulaw' or 'wav'
     sampleRate: number;
+    user?: any;
   }): Promise<{
     transcript: string;
     response: string;
     audioResponse: string;
   }> {
+    const current = this.inflight.get(input.callSid) || 0;
+    if (current >= 1) {
+      this.logger.warn(`Backpressure: dropping chunk for ${input.callSid}`);
+      return { transcript: '', response: '', audioResponse: '' };
+    }
+    this.inflight.set(input.callSid, current + 1);
     try {
-      // 1. Transcribe audio using ASR service
-      const asrUrl = `${process.env.ASR_SERVICE_URL || 'http://localhost:5000'}/transcribe`;
-      const asrResponse = await fetch(asrUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audio: input.audio,
-          callSid: input.callSid,
-          auto_detect: true,
-        }),
-      });
-
-      if (!asrResponse.ok) {
-        throw new Error(`ASR service error: ${asrResponse.statusText}`);
-      }
-
-      const { text: transcript } = await asrResponse.json();
+      const asrStart = process.hrtime();
+      // 1. Transcribe audio using ASR service (with timeout/error handling)
+      const { text: transcript } = await this.asrService.transcribe(
+        input.audio,
+        input.callSid,
+        true,
+      );
+      this.asrMetric.observe({ endpoint: 'transcribe', status: 'ok' }, this.durationSeconds(asrStart));
 
       if (!transcript || transcript.trim() === '') {
         // No speech detected, return empty
         return { transcript: '', response: '', audioResponse: '' };
       }
 
-      this.logger.log(`Transcribed (${input.callSid}): ${transcript}`);
+      // Avoid logging PHI; only log lengths
+      this.logger.log(`Transcribed (${input.callSid}): ${transcript.length} chars`);
 
       // Save user message to conversation
       await this.appendMessage(input.callSid, 'user', transcript);
 
       // 2. Get LLM response
+      const llmStart = process.hrtime();
       const history = await this.getHistory(input.callSid);
-      const llmUrl = `${process.env.LLM_SERVICE_URL || 'http://localhost:5001'}/chat`;
-      const llmResponse = await fetch(llmUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: transcript,
-          history: history.slice(-10), // Last 10 messages for context
-          session_id: input.callSid,
-        }),
-      });
-
-      if (!llmResponse.ok) {
-        throw new Error(`LLM service error: ${llmResponse.statusText}`);
-      }
-
-      const { response } = await llmResponse.json();
-      this.logger.log(`LLM response (${input.callSid}): ${response}`);
+      const chatPayload = {
+        message: transcript,
+        history: history.map((m) => ({ role: m.role, content: m.content })),
+        sessionId: input.callSid,
+      };
+      const llmResult = await this.llmService.chat(chatPayload);
+      const response = llmResult.reply || '...';
+      this.llmMetric.observe({ endpoint: 'chat', status: 'ok' }, this.durationSeconds(llmStart));
+      this.logger.log(`LLM response (${input.callSid}) length=${response?.length ?? 0}`);
 
       // Save assistant message to conversation
       await this.appendMessage(input.callSid, 'assistant', response);
 
       // 3. Synthesize voice response using TTS
-      const ttsUrl = `${process.env.TTS_SERVICE_URL || 'http://localhost:5002'}/synthesize`;
-      const ttsResponse = await fetch(ttsUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: response,
-          voice: 'ar-EG-SalmaNeural', // Arabic voice
-          format: 'mulaw', // Twilio compatible format
-        }),
-      });
-
-      if (!ttsResponse.ok) {
-        throw new Error(`TTS service error: ${ttsResponse.statusText}`);
-      }
-
-      const { audio: audioResponse } = await ttsResponse.json();
+      const ttsStart = process.hrtime();
+      const ttsResult = await this.ttsService.synthesize(response, input.callSid);
+      // TTS returns base64 mulaw (8k) when available; Twilio media streams expect mulaw payloads.
+      const audioResponse = ttsResult.audioBase64;
+      this.ttsMetric.observe({ endpoint: 'synthesize', status: 'ok' }, this.durationSeconds(ttsStart));
 
       return {
         transcript,
@@ -353,7 +346,15 @@ export class ConversationService {
       };
     } catch (error) {
       this.logger.error('Error processing voice input', error);
-      throw error;
+      this.asrMetric.observe({ endpoint: 'transcribe', status: 'error' }, 0);
+      return {
+        transcript: '',
+        response: 'عذراً، حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً.',
+        audioResponse: '',
+      };
+    } finally {
+      const now = this.inflight.get(input.callSid) || 1;
+      this.inflight.set(input.callSid, Math.max(0, now - 1));
     }
   }
 
@@ -362,6 +363,11 @@ export class ConversationService {
    */
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private durationSeconds(start: [number, number]) {
+    const diff = process.hrtime(start);
+    return diff[0] + diff[1] / 1e9;
   }
 
   /**
@@ -374,4 +380,3 @@ export class ConversationService {
     }
   }
 }
-

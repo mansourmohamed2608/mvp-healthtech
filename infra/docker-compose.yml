@@ -9,8 +9,8 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3000
-      - JWT_SECRET=change_me
-      - TWILIO_AUTH_TOKEN=change_me
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:?set TWILIO_AUTH_TOKEN}
       - ASR_SERVICE_URL=http://asr:5000
       - LLM_SERVICE_URL=http://llm:5001
       - TTS_SERVICE_URL=http://tts:5002
@@ -30,17 +30,15 @@ services:
       - redis
 
   frontend-vite:
-    build: ../frontend-vite
-    working_dir: /app
-    command: sh -lc "pnpm install && pnpm dev --host 0.0.0.0"
-    ports:
-      - "5173:5173"
+    build:
+      context: ../frontend-vite
+      dockerfile: Dockerfile
+    depends_on:
+      - gateway
     environment:
-      - NODE_ENV=development
-      - VITE_API_URL=http://localhost:3001
-    volumes:
-      - ../frontend-vite:/app
-      - frontend_vite_node_modules:/app/node_modules
+      - VITE_API_URL=http://gateway:3000
+    ports:
+      - "5173:80"
 
   asr:
     build: ../services/asr
@@ -87,6 +85,9 @@ services:
     build: ../services/soap
     ports:
       - "5003:5003"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/healthtech
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
     volumes:
       - ../services/soap:/app
 
@@ -95,9 +96,13 @@ services:
     ports:
       - "5004:5004"
     environment:
-      - FHIR_BASE_URL=${FHIR_BASE_URL:-https://fhir.example.com}
-      - FHIR_CLIENT_ID=${FHIR_CLIENT_ID:-}
-      - FHIR_CLIENT_SECRET=${FHIR_CLIENT_SECRET:-}
+      - FHIR_BASE_URL=${FHIR_BASE_URL:?set FHIR_BASE_URL}
+      - FHIR_CLIENT_ID=${FHIR_CLIENT_ID:?set FHIR_CLIENT_ID}
+      - FHIR_CLIENT_SECRET=${FHIR_CLIENT_SECRET:?set FHIR_CLIENT_SECRET}
+      - FHIR_BEARER_TOKEN=${FHIR_BEARER_TOKEN:-}
+      - FHIR_BASIC_AUTH_USER=${FHIR_BASIC_AUTH_USER:-}
+      - FHIR_BASIC_AUTH_PASSWORD=${FHIR_BASIC_AUTH_PASSWORD:-}
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
     volumes:
       - ../services/fhir:/app
 
@@ -109,6 +114,7 @@ services:
     environment:
       - LLM_ENDPOINT=http://llm:5001/infer
       - TRANSFORMERS_CACHE=/cache
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
     volumes:
       - ../services/llm:/app
       - huggingface_cache:/cache
@@ -123,7 +129,11 @@ services:
   postgres:
     image: postgres:16
     environment:
-     - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=healthtech
+    volumes:
+      - ../infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
 

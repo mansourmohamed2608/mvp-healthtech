@@ -1,0 +1,121 @@
+ASR vs Reference comparison report
+
+Reference [1]: السلام عليكم يا دكتور وعليكم السلام ازايك عاملة ايه
+ASR match  [1]: السلام عليكم يا دكتور.
+  Similarity: 0.658
+  Suggested mappings (ASR -> REF, score):
+    "دكتور." -> "دكتور"  (0.92)
+
+Reference [2]: والله مش حاسة اني كويسة اللثة عندي بقت حمرا ومتهيجة ولما بغسل سناني اللثة بتنزف
+ASR match  [2]: والله لستُ على ما يرام. اللثة عندي أصبحت حمراء ومتهيجة، وعندما أغسل أسناني تنزف.
+  Similarity: 0.915
+  Suggested mappings (ASR -> REF, score):
+    "أصبحت" -> "بقت"  (0.58)
+    "أسناني" -> "سناني"  (0.77)
+
+Reference [3]: طيب خلينا نشوف من كلامك اه واضح ان عندك التهاب في اللثة وممكن كمان يكون في جيوب لثوية
+ASR match  [3]: من كلامك يبدو أن لديك التهاباً في اللثة وربما جيوباً لثوية.
+  Similarity: 0.939
+  Suggested mappings (ASR -> REF, score):
+    "التهاباً" -> "التهاب"  (0.88)
+
+Reference [4]: وده يعني ان في مسافة ما بين اللثة والاسنان ودي بتتكون بسبب تراكم الجير والجراثيم على مرور الوقت
+ASR match  [4]: هذا يعني وجود فراغ بين اللثة والأسنان ناجم عن تراكم الجير والبكتيريا مع مرور الوقت.
+  Similarity: 0.915
+  Suggested mappings (ASR -> REF, score):
+    "البكتيريا" -> "الجراثيم"  (0.60)
+
+Reference [5]: يعني طيب حسيتي ريحة فم مش كويسة او حساسية في الاسنان
+ASR match  [5]: هل شعرتِ برائحة فم كريهة أو بحساسية في الأسنان؟
+  Similarity: 0.870
+  Suggested mappings (ASR -> REF, score):
+    "رائحة" -> "ريحة"  (0.60)
+
+Reference [6]: ايوة ريحة الفم بقت وحشة وحاسة ان في بعض الاسنان بقت حساسة اكتر من الطبيعي
+ASR match  [6]: نعم، رائحة الفم أصبحت كريهة، وأشعر أن بعض الأسنان أصبحت أكثر حساسية من الطبيعي.
+  Similarity: 0.920
+  Suggested mappings (ASR -> REF, score):
+    "أشعر" -> "حاسة"  (0.62)
+
+Reference [7]: طيب ده بيدل على ان الحالة بقت متقدمة شوية
+ASR match  [7]: هذا يدل على أن الحالة متقدمة بعض الشيء.
+  Similarity: 0.912
+  No strong token suggestions.
+
+Reference [8]: طيب بتغسلي اسنانك ثلاث مرات في اليوم وبتستخدمي الخيط الطبي
+ASR match  [8]: هل تنظفين أسنانك ثلاث مرات في اليوم وتستخدمين الخيط؟
+  Similarity: 0.797
+  Suggested mappings (ASR -> REF, score):
+    "تنظفين" -> "بتغسلي"  (0.55)
+
+Reference [9]: بغسل اسناني بس مش دايما ومش بستخدم الخيط
+ASR match  [9]: أغسل أسناني لكن ليس دائماً، ولا أستخدم الخيط.
+  Similarity: 0.940
+  Suggested mappings (ASR -> REF, score):
+    "أغسل" -> "بغسل"  (0.66)
+
+Reference [10]: طيب احنا كده لازم نبتدي بخطة علاجية اول حاجة هنعملها هي تنظيف عميق للاسنان ونشيل الجير المتراكم من تحت اللثة
+ASR match  [10]: حسناً، يجب أن نبدأ خطة علاجية. أول شيء سنفعله هو تنظيف عميق للأسنان وإزالة الجير المتراكم تحت اللثة.
+  Similarity: 0.945
+  No strong token suggestions.
+
+Reference [11]: وبعد كده هديك تعليمات محددة لتنظيف اسنانك في البيت زي ان احنا هنستخدم الفرشاة ثلاث مرات يوميا ونستخدم الخيط الطبي ونستخدم معاهم مضمضة
+ASR match  [11]: بعد ذلك سأعطيك تعليمات محددة للعناية في المنزل: استخدام الفرشاة ثلاث مرات يومياً، واستخدام الخيط، والمضمضة.
+  Similarity: 0.932
+  No strong token suggestions.
+
+Reference [12]: ما الاحساس بعد تنظيف الجير ده هيوجع
+ASR match  [12]: الإحساس بعد تنظيف الجير قد يسبب ألمًا.
+  Similarity: 0.890
+  Suggested mappings (ASR -> REF, score):
+    "ألمًا." -> "هيوجع"  (0.55)
+
+Reference [13]: والله احنا ممكن نحس ببعض الحساسية شوية او الم خفيف بعد الجلسة ولكن ده بشكل مؤقت وممكن ناخد مسكنات ده لو احتاجنا اليه
+ASR match  [13]: قد تحدث حساسية أو ألم خفيف بعد الجلسة، لكنه مؤقت. يمكن أخذ مسكنات إذا لزم الأمر.
+  Similarity: 0.940
+  No strong token suggestions.
+
+Reference [14]: ومع الالتزام بنصايحي الحالة بإذن الله تتحسن
+ASR match  [14]: مع الالتزام بالنصائح الحالة بإذن الله ستتحسن.
+  Similarity: 0.985
+  No strong token suggestions.
+
+Reference [15]: طيب وهل في احتمال ان الحالة دي ترجع تاني لو ما اتبعتش التعليمات
+ASR match  [15]: هل هناك احتمال أن تعود الحالة إذا لم ألتزم؟
+  Similarity: 0.896
+  Suggested mappings (ASR -> REF, score):
+    "ألتزم؟" -> "اتبعتش"  (0.54)
+
+Reference [16]: اكيد لو ما حافظتيش على نظافة اسنانك بشكل كويس ممكن الجير يرجع يتراكم تاني وتستمر المشكلة عشان كده من المهم انك تتابعي معايا بشكل دوري
+ASR match  [16]: بالتأكيد، إذا لم تحافظي على نظافة أسنانك قد يتراكم الجير مرة أخرى وتستمر المشكلة. لذلك من المهم المتابعة الدورية.
+  Similarity: 0.960
+  No strong token suggestions.
+
+Reference [17]: تمام فهمت انا هبدأ اعمل كده من دلوقتي
+ASR match  [17]: تمام، فهمت. سأبدأ بهذا الآن.
+  Similarity: 0.980
+  No strong token suggestions.
+
+Reference [18]: حلو قوي هنعمل موعد للمتابعة ونشوف تحسن الحالة ولو احتجتي اي حاجة او حسيتي باي تغير ما تتردديش في الاتصال بنا
+ASR match  [18]: سنحدد موعداً للمتابعة لنرى التحسن، وإذا احتجتِ أي شيء أو شعرتِ بأي تغيير تواصلي معنا.
+  Similarity: 0.960
+  No strong token suggestions.
+
+Reference [19]: شكرا يا دكتور على التوضيح والنصايح العفو ده واجبنا وسلامتك الف سلامة وتكوني بصحة دايما وسلامة
+ASR match  [19]: مريض: شكراً لكِ على التوضيح والنصائح.
+  Similarity: 0.720
+  Suggested mappings (ASR -> REF, score):
+    "مريض:" -> "شكرا يا دكتور"  (0.40)
+
+
+Summary suggestions for CONFUSION_MAP (high-confidence):
+  "أغسل" -> "بغسل"
+  "أسناني" -> "سناني"
+  "أشعر" -> "حاسة"
+  "رائحة" -> "ريحة"
+  "أصبحت" -> "بقت"
+
+Notes:
+ - Many differences are dialectal (e.g., "ازايك" vs "كيف حالك"), not strictly errors.
+ - Punctuation in ASR (insertion of question mark / dot) is not critical but may change downstream sentence splitting.
+ - Suggested mappings are conservative; review before adding to CONFUSION_MAP to avoid forcing dialect-neutralization.

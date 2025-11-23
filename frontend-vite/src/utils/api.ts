@@ -1,16 +1,18 @@
 // API Client for HealthTech Backend Services
 // Supports both Gateway and Direct Service modes
 
-const USE_DIRECT_SERVICES = import.meta.env.VITE_USE_DIRECT_SERVICES === 'true';
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// Force all calls through the gateway to keep a single contract
+const envVars = (import.meta as any)?.env || {};
+const USE_DIRECT_SERVICES = false;
+const API_BASE_URL = envVars.VITE_API_URL || 'http://localhost:3000';
 
 // Direct service URLs (when not using gateway)
 const SERVICE_URLS = {
-  asr: import.meta.env.VITE_ASR_URL || 'http://localhost:5000',
-  llm: import.meta.env.VITE_LLM_URL || 'http://localhost:5001',
-  tts: import.meta.env.VITE_TTS_URL || 'http://localhost:5002',
-  soap: import.meta.env.VITE_SOAP_URL || 'http://localhost:5003',
-  fhir: import.meta.env.VITE_FHIR_URL || 'http://localhost:5004',
+  asr: envVars.VITE_ASR_URL || 'http://localhost:5000',
+  llm: envVars.VITE_LLM_URL || 'http://localhost:5001',
+  tts: envVars.VITE_TTS_URL || 'http://localhost:5002',
+  soap: envVars.VITE_SOAP_URL || 'http://localhost:5003',
+  fhir: envVars.VITE_FHIR_URL || 'http://localhost:5004',
 };
 
 class ApiClient {
@@ -34,6 +36,13 @@ class ApiClient {
     options?: RequestInit
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
+    const handleError = async (response: Response) => {
+      const errorData = await response.json().catch(() => ({}));
+      const err: any = new Error(errorData.message || `HTTP error! status: ${response.status}`);
+      err.code = errorData.code;
+      err.correlationId = errorData.correlationId;
+      throw err;
+    };
 
     try {
       const response = await fetch(url, {
@@ -45,13 +54,11 @@ class ApiClient {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+        await handleError(response);
       }
 
       return await response.json();
     } catch (error) {
-      console.error('API request failed:', error);
       throw error;
     }
   }
@@ -63,6 +70,13 @@ class ApiClient {
   ): Promise<T> {
     const baseUrl = this.getServiceUrl(service);
     const url = `${baseUrl}${endpoint}`;
+    const handleError = async (response: Response) => {
+      const errorData = await response.json().catch(() => ({}));
+      const err: any = new Error(errorData.message || `HTTP error! status: ${response.status}`);
+      err.code = errorData.code;
+      err.correlationId = errorData.correlationId;
+      throw err;
+    };
 
     try {
       const response = await fetch(url, {
@@ -74,55 +88,18 @@ class ApiClient {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+        await handleError(response);
       }
 
       return await response.json();
     } catch (error) {
-      console.error(`API request failed for ${service}:`, error);
       throw error;
     }
   }
 
   // ASR (Automatic Speech Recognition) Service
-  async transcribeAudio(audioData: string, callSid?: string, dialect?: string) {
-    const endpoint = this.useDirect ? '/transcribe' : '/asr/transcribe';
-    const service = 'asr';
-
-    if (this.useDirect) {
-      return this.serviceRequest<{
-        text: string;
-        dialect?: string;
-        auto_detected?: boolean;
-        segments?: Array<{
-          text: string;
-          start: number;
-          end: number;
-          speaker?: string;
-        }>;
-        speakers?: string[];
-        roles?: Array<{
-          speaker_id: string;
-          role: string;
-          confidence: number;
-          reasoning: string;
-        }>;
-        primary_doctor?: string;
-        primary_patient?: string;
-        duration?: number;
-        processing_time?: number;
-        rtf?: number;
-      }>(
-        service,
-        endpoint,
-        {
-          method: 'POST',
-          body: JSON.stringify({ audio: audioData, callSid, dialect }),
-        }
-      );
-    }
-
+  async transcribeAudio(audioData: any, callSid?: string, dialect?: string) {
+    const endpoint = '/asr/transcribe';
     return this.request<{
       text: string;
       dialect?: string;
@@ -152,20 +129,7 @@ class ApiClient {
   }
 
   async streamAudio(audioData: string, callSid: string, dialect?: string) {
-    const endpoint = this.useDirect ? '/stream' : '/asr/stream';
-    const service = 'asr';
-
-    if (this.useDirect) {
-      return this.serviceRequest<{ partial?: string; final?: string }>(
-        service,
-        endpoint,
-        {
-          method: 'POST',
-          body: JSON.stringify({ audio: audioData, callSid, dialect }),
-        }
-      );
-    }
-
+    const endpoint = '/asr/stream';
     return this.request<{ partial?: string; final?: string }>(endpoint, {
       method: 'POST',
       body: JSON.stringify({ audio: audioData, callSid, dialect }),
@@ -174,20 +138,7 @@ class ApiClient {
 
   // LLM (Language Model) Service
   async inferMessage(message: string, sessionId: string, intent?: string) {
-    const endpoint = this.useDirect ? '/infer' : '/llm/infer';
-    const service = 'llm';
-
-    if (this.useDirect) {
-      return this.serviceRequest<{ intent: string; reply: string }>(
-        service,
-        endpoint,
-        {
-          method: 'POST',
-          body: JSON.stringify({ message, sessionId, intent: intent || 'general' }),
-        }
-      );
-    }
-
+    const endpoint = '/llm/infer';
     return this.request<{ intent: string; reply: string }>(endpoint, {
       method: 'POST',
       body: JSON.stringify({ message, sessionId, intent: intent || 'general' }),
@@ -242,6 +193,9 @@ class ApiClient {
     transcript: string;
     sessionId?: string;
     patientContext?: any;
+    patientId?: string;
+    practitionerId?: string;
+    encounterId?: string;
   }) {
     const endpoint = '/soap/generate';
     const service = 'soap';
@@ -273,19 +227,26 @@ class ApiClient {
     });
   }
 
-  async getSOAPNotes() {
-    const endpoint = '/soap/notes';
-    const service = 'soap';
-
-    if (this.useDirect) {
-      return this.serviceRequest<Array<any>>(service, '/notes', {
-        method: 'GET',
-      });
-    }
-
-    return this.request<Array<any>>(endpoint, {
+  async getSOAPNotes(status?: string, clinicianId?: string) {
+    const params = new URLSearchParams();
+    if (status) params.append('status', status);
+    if (clinicianId) params.append('clinicianId', clinicianId);
+    const endpoint = `/soap/notes${params.toString() ? `?${params}` : ''}`;
+    return this.request<{ notes: any[] }>(endpoint, {
       method: 'GET',
     });
+  }
+
+  async getSOAPNote(id: string) {
+    return this.request<any>(`/soap/notes/${id}`, { method: 'GET' });
+  }
+
+  async approveSOAPNote(id: string) {
+    return this.request<any>(`/soap/notes/${id}/approve`, { method: 'PATCH' });
+  }
+
+  async rejectSOAPNote(id: string) {
+    return this.request<any>(`/soap/notes/${id}/reject`, { method: 'PATCH' });
   }
 
   // FHIR Integration Service
@@ -490,4 +451,3 @@ class ApiClient {
 
 export const api = new ApiClient(API_BASE_URL, USE_DIRECT_SERVICES);
 export default api;
-

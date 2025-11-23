@@ -61,6 +61,36 @@ const twilioCallsTotal = new Counter({
   registers: [registry],
 });
 
+const soapLatency = new Histogram({
+  name: 'soap_latency_seconds',
+  help: 'SOAP service latency in seconds',
+  labelNames: ['endpoint', 'status'],
+  buckets: [0.1, 0.5, 1, 2, 5, 10],
+  registers: [registry],
+});
+
+const fhirLatency = new Histogram({
+  name: 'fhir_latency_seconds',
+  help: 'FHIR write latency in seconds',
+  labelNames: ['endpoint', 'status'],
+  buckets: [0.1, 0.5, 1, 2, 5, 10],
+  registers: [registry],
+});
+
+const soapErrors = new Counter({
+  name: 'soap_errors_total',
+  help: 'Total SOAP errors',
+  labelNames: ['endpoint'],
+  registers: [registry],
+});
+
+const fhirErrors = new Counter({
+  name: 'fhir_errors_total',
+  help: 'Total FHIR errors',
+  labelNames: ['endpoint'],
+  registers: [registry],
+});
+
 @Controller('metrics')
 export class MetricsController {
   @Get()
@@ -92,5 +122,20 @@ export class MetricsController {
   static getTwilioCallsTotal() {
     return twilioCallsTotal;
   }
-}
 
+  static getSoapLatency() {
+    return soapLatency;
+  }
+
+  static getFhirLatency() {
+    return fhirLatency;
+  }
+
+  static getSoapErrors() {
+    return soapErrors;
+  }
+
+  static getFhirErrors() {
+    return fhirErrors;
+  }
+}

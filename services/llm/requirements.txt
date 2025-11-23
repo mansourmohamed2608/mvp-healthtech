@@ -7,13 +7,12 @@ safetensors~=0.4
 
 # ---- Core ML stack ----
 # GPU / Kaggle (CUDA 12.1 wheels)
-# If you're on Kaggle or a CUDA 12.1 machine, keep these two lines:
+# If you're on CUDA 12.1, keep this line; otherwise install CPU torch
 torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
 # (Transformers will pull tokenizers; pin to a stable line)
 transformers~=4.44
 accelerate~=0.34
 sentencepiece~=0.2
-bitsandbytes~=0.43  # Linux-only; OK on Kaggle
 
 # CPU-only alternative:
 # torch==2.3.1

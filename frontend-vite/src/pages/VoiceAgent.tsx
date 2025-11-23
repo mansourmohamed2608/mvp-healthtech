@@ -53,7 +53,6 @@ const VoiceAgent = () => {
 
         const twilioDevice = new Device(token, {
           codecPreferences: [Call.Codec.Opus, Call.Codec.PCMU],
-          enableRingingState: true,
           edge: 'ashburn',
         });
 

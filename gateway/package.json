@@ -44,6 +44,7 @@
     "passport-jwt": "^4.0.1",
     "passport-openidconnect": "^0.1.2",
     "pino": "^10.0.0",
+    "pg": "^8.13.1",
     "prom-client": "^15.1.3",
     "redis": "^5.9.0",
     "reflect-metadata": "^0.2.2",
@@ -91,6 +92,16 @@
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
+    "setupFilesAfterEnv": [
+      "<rootDir>/../jest.setup.ts"
+    ],
+    "moduleNameMapper": {
+      "^pg$": "<rootDir>/../__mocks__/pg.ts",
+      "^uuid$": "<rootDir>/../__mocks__/uuid.ts"
+    },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!uuid/)"
+    ],
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],

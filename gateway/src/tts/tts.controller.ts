@@ -1,29 +1,43 @@
 // gateway/src/tts/tts.controller.ts
-import { Controller, Post, Body, Logger } from '@nestjs/common';
-import axios from 'axios';
+import { Controller, Post, Body, Logger, UseGuards, Req } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TtsService } from './tts.service';
+import { wrapError, camelResponse } from '../utils/http-utils';
+import { Request } from 'express';
+import { MetricsController } from '../metrics/metrics.controller';
 
 class SynthesizeDto {
   text: string;
   voice?: string;
 }
 
+@UseGuards(JwtAuthGuard)
 @Controller('tts')
 export class TtsController {
   private readonly logger = new Logger(TtsController.name);
-  private readonly ttsServiceUrl = process.env.TTS_SERVICE_URL || 'http://localhost:5002';
+  private readonly ttsLatency = MetricsController.getTtsLatency();
+  constructor(private readonly ttsService: TtsService) {}
 
   @Post('synthesize')
-  async synthesize(@Body() dto: SynthesizeDto) {
+  async synthesize(@Body() dto: SynthesizeDto, @Req() req: any) {
     this.logger.log('TTS synthesize request');
+    const start = process.hrtime();
     try {
-      const response = await axios.post(`${this.ttsServiceUrl}/synthesize`, {
-        text: dto.text,
-        voice: dto.voice,
-      });
-      return response.data;
+      const result = await this.ttsService.synthesize(dto.text);
+      // Normalize response shape for clients (base64 audio payload)
+      this.ttsLatency.observe({ endpoint: 'synthesize', status: 'ok' }, this.durationSeconds(start));
+      return {
+        audio: result.audioBase64,
+        format: result.format || 'mulaw',
+      };
     } catch (error) {
-      this.logger.error('TTS synthesize error:', error);
-      throw error;
+      this.ttsLatency.observe({ endpoint: 'synthesize', status: 'error' }, this.durationSeconds(start));
+      wrapError(error, req);
     }
+  }
+
+  private durationSeconds(start: [number, number]) {
+    const diff = process.hrtime(start);
+    return diff[0] + diff[1] / 1e9;
   }
 }

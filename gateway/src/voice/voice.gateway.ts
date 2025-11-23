@@ -8,10 +8,12 @@ import {
   MessageBody,
   ConnectedSocket,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
+import { Logger, UseGuards } from '@nestjs/common';
 import { Server, WebSocket } from 'ws';
 import { ConversationService } from '../conversation/conversation.service';
 import { SessionService } from '../session/session.service';
+import { WsJwtGuard } from '../auth/ws-jwt.guard';
+import { MetricsController } from '../metrics/metrics.controller';
 
 interface TwilioMediaMessage {
   event: 'connected' | 'start' | 'media' | 'stop' | 'mark';
@@ -42,6 +44,8 @@ interface TwilioMediaMessage {
   };
 }
 
+// WS auth: JWT + HMAC(sig, ts, callSid) derived from TWILIO_AUTH_TOKEN/WS_SHARED_SECRET.
+@UseGuards(WsJwtGuard)
 @WebSocketGateway({
   path: '/twilio/ws',
   cors: {
@@ -55,6 +59,9 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(VoiceGateway.name);
   private readonly activeStreams = new Map<string, WebSocket>();
   private readonly audioBuffers = new Map<string, Buffer[]>();
+  private readonly streamUsers = new Map<string, any>();
+  private readonly rateLimit = new Map<string, { count: number; ts: number }>(); // per-callSid per second
+  private readonly activeGauge = MetricsController.getActiveConversations();
 
   constructor(
     private readonly conversationService: ConversationService,
@@ -64,10 +71,30 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   handleConnection(client: WebSocket, request: any) {
     const callSid = this.extractCallSidFromUrl(request.url);
     this.logger.log(`WebSocket connected: ${callSid || 'unknown'}`);
-    
+    // Attach user claims from guard
+    const user = (client as any).user || {};
+
+    // Require authenticated WS
+    if (!user || !user.sub) {
+      this.logger.warn('Unauthorized WS connection attempt');
+      client.close();
+      return;
+    }
+
     if (callSid) {
       this.activeStreams.set(callSid, client);
       this.audioBuffers.set(callSid, []);
+      this.streamUsers.set(callSid, user);
+      // persist session
+      this.sessionService.create({
+        userId: user.sub,
+        callSid,
+        metadata: {
+          clinicianId: user.sub,
+          patientId: user.patientId || null,
+        },
+      }).catch((e) => this.logger.warn(`Session persist failed for ${callSid}: ${e}`));
+      this.activeGauge.inc();
     }
   }
 
@@ -78,6 +105,9 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
         this.logger.log(`WebSocket disconnected: ${callSid}`);
         this.activeStreams.delete(callSid);
         this.audioBuffers.delete(callSid);
+        this.streamUsers.delete(callSid);
+        this.sessionService.delete(callSid).catch(() => {});
+        this.activeGauge.dec();
         break;
       }
     }
@@ -90,6 +120,11 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const message: TwilioMediaMessage = JSON.parse(data);
+      const callSid = this.findCallSidByClient(client);
+      if (callSid && !this.allowMessage(callSid)) {
+        this.logger.warn(`Rate limit hit for call ${callSid}`);
+        return;
+      }
 
       switch (message.event) {
         case 'connected':
@@ -147,6 +182,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     const { payload } = message.media!;
     const callSid = this.findCallSidByClient(client);
+    const user = callSid ? this.streamUsers.get(callSid) : null;
 
     if (!callSid) {
       this.logger.warn('Received media chunk for unknown call');
@@ -198,9 +234,12 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // Cleanup
     this.activeStreams.delete(callSid);
     this.audioBuffers.delete(callSid);
+    this.streamUsers.delete(callSid);
+    this.rateLimit.delete(callSid);
   }
 
   private async processAudioChunk(callSid: string, audioData: Buffer) {
+    const user = this.streamUsers.get(callSid);
     try {
       // Convert mulaw to base64 for ASR service
       const base64Audio = audioData.toString('base64');
@@ -215,10 +254,11 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
         audio: base64Audio,
         format: 'mulaw',
         sampleRate: 8000,
+        user,
       });
 
       if (result.transcript) {
-        this.logger.log(`Transcript (${callSid}): ${result.transcript}`);
+        this.logger.log(`Transcript (${callSid}): ${result.transcript.length} chars`);
       }
 
       // If we have a voice response, send it back to Twilio
@@ -268,5 +308,17 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
     return null;
+  }
+
+  private allowMessage(callSid: string): boolean {
+    const now = Math.floor(Date.now() / 1000);
+    const entry = this.rateLimit.get(callSid) || { count: 0, ts: now };
+    if (entry.ts !== now) {
+      entry.count = 0;
+      entry.ts = now;
+    }
+    entry.count += 1;
+    this.rateLimit.set(callSid, entry);
+    return entry.count <= 50; // max 50 messages per second per call
   }
 }

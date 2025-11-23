@@ -2,7 +2,7 @@
 """
 ASR Service (WhisperX large-v3) — Arabic Medical, Dialect-aware
 
-What’s inside:
+What's inside:
 - WhisperX (CTranslate2) fast inference (GPU-first, CPU fallback)
 - VAD (handled internally by WhisperX when available)
 - Single cached Arabic aligner for word/char timestamps
@@ -25,19 +25,73 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 import re
 import json
+import inspect
+from functools import lru_cache
+import traceback
 
 import numpy as np
 import soundfile as sf
 import torch
 import torchaudio
 import whisperx
+from pandas import DataFrame
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Request
+import difflib as _difflib
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
+
+# AraBART for grammar correction
+try:
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+    ARABART_AVAILABLE = True
+except ImportError:
+    ARABART_AVAILABLE = False
+    print("⚠️ transformers not installed - AraBART GEC disabled")
+
+# LLM Corrector (medical-aware)
+try:
+    from services.asr.llm_corrector import correct_segments as llm_correct_segments
+    LLM_CORRECTOR_AVAILABLE = True
+except ImportError:
+    try:
+        from llm_corrector import correct_segments as llm_correct_segments
+        LLM_CORRECTOR_AVAILABLE = True
+    except ImportError:
+        LLM_CORRECTOR_AVAILABLE = False
+        print("⚠️ llm_corrector not found - LLM correction disabled")
+
+# Prefer shared functions from text_fix_ar.py to avoid duplication
+try:
+    from services.asr.text_fix_ar import (
+        normalize_arabic,
+        collapse_repeats,
+        DIALECT_PRESERVE
+    )
+    _shared_normalize = normalize_arabic
+    _shared_collapse = collapse_repeats
+except Exception:
+    try:
+        from text_fix_ar import (
+            normalize_arabic,
+            collapse_repeats,
+            DIALECT_PRESERVE
+        )
+        _shared_normalize = normalize_arabic
+        _shared_collapse = collapse_repeats
+    except Exception:
+        # Emergency fallback
+        def normalize_arabic(s: str) -> str:
+            return s
+        def collapse_repeats(s: str) -> str:
+            return s
+        DIALECT_PRESERVE = []
+        _shared_normalize = normalize_arabic
+        _shared_collapse = collapse_repeats
 
 # ---------------------------
 # Load environment
@@ -87,9 +141,16 @@ ENABLE_DIARIZATION = os.getenv("ENABLE_DIARIZATION", "true").lower() == "true"
 DIARIZE_FIRST = os.getenv("DIARIZE_FIRST", "false").lower() == "true"
 PYANNOTE_MODEL = os.getenv("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.2")
 
-# optional external vocab
-VOCAB_FILE = os.getenv("MEDICAL_VOCAB_FILE", "").strip()  # .json or .txt (one term per line)
+# optional external vocab + replacements
+VOCAB_FILE = os.getenv("MEDICAL_VOCAB_FILE", "").strip()
 VOCAB_ENABLE = os.getenv("VOCAB_ENABLE", "true").lower() == "true"
+
+# Debug toggle to print ambiguous-replacement decision traces
+DEBUG_AMBIGUOUS = os.getenv("DEBUG_AMBIGUOUS", "false").lower() == "true"
+
+# AraBART GEC toggle
+ENABLE_ARABART = os.getenv("ENABLE_ARABART", "false").lower() == "true"
+ARABART_MODEL_NAME = os.getenv("ARABART_MODEL", "aubmindlab/arabart-text-corrector")
 
 # Alignment
 ALIGNMENT_MODELS = {
@@ -98,28 +159,31 @@ ALIGNMENT_MODELS = {
 }
 
 # ---------------------------
-# Built-in medical vocabulary & confusion map
+# Built-in medical vocabulary & minimal confusion map
 # ---------------------------
 BUILTIN_MEDICAL_TERMS = [
-    "لثة", "اللثة", "اللسّة", "جيوب لثوية", "التهاب اللثة", "نزيف اللثة",
-    "سنان", "أسنان", "ضرس", "ضرس العقل",
-    "خيط أسنان", "الخيط الطبي", "مضمضة", "حشو", "خلع ضرس",
-    "أشعة", "تحاليل", "تشخيص", "علاج", "جرعة", "متابعة", "استشارة",
-    "ضغط الدم", "سكر", "حساسية الأسنان", "حساسية", "تورم",
+    "لثة", "اللثة", "جيوب لثوية", "التهاب اللثة", "نزيف اللثة",
+    "أسنان", "ضرس", "ضرس العقل", "خيط أسنان", "مضمضة", "حشو",
+    "أشعة", "تحاليل", "تشخيص", "علاج", "جرعة", "متابعة",
+    "ضغط الدم", "سكر", "حساسية", "تورم",
 ]
 
+# Minimal CONFUSION_MAP - only unique entries NOT in medical_vocab_ar_en.json
 CONFUSION_MAP = {
-    "السة": "اللثة",
-    "اللسة": "اللثة",
-    "القراصيم": "الجراثيم",
-    "مرار الوقت": "مرور الوقت",
-    "الخيط": "خيط",
-    "خط طبي": "خيط طبي",
-    "خط الأسنان": "خيط أسنان",
-    "ممش": "مش",
-    "اللسويه": "اللثوية",
-    "اللسم": "اللثة",
+    "الثة": "اللثة",
+    "اللتة": "اللثة",
+    "الليثة": "اللثة",
+    "لتوية": "لثوية",
+    "تكلسات": "تكلس",
+    "هيوجة": "هيوجع",
+    "دم": "دماء",
 }
+
+def _read_text_lines(path: Path) -> List[str]:
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+def _read_json_any(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 def load_extra_vocab() -> List[str]:
     if not VOCAB_FILE:
@@ -130,65 +194,534 @@ def load_extra_vocab() -> List[str]:
         return []
     try:
         if path.suffix.lower() == ".json":
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = _read_json_any(path)
             if isinstance(data, dict) and "terms" in data:
                 return [str(t).strip() for t in data["terms"] if str(t).strip()]
             if isinstance(data, list):
                 return [str(t).strip() for t in data if str(t).strip()]
             return []
-        return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return _read_text_lines(path)
     except Exception as e:
-        print(f"⚠️ Failed to load MEDICAL_VOCAB_FILE: {e}")
+        print(f"⚠️ Failed to load MEDICAL_VOCAB_FILE terms: {e}")
         return []
 
+def load_replacements_map() -> Dict[str, str]:
+    """Load replacements dict from the same VOCAB_FILE if JSON provides 'replacements'."""
+    if not VOCAB_FILE:
+        return {}
+    path = Path(VOCAB_FILE)
+    if not path.exists() or path.suffix.lower() != ".json":
+        return {}
+    try:
+        data = _read_json_any(path)
+        repl = data.get("replacements", {})
+        if isinstance(repl, dict):
+            cleaned = {str(k): str(v) for k, v in repl.items()}
+            return cleaned
+    except Exception as e:
+        print(f"⚠️ Failed to load replacements from MEDICAL_VOCAB_FILE: {e}")
+    return {}
+
+def load_ambiguous_map() -> Dict[str, str]:
+    """Load ambiguous replacements from VOCAB_FILE JSON under 'ambiguous_replacements'."""
+    if not VOCAB_FILE:
+        return {}
+    path = Path(VOCAB_FILE)
+    if not path.exists() or path.suffix.lower() != ".json":
+        return {}
+    try:
+        data = _read_json_any(path)
+        amb = data.get("ambiguous_replacements", {})
+        if isinstance(amb, dict):
+            return {str(k): str(v) for k, v in amb.items()}
+    except Exception as e:
+        print(f"⚠️ Failed to load ambiguous_replacements from MEDICAL_VOCAB_FILE: {e}")
+    return {}
+
+def load_medical_keywords() -> List[str]:
+    """Load configurable medical keywords from VOCAB_FILE JSON under 'medical_keywords'."""
+    if not VOCAB_FILE:
+        return []
+    path = Path(VOCAB_FILE)
+    if not path.exists() or path.suffix.lower() != ".json":
+        return []
+    try:
+        data = _read_json_any(path)
+        keys = data.get("medical_keywords", [])
+        if isinstance(keys, list):
+            return [str(k) for k in keys if str(k).strip()]
+    except Exception as e:
+        print(f"⚠️ Failed to load medical_keywords from MEDICAL_VOCAB_FILE: {e}")
+    return []
+
 EXTRA_TERMS = load_extra_vocab()
+EXTRA_REPLACEMENTS = load_replacements_map()
+EXTRA_AMBIGUOUS = load_ambiguous_map()
+EXTRA_MEDICAL_KEYWORDS = load_medical_keywords()
+
+# Define normalizer BEFORE using it
+_norm_func = _shared_normalize if _shared_normalize else normalize_arabic
+EXTRA_MEDICAL_KEYWORDS_NORM = set(_norm_func(str(k).lower()) for k in EXTRA_MEDICAL_KEYWORDS)
+
+def load_dialect_config() -> Tuple[bool, List[str]]:
+    """Load optional dialect-preservation settings from VOCAB_FILE JSON."""
+    if not VOCAB_FILE:
+        return False, []
+    path = Path(VOCAB_FILE)
+    if not path.exists() or path.suffix.lower() != ".json":
+        return False, []
+    try:
+        data = _read_json_any(path)
+        preserve = bool(data.get("preserve_dialect", False))
+        terms = data.get("dialect_terms", []) or []
+        if isinstance(terms, list):
+            terms = [str(t) for t in terms if str(t).strip()]
+        else:
+            terms = []
+        return preserve, terms
+    except Exception as e:
+        print(f"⚠️ Failed to load dialect config from MEDICAL_VOCAB_FILE: {e}")
+    return False, []
+
+PRESERVE_DIALECT, EXTRA_DIALECT_TERMS = load_dialect_config()
+
+def _write_vocab_json_safe(path: Path, data: dict) -> None:
+    """Write JSON to path with a timestamped backup of the previous file."""
+    try:
+        if path.exists():
+            backup = path.with_suffix(path.suffix + f".bak_{int(time.time())}")
+            path.replace(backup)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def reload_vocab_from_file() -> dict:
+    """Reload replacements and ambiguous maps from VOCAB_FILE into memory."""
+    global EXTRA_TERMS, EXTRA_REPLACEMENTS, EXTRA_AMBIGUOUS, EXTRA_MEDICAL_KEYWORDS
+    global COMPILED_EXTRA_REPLACEMENTS, COMPILED_AMBIGUOUS_REPLACEMENTS
+    global PRESERVE_DIALECT, EXTRA_DIALECT_TERMS, EXTRA_MEDICAL_KEYWORDS_NORM
+
+    path = Path(VOCAB_FILE) if VOCAB_FILE else Path(__file__).parent / "medical_vocab_ar_en.json"
+    if not path.exists():
+        return {"error": f"vocab file not found: {path}"}
+    try:
+        data = _read_json_any(path)
+        if not isinstance(data, dict):
+            data = {"terms": [], "replacements": {}, "ambiguous_replacements": {}}
+        EXTRA_TERMS = data.get("terms", []) if isinstance(data, dict) else []
+        EXTRA_REPLACEMENTS = {str(k): str(v) for k, v in (data.get("replacements", {}) or {}).items()}
+        EXTRA_AMBIGUOUS = {str(k): str(v) for k, v in (data.get("ambiguous_replacements", {}) or {}).items()}
+        EXTRA_MEDICAL_KEYWORDS = [str(k) for k in (data.get("medical_keywords", []) or [])]
+        PRESERVE_DIALECT = bool(data.get("preserve_dialect", PRESERVE_DIALECT))
+        EXTRA_DIALECT_TERMS = [str(t) for t in (data.get("dialect_terms", []) or [])]
+
+        COMPILED_EXTRA_REPLACEMENTS = _compile_replacements(EXTRA_REPLACEMENTS)
+        COMPILED_AMBIGUOUS_REPLACEMENTS = _compile_replacements(EXTRA_AMBIGUOUS)
+
+        _normf = _shared_normalize if _shared_normalize else normalize_arabic
+        EXTRA_MEDICAL_KEYWORDS_NORM = set(_normf(str(k).lower()) for k in EXTRA_MEDICAL_KEYWORDS)
+
+        return {
+            "terms": len(EXTRA_TERMS),
+            "replacements": len(EXTRA_REPLACEMENTS),
+            "ambiguous": len(EXTRA_AMBIGUOUS),
+            "medical_keywords": len(EXTRA_MEDICAL_KEYWORDS),
+            "preserve_dialect": PRESERVE_DIALECT,
+        }
+    except Exception as e:
+        traceback.print_exc()
+        return {"error": str(e)}
 
 def make_initial_prompt(dialect_hint: str = "egypt") -> str:
+    """Create initial prompt for WhisperX with dialect awareness and medical vocabulary.
+
+    The prompt style significantly affects transcription accuracy:
+    - Egyptian dialect: use colloquial markers like 'ازاي', 'عاملة ايه'
+    - Medical terms: inject key vocabulary to guide recognition
+    """
     if not VOCAB_ENABLE:
         return ""
+
+    # Select top medical terms (prioritize common ones)
     core = list(dict.fromkeys(BUILTIN_MEDICAL_TERMS + EXTRA_TERMS))
-    vocab_str = "، ".join(core[:256])
+    vocab_str = "، ".join(core[:64])  # Reduced from 256 - shorter is better
+
     if (dialect_hint or "").lower().startswith("egypt"):
-        style = "محادثة بين طبيب ومريضة باللهجة المصرية."
+        # Egyptian dialect prompt with natural conversational markers
+        style = (
+            "محادثة عيادة أسنان باللهجة المصرية. "
+            "الدكتور بيسأل: ازيك؟ عاملة ايه؟ حاسة بإيه؟ "
+            "المريضة بتقول: والله حاسة بألم، اللثة بتنزف، الأسنان حساسة. "
+        )
     else:
-        style = "حوار طبي بين طبيب ومريض."
-    return f"{style} مصطلحات طبية: {vocab_str}"
+        style = "حوار طبي بين طبيب ومريض. "
 
-ARABIC_CHAR_NORM = [
-    (re.compile(r"[إأٱآا]"), "ا"),
-    (re.compile(r"[يى]"), "ي"),
-    (re.compile(r"[ة]"), "ه"),
-    (re.compile(r"[ًٌٍَُِّْ]"), ""),
-]
+    return f"{style}مصطلحات: {vocab_str}"
 
-def normalize_arabic(s: str) -> str:
-    out = s
-    for pat, repl in ARABIC_CHAR_NORM:
-        out = pat.sub(repl, out)
-    return out
+# --- dynamic replacements compiled once ---
+def _compile_replacements(repl_map: Dict[str, str]) -> List[Tuple[re.Pattern, str]]:
+    compiled = []
+    for wrong, right in repl_map.items():
+        pat = re.compile(rf"(?<!\w){re.escape(wrong)}(?!\w)")
+        compiled.append((pat, right))
+    return compiled
+
+COMPILED_EXTRA_REPLACEMENTS = _compile_replacements(EXTRA_REPLACEMENTS)
+COMPILED_AMBIGUOUS_REPLACEMENTS = _compile_replacements(EXTRA_AMBIGUOUS)
 
 def post_process_text(text: str) -> str:
+    """Apply medical ASR corrections with dialect preservation."""
     if not text:
         return text
-    t = text
-    neighborhoods = ["اسنان", "سنان", "لث", "ضرس", "طبيب", "دكتور", "علاج", "مضمض", "خيط", "اشعه", "تحليل"]
-    norm_t = normalize_arabic(t)
+
+    # 1) Normalize once upfront
+    t = _shared_collapse(text) if _shared_collapse else text
+    t = re.sub(r"[ًٌٍَُِّْ]+", "", t)
+
+    # Collapse alif/hamza duplicates (preserve الله)
+    try:
+        HAMZA_DUP_RE = re.compile(r"(?<!الل)([أا])\1+")
+        t = HAMZA_DUP_RE.sub(r"\1", t)
+    except Exception:
+        t = t.replace("أأ", "أ")
+
+    # 2) Get normalized form for context detection (reuse for all checks)
+    norm_t = _norm_func(t.lower()) if _norm_func else t.lower()
+
+    # 3) Detect medical context
+    MEDICAL_KEYWORDS = set(["لثة", "أسنان", "التهاب", "جيوب", "جير",
+                           "خيط", "حساسية", "حشو", "خلع", "جذر"])
+    MEDICAL_KEYWORDS.update(EXTRA_MEDICAL_KEYWORDS)
+    has_medical = any(kw in norm_t for kw in MEDICAL_KEYWORDS)
+
+    # 4) Detect dialect
+    has_dialect = False
+    if PRESERVE_DIALECT and EXTRA_DIALECT_TERMS:
+        has_dialect = any(dt and dt in t.lower() for dt in EXTRA_DIALECT_TERMS)
+
+    # 5) Apply replacements in ONE pass
+    # Always apply: built-in confusion map (minimal now)
     for wrong, right in CONFUSION_MAP.items():
-        w_norm = normalize_arabic(wrong)
-        if any(nb in norm_t for nb in neighborhoods):
-            t = re.sub(rf"(?<!\w){re.escape(wrong)}(?!\w)", right, t)
-    t = t.replace("سنان", "أسنان")
-    t = t.replace("اللسة", "اللثة")
-    t = t.replace("السة", "اللثة")
-    t = t.replace("خط طبي", "خيط طبي")
-    t = t.replace("خط الأسنان", "خيط أسنان")
+        t = re.sub(rf"(?<!\w){re.escape(wrong)}(?!\w)", right, t)
+
+    # Always apply: vocab file replacements (medical terms, safe)
+    for pat, right in COMPILED_EXTRA_REPLACEMENTS:
+        t = pat.sub(right, t)
+
+    # Conditionally apply ambiguous (only when safe)
+    if has_medical and not has_dialect:
+        # Full context → apply all ambiguous
+        for pat, right in COMPILED_AMBIGUOUS_REPLACEMENTS:
+            if DEBUG_AMBIGUOUS:
+                print(f"[AMBIG-APPLY] Global medical context, applying {pat.pattern} -> {right}")
+            t = pat.sub(right, t)
+    elif has_medical:
+        # Medical but dialect present → windowed application
+        tokens = re.findall(r"[\w\u0600-\u06FF]+", norm_t)
+        window = 3
+
+        for (pat, right), (wrong_raw, _) in zip(COMPILED_AMBIGUOUS_REPLACEMENTS,
+                                                  EXTRA_AMBIGUOUS.items()):
+            try:
+                wrong_norm = _norm_func(str(wrong_raw).lower())
+                indices = [i for i, tok in enumerate(tokens) if tok == wrong_norm]
+
+                apply = False
+                for idx in indices:
+                    start = max(0, idx - window)
+                    end = min(len(tokens), idx + window + 1)
+                    neighborhood = set(tokens[start:end])
+                    if neighborhood & EXTRA_MEDICAL_KEYWORDS_NORM:
+                        apply = True
+                        if DEBUG_AMBIGUOUS:
+                            print(f"[AMBIG-APPLY] Windowed match for '{wrong_raw}' at idx {idx}, neighborhood={tokens[start:end]}")
+                        break
+
+                if apply:
+                    t = pat.sub(right, t)
+                elif DEBUG_AMBIGUOUS and indices:
+                    for idx in indices:
+                        start = max(0, idx - window)
+                        end = min(len(tokens), idx + window + 1)
+                        print(f"[AMBIG-SKIP] '{wrong_raw}' at idx {idx}, neighborhood={tokens[start:end]} -> no medical keyword")
+            except Exception:
+                continue
+
     return t
+
+def correct_segments_inplace(segments: List[Dict[str, Any]]) -> None:
+    """Apply post-processing to each segment text in-place."""
+    if not segments:
+        return
+    for seg in segments:
+        txt = (seg.get("text") or "").strip()
+        if txt:
+            seg["text"] = post_process_text(txt)
+
+def apply_arabart_gec(text: str) -> str:
+    """Apply AraBART grammar error correction.
+
+    Args:
+        text: Input Arabic text
+
+    Returns:
+        Corrected text or original if model unavailable
+    """
+    if not arabart_model or not arabart_tokenizer or not text:
+        return text
+
+    try:
+        # AraBART expects sentences to be corrected individually for best results
+        # Split on sentence boundaries
+        sentences = re.split(r'[.!?؟،]\s*', text)
+        corrected = []
+
+        for sent in sentences:
+            if not sent.strip():
+                continue
+
+            # Tokenize
+            inputs = arabart_tokenizer(
+                sent,
+                return_tensors="pt",
+                max_length=512,
+                truncation=True,
+                padding=True
+            )
+
+            if DEVICE == "cuda":
+                inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+            # Generate correction
+            with torch.no_grad():
+                outputs = arabart_model.generate(
+                    **inputs,
+                    max_length=512,
+                    num_beams=5,
+                    early_stopping=True
+                )
+
+            # Decode
+            corrected_sent = arabart_tokenizer.decode(
+                outputs[0],
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True
+            )
+
+            corrected.append(corrected_sent.strip())
+
+        return " ".join(corrected)
+
+    except Exception as e:
+        print(f"⚠️ AraBART correction failed: {e}")
+        return text
+
+def correct_segments_with_arabart(segments: List[Dict[str, Any]]) -> None:
+    """Apply both rule-based and AraBART corrections to segments.
+
+    Pipeline: ASR output → rule-based fixes → AraBART GEC
+    """
+    if not segments:
+        return
+
+    for seg in segments:
+        txt = (seg.get("text") or "").strip()
+        if txt:
+            # Step 1: Rule-based corrections
+            txt = post_process_text(txt)
+
+            # Step 2: AraBART GEC (if enabled)
+            if arabart_model:
+                txt = apply_arabart_gec(txt)
+
+            seg["text"] = txt
+
+# ---------------------------
+# Speaker Role Identification
+# ---------------------------
+
+def identify_speaker_roles(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Identify speaker roles (Doctor vs Patient) using heuristic patterns."""
+    if not segments:
+        return segments
+
+    # Doctor question patterns
+    doctor_patterns = [
+        r'\bإيه\b', r'\bايه\b', r'\bفين\b', r'\bمين\b',
+        r'\bامتى\b', r'\bمتى\b', r'\bليه\b', r'\bلماذا\b',
+        r'\bإزاي\b', r'\bازاي\b', r'\bكيف\b',
+        r'\bعندك\b', r'\bعندك أي\b', r'\bبتحس\b', r'\bتحس\b',
+        r'\bبيوجع\b', r'\bيوجع\b',
+        r'\bافتح\b', r'\bافتحي\b', r'\bورني\b', r'\bوريني\b',
+        r'\bخليني أشوف\b', r'\bهشوف\b', r'\bفاحص\b', r'\bبفحص\b',
+        r'\bعندك\b.*\b(التهاب|تسوس|مشكلة|جيوب)\b',
+        r'\bواضح\b', r'\bبشوف\b', r'\bموجود\b',
+        r'\bالتشخيص\b', r'\bالحالة\b',
+        r'\bلازم\b.*\b(تعمل|نعمل|تاخد|ننضف)\b',
+        r'\bهنعمل\b', r'\bهعمل\b', r'\bهكتب\b',
+        r'\bالعلاج\b', r'\bالخطة\b', r'\bوصفة\b', r'\bدواء\b', r'\bمضاد\b',
+        r'\bجيوب لثوية\b', r'\bقناة الجذر\b', r'\bالتكلس\b',
+        r'\bScaling\b', r'\bRoot planing\b',
+        r'\bالأشعة\b.*\b(بانوراما|سينية)\b',
+        r'\bهنعمل\b', r'\bهنشوف\b', r'\bنتابع\b',
+    ]
+
+    patient_patterns = [
+        r'\bبحس\b.*\b(بألم|بوجع|حاسس)\b',
+        r'\bعندي\b.*\b(ألم|وجع|تورم|نزيف)\b',
+        r'\bبيوجعني\b', r'\bموجعني\b', r'\bمؤلم\b',
+        r'\bمش قادر\b', r'\bمش عارف\b',
+        r'\bمن\b.*\b(أسبوع|شهر|يوم|ساعة)\b',
+        r'\bبقالي\b', r'\bبقاله\b', r'\bمن زمان\b', r'\bمن فترة\b',
+        r'\bحاسس\b', r'\bشاعر\b', r'\bبحس إن\b',
+        r'\bمش مرتاح\b', r'\bمتضايق\b',
+        r'^(آه|أيوة|لا|مش|ممكن|طيب)$',
+        r'^\w{1,5}$',
+    ]
+
+    first_person_patterns = [
+        r'\bأنا\b', r'\bانا\b', r'\bأني\b', r'\bعندي\b',
+        r'\bبحس\b', r'\bحاسة\b', r'\bحسيت\b',
+        r'\bبغسل\b', r'\bبستخدم\b'
+    ]
+
+    doctor_regexes = [re.compile(p, re.IGNORECASE) for p in doctor_patterns]
+    patient_regexes = [re.compile(p, re.IGNORECASE) for p in patient_patterns]
+    first_person_regexes = [re.compile(p, re.IGNORECASE) for p in first_person_patterns]
+
+    # Score each segment ONCE
+    role_scores = []
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if not text:
+            role_scores.append({"doctor": 0, "patient": 0})
+            continue
+
+        doctor_score = sum(1 for r in doctor_regexes if r.search(text))
+        patient_score = sum(1 for r in patient_regexes if r.search(text))
+        fp_count = sum(1 for r in first_person_regexes if r.search(text))
+
+        if fp_count:
+            patient_score += fp_count * 2
+        if len(text.split()) > 15:
+            doctor_score += 1
+        if len(text.split()) <= 3:
+            patient_score += 1
+
+        role_scores.append({"doctor": doctor_score, "patient": patient_score})
+
+    # Assign roles
+    speaker_ids = [seg.get("speaker", "SPEAKER_00") for seg in segments]
+    unique_speakers = list(dict.fromkeys(speaker_ids))
+    role_map = {}
+
+    if len(unique_speakers) == 2:
+        speaker_totals = {spk: {"doctor": 0, "patient": 0} for spk in unique_speakers}
+        fp_counts = {spk: 0 for spk in unique_speakers}
+
+        for i, seg in enumerate(segments):
+            spk = speaker_ids[i]
+            speaker_totals[spk]["doctor"] += role_scores[i]["doctor"]
+            speaker_totals[spk]["patient"] += role_scores[i]["patient"]
+
+            text = seg.get("text", "")
+            fp_counts[spk] += sum(1 for r in first_person_regexes if r.search(text))
+
+        for spk in unique_speakers:
+            doc_total = speaker_totals[spk]["doctor"]
+            pat_total = speaker_totals[spk]["patient"]
+            other = unique_speakers[1] if unique_speakers[0] == spk else unique_speakers[0]
+
+            if doc_total > pat_total:
+                if speaker_totals[other]["doctor"] > speaker_totals[other]["patient"] \
+                   and fp_counts[spk] > fp_counts[other]:
+                    role_map[spk] = "مريض"
+                else:
+                    role_map[spk] = "طبيب"
+            elif pat_total > doc_total:
+                role_map[spk] = "مريض"
+            else:
+                role_map[spk] = "مريض" if fp_counts[spk] >= fp_counts[other] else "طبيب"
+
+    elif len(unique_speakers) == 1:
+        role_map = {unique_speakers[0]: "طبيب"}
+
+    else:
+        for spk in unique_speakers:
+            spk_segments = [i for i, s in enumerate(speaker_ids) if s == spk]
+            total_doc = sum(role_scores[i]["doctor"] for i in spk_segments)
+            total_pat = sum(role_scores[i]["patient"] for i in spk_segments)
+            role_map[spk] = "طبيب" if total_doc >= total_pat else "مريض"
+
+    # Apply role mapping
+    for seg in segments:
+        original_speaker = seg.get("speaker", "Unknown")
+        seg["speaker"] = role_map.get(original_speaker, original_speaker)
+
+    return segments
 
 # ---------------------------
 # FastAPI app
 # ---------------------------
 app = FastAPI(title="ASR Service (WhisperX)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+@app.middleware("http")
+async def _asr_postprocess_middleware(request: Request, call_next):
+    """Middleware that post-processes /transcribe JSON responses."""
+    response = await call_next(request)
+    try:
+        if request.url.path == "/transcribe" and response.status_code == 200 \
+           and response.headers.get("content-type", "").startswith("application/json"):
+
+            body = b""
+            if hasattr(response, 'body_iterator'):
+                async for chunk in response.body_iterator:
+                    body += chunk
+            else:
+                body = getattr(response, 'body', b"") or b""
+
+            if not body:
+                return response
+
+            try:
+                data = json.loads(body.decode('utf-8'))
+            except Exception:
+                return response
+
+            if os.getenv("ENABLE_ASR_POSTPROCESS", "true").lower() == "true":
+                data["text_cleaned"] = post_process_text(data.get("text", ""))
+                segs = data.get("segments", [])
+                for s in segs:
+                    s["clean_text"] = post_process_text(s.get("text", ""))
+
+                    orig_seg_text = s.get("text", "") or ""
+                    cleaned_seg_text = s.get("clean_text", "") or ""
+                    for token in DIALECT_PRESERVE:
+                        if token and token in orig_seg_text and token not in cleaned_seg_text:
+                            cleaned_tokens = cleaned_seg_text.split()
+                            match = _difflib.get_close_matches(token, cleaned_tokens, n=1, cutoff=0.6)
+                            if match:
+                                cleaned_seg_text = cleaned_seg_text.replace(match[0], token)
+                    s["clean_text"] = cleaned_seg_text
+
+                data["segments"] = segs
+
+                orig_top = data.get("text", "") or ""
+                top_clean = data.get("text_cleaned", "") or ""
+                for token in DIALECT_PRESERVE:
+                    if token and token in orig_top and token not in top_clean:
+                        top_tokens = top_clean.split()
+                        match = _difflib.get_close_matches(token, top_tokens, n=1, cutoff=0.6)
+                        if match:
+                            top_clean = top_clean.replace(match[0], token)
+                data["text_cleaned"] = top_clean
+
+            new_body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+            return Response(content=new_body, status_code=response.status_code, media_type="application/json")
+    except Exception:
+        return response
+    return response
 
 # ---------------------------
 # Models (globals, loaded once)
@@ -197,6 +730,8 @@ whisper_model = None
 align_model_a = None
 align_metadata = None
 diarize_model = None
+arabart_tokenizer = None
+arabart_model = None
 
 # ---------------------------
 # Schemas
@@ -215,13 +750,16 @@ class TranscriptionSegment(BaseModel):
     words: Optional[List[WordTimestamp]] = None
 
 class TranscriptionRequest(BaseModel):
-    audio: str
+    audio: str  # base64
     dialect: Optional[str] = "egypt"
     language: Optional[str] = "ar"
     enable_diarization: Optional[bool] = True
     min_speakers: Optional[int] = None
     max_speakers: Optional[int] = None
     diarize_first: Optional[bool] = None
+
+class NormalizeRequest(BaseModel):
+    text: str
 
 class TranscriptionResponse(BaseModel):
     text: str
@@ -232,7 +770,7 @@ class TranscriptionResponse(BaseModel):
     rtf: float
     speakers: Optional[List[str]] = None
     model_used: str
-    pipeline_mode: str  # "diarize-first" or "diarize-last"
+    pipeline_mode: str
 
 # ---------------------------
 # Utilities
@@ -272,34 +810,24 @@ def format_segments_for_frontend(segments: List[Dict[str, Any]]) -> List[Transcr
         )
     return formatted
 
-def _safe_transcribe(model, audio: np.ndarray, base_kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Call model.transcribe(audio, **kwargs) but automatically strip any kwargs
-    that this installation of faster-whisper/whisperx doesn't recognize.
-    """
-    try_kwargs = dict(base_kwargs)
-    while True:
-        try:
-            return model.transcribe(audio, **try_kwargs)
-        except TypeError as e:
-            msg = str(e)
-            if "unexpected keyword argument" in msg:
-                bad = None
-                if "'" in msg:
-                    parts = msg.split("'")
-                    if len(parts) >= 2:
-                        bad = parts[1]
-                if bad and bad in try_kwargs:
-                    print(f"↻ Removing unsupported kwarg: {bad!r} and retrying...")
-                    try_kwargs.pop(bad, None)
-                    continue
-            print("↻ Falling back to minimal transcribe() args (compat mode)...")
-            return model.transcribe(
-                audio,
-                batch_size=base_kwargs.get("batch_size", 1),
-                language=base_kwargs.get("language", "ar"),
-                task=base_kwargs.get("task", "transcribe"),
-            )
+# ==== One-time kwarg filter ====
+_SUPPORTED_TRANSCRIBE_KW: Optional[set] = None
+
+def _prepare_supported_kwargs(model) -> set:
+    global _SUPPORTED_TRANSCRIBE_KW
+    if _SUPPORTED_TRANSCRIBE_KW is not None:
+        return _SUPPORTED_TRANSCRIBE_KW
+    try:
+        sig = inspect.signature(model.transcribe)
+        _SUPPORTED_TRANSCRIBE_KW = {p.name for p in sig.parameters.values()}
+    except Exception:
+        _SUPPORTED_TRANSCRIBE_KW = {"audio", "batch_size", "language", "task"}
+    return _SUPPORTED_TRANSCRIBE_KW
+
+def _transcribe_filtered(model, audio: np.ndarray, **kwargs) -> Dict[str, Any]:
+    supported = _prepare_supported_kwargs(model)
+    clean = {k: v for k, v in kwargs.items() if k in supported}
+    return model.transcribe(audio, **clean)
 
 def transcribe_chunk(
     audio_f32: np.ndarray,
@@ -317,11 +845,18 @@ def transcribe_chunk(
         condition_on_previous_text=False,
         beam_size=5,
     )
-    result = _safe_transcribe(whisper_model, audio_f32, decode_kwargs)
+    result = _transcribe_filtered(whisper_model, audio_f32, **decode_kwargs)
 
     for s in result.get("segments", []) or []:
         s["start"] = float(s.get("start", 0.0) or 0.0) + start_offset_s
         s["end"] = float(s.get("end", 0.0) or 0.0) + start_offset_s
+
+    # Apply corrections (rule-based + AraBART if enabled)
+    if ENABLE_ARABART and arabart_model:
+        correct_segments_with_arabart(result.get("segments", []))
+    else:
+        correct_segments_inplace(result.get("segments", []))
+
     return result
 
 def align_segments(
@@ -339,7 +874,13 @@ def align_segments(
         DEVICE,
         return_char_alignments=False,
     )
-    return aligned.get("segments", result_segments)
+    segs = aligned.get("segments", result_segments)
+    # Re-apply corrections after alignment (alignment may change text slightly)
+    if ENABLE_ARABART and arabart_model:
+        correct_segments_with_arabart(segs)
+    else:
+        correct_segments_inplace(segs)
+    return segs
 
 # ---------------------------
 # Startup: load & cache models once
@@ -354,7 +895,6 @@ async def load_models():
     )
     print("✓ Base WhisperX model loaded")
 
-    # Cache Arabic aligner
     try:
         if not os.getenv("HUGGINGFACE_HUB_TOKEN") and HF_TOKEN:
             os.environ["HUGGINGFACE_HUB_TOKEN"] = HF_TOKEN
@@ -369,36 +909,38 @@ async def load_models():
         align_metadata = None
         print(f"⚠️ Could not cache Arabic aligner: {e}")
 
-    # Diarization
-    if ENABLE_DIARIZATION and HF_TOKEN:
-        try:
-            from pyannote.audio import Pipeline
+    diar_loaded = False
+    if ENABLE_DIARIZATION:
+        if not HF_TOKEN:
+            print("ℹ️ ENABLE_DIARIZATION=true but no HF_TOKEN found → diarization disabled")
+        else:
             try:
-                diarize_model = Pipeline.from_pretrained(PYANNOTE_MODEL, use_auth_token=HF_TOKEN)
-            except Exception as e_v32:
-                print(f"⚠️ {PYANNOTE_MODEL} failed: {e_v32} — falling back to 3.1")
-                diarize_model = Pipeline.from_pretrained(
-                    "pyannote/speaker-diarization-3.1", use_auth_token=HF_TOKEN
-                )
-            if DEVICE == "cuda":
-                diarize_model.to(torch.device("cuda"))
-            print("✓ Diarization model loaded")
-        except Exception as e:
-            diarize_model = None
-            print(f"⚠️ Diarization disabled: {e}")
+                from pyannote.audio import Pipeline
+                try:
+                    diarize_model = Pipeline.from_pretrained(PYANNOTE_MODEL, use_auth_token=HF_TOKEN)
+                except Exception as e_v32:
+                    print(f"⚠️ {PYANNOTE_MODEL} failed: {e_v32} — falling back to 3.1")
+                    diarize_model = Pipeline.from_pretrained(
+                        "pyannote/speaker-diarization-3.1", use_auth_token=HF_TOKEN
+                    )
+                if DEVICE == "cuda":
+                    diarize_model.to(torch.device("cuda"))
+                diar_loaded = True
+            except Exception as e:
+                diarize_model = None
+                print(f"⚠️ Diarization disabled: {e}")
     else:
-        diarize_model = None
-        print("ℹ️ Diarization disabled by config or missing HF_TOKEN")
+        print("ℹ️ ENABLE_DIARIZATION=false → diarization disabled")
 
     print("=" * 80)
     print("✓ ASR SERVICE READY")
     print(f"Model: WhisperX {WHISPER_MODEL} | Device: {DEVICE} | ComputeType: {COMPUTE_TYPE}")
     print(f"Aligner: {'loaded' if align_model_a is not None else 'not loaded'}")
-    print(f"Diarization: {'enabled' if diarize_model is not None else 'disabled'}")
+    print(f"Diarization: {'enabled' if diar_loaded and diarize_model is not None else 'disabled'}")
     print("=" * 80)
 
 # ---------------------------
-# Main endpoint
+# API endpoints
 # ---------------------------
 @app.post("/transcribe", response_model=TranscriptionResponse)
 async def transcribe_audio(request: TranscriptionRequest):
@@ -406,7 +948,6 @@ async def transcribe_audio(request: TranscriptionRequest):
     overall_start = time.time()
 
     try:
-        # 0) Decode
         audio_data, sample_rate = decode_audio(request.audio)
         audio_duration = len(audio_data) / float(sample_rate + 1e-12)
 
@@ -418,11 +959,10 @@ async def transcribe_audio(request: TranscriptionRequest):
         print(f"  Mode: {'diarize-first' if (request.diarize_first if request.diarize_first is not None else DIARIZE_FIRST) else 'diarize-last'}")
         print(f"{'-'*60}")
 
-        # 1) Resample to 16kHz mono (fast)
         wave = torch.from_numpy(audio_data).float()
         if wave.dim() > 1:
             wave = wave.mean(dim=1)
-        wave = wave.unsqueeze(0)  # [1, T]
+        wave = wave.unsqueeze(0)
         if sample_rate != 16000:
             wave = torchaudio.functional.resample(wave, sample_rate, 16000)
         wave = wave.squeeze(0)
@@ -433,11 +973,9 @@ async def transcribe_audio(request: TranscriptionRequest):
         use_diarize_first = (request.diarize_first if request.diarize_first is not None else DIARIZE_FIRST) \
                             and (request.enable_diarization and diarize_model is not None)
 
-        segments: List[Dict[str, Any]] = []
         detected_lang = request.language or "ar"
 
         if use_diarize_first:
-            # -------- DIARIZE FIRST → per-speaker transcription
             print("Diarize-first mode: running diarization...")
             diarization_start = time.time()
             waveform = torch.from_numpy(audio).float().unsqueeze(0)
@@ -454,6 +992,7 @@ async def transcribe_audio(request: TranscriptionRequest):
             ]
             diar_segments.sort(key=lambda x: x[0])
 
+            segments: List[Dict[str, Any]] = []
             print(f"Transcribing {len(diar_segments)} diarized chunks ...")
             t_start = time.time()
             for (s, e, spk) in diar_segments:
@@ -464,24 +1003,32 @@ async def transcribe_audio(request: TranscriptionRequest):
                     continue
                 chunk = audio[s_samp:e_samp].copy()
                 result = transcribe_chunk(
-                    chunk, request.language or "ar", request.dialect or "egypt", batch_sz, start_offset_s=s
+                    chunk, detected_lang, request.dialect or "egypt", batch_sz, start_offset_s=s
                 )
                 for seg in result.get("segments", []) or []:
                     seg["speaker"] = spk
                 segments.extend(result.get("segments", []))
-
             transcribe_time = time.time() - t_start
             print(f"  ✓ Per-speaker transcription done in {transcribe_time:.2f}s")
 
             if align_model_a is not None and segments:
                 print("Word-level alignment (global)...")
-                segments = align_segments(segments, audio, request.language or "ar")
+                segments = align_segments(segments, audio, detected_lang)
                 print("  ✓ Alignment complete")
 
-            detected_lang = request.language or "ar"
-            full_text = " ".join([(s.get("text") or "").strip() for s in segments])
-            full_text = post_process_text(full_text)
+                diarize_df = DataFrame(
+                    diarize_annotation.itertracks(yield_label=True),
+                    columns=["segment", "label", "speaker"],
+                )
+                diarize_df["start"] = diarize_df["segment"].apply(lambda x: x.start)
+                diarize_df["end"]   = diarize_df["segment"].apply(lambda x: x.end)
+                with_spk = whisperx.assign_word_speakers(diarize_df, {"segments": segments})
+                if isinstance(with_spk, dict) and "segments" in with_spk:
+                    segments = with_spk["segments"]
 
+            segments = identify_speaker_roles(segments)
+
+            full_text = " ".join([(s.get("text") or "").strip() for s in segments])
             formatted_segments = format_segments_for_frontend(segments)
 
             total_time = time.time() - overall_start
@@ -489,7 +1036,7 @@ async def transcribe_audio(request: TranscriptionRequest):
             transcription_duration.observe(total_time)
             rtf_ratio.observe(rtf_value)
 
-            speakers_list = sorted(list({s.get("speaker") for s in segments if s.get("speaker")}))
+            speakers_list = sorted(list({s.get("speaker") for s in segments if s.get("speaker")})) or None
 
             print(f"{'-'*60}")
             print(f"Segments: {len(formatted_segments)} | Total time: {total_time:.2f}s | RTF: {rtf_value:.2f}x")
@@ -508,11 +1055,10 @@ async def transcribe_audio(request: TranscriptionRequest):
             )
 
         else:
-            # -------- DIARIZE LAST (classic WhisperX flow)
             print("Diarize-last mode: transcribing full audio...")
             t0 = time.time()
-            result = transcribe_chunk(audio, request.language or "ar", request.dialect or "egypt", batch_sz, 0.0)
-            detected_lang = result.get("language", request.language or "ar")
+            result = transcribe_chunk(audio, detected_lang, request.dialect or "egypt", batch_sz, 0.0)
+            detected_lang = result.get("language", detected_lang)
             t1 = time.time() - t0
             print(f"  ✓ Transcribed in {t1:.2f}s")
 
@@ -524,7 +1070,6 @@ async def transcribe_audio(request: TranscriptionRequest):
             speakers_list = None
             if request.enable_diarization and diarize_model is not None:
                 print("Assigning speakers with diarization...")
-                from pandas import DataFrame
                 waveform = torch.from_numpy(audio).float().unsqueeze(0)
                 diarize_annotation = diarize_model(
                     {"waveform": waveform, "sample_rate": 16000},
@@ -540,11 +1085,24 @@ async def transcribe_audio(request: TranscriptionRequest):
                 with_spk = whisperx.assign_word_speakers(diarize_df, result)
                 if isinstance(with_spk, dict) and "segments" in with_spk:
                     result["segments"] = with_spk["segments"]
-                speakers_list = sorted(list({s.get("speaker") for s in result["segments"] if s.get("speaker")}))
+                speakers_list = sorted(list({s.get("speaker") for s in result["segments"] if s.get("speaker")})) or None
 
             segments = result.get("segments", [])
+            segments = identify_speaker_roles(segments)
+
+            # LLM correction (if enabled)
+            if ENABLE_LLM_CORRECTION and LLM_CORRECTOR_AVAILABLE:
+                print("Applying LLM medical correction...")
+                try:
+                    segments = llm_correct_segments(segments, context="محادثة طبية في عيادة أسنان")
+                    for seg in segments:
+                        if "text_llm_corrected" in seg:
+                            seg["text"] = seg["text_llm_corrected"]
+                    print("  ✓ LLM correction complete")
+                except Exception as e:
+                    print(f"  ⚠️ LLM correction failed: {e}")
+
             full_text = " ".join([(s.get("text") or "").strip() for s in segments])
-            full_text = post_process_text(full_text)
             formatted_segments = format_segments_for_frontend(segments)
 
             total_time = time.time() - overall_start
@@ -570,10 +1128,11 @@ async def transcribe_audio(request: TranscriptionRequest):
 
     except Exception as e:
         print(f"❌ Transcription error: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
 # ---------------------------
-# Health & metrics
+# Health & aux endpoints
 # ---------------------------
 @app.get("/health")
 async def health_check():
@@ -589,11 +1148,60 @@ async def health_check():
         "pyannote_model": PYANNOTE_MODEL,
         "vocab_terms_builtin": len(BUILTIN_MEDICAL_TERMS),
         "vocab_terms_extra": len(EXTRA_TERMS),
+        "extra_replacements": len(EXTRA_REPLACEMENTS),
     }
 
 @app.get("/metrics")
 async def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.post("/normalize")
+async def normalize_endpoint(req: NormalizeRequest):
+    """Expose normalization and correction as a service."""
+    raw = req.text or ""
+    norm = post_process_text(raw.strip())
+    return {"input": raw, "normalized": norm}
+
+class VocabUpdateRequest(BaseModel):
+    wrong: str
+    right: str
+    ambiguous: Optional[bool] = False
+
+@app.post("/vocab/update")
+async def vocab_update(req: VocabUpdateRequest):
+    """Accept a user correction (wrong->right)."""
+    path = Path(VOCAB_FILE) if VOCAB_FILE else Path(__file__).parent / "medical_vocab_ar_en.json"
+    if not path.exists():
+        return {"error": f"vocab file not found: {path}"}
+    try:
+        data = _read_json_any(path)
+        if not isinstance(data, dict):
+            data = {"terms": [], "replacements": {}, "ambiguous_replacements": {}}
+        if req.ambiguous:
+            amb = data.get("ambiguous_replacements", {}) or {}
+            amb[req.wrong] = req.right
+            data["ambiguous_replacements"] = amb
+        else:
+            repl = data.get("replacements", {}) or {}
+            repl[req.wrong] = req.right
+            data["replacements"] = repl
+
+        _write_vocab_json_safe(path, data)
+        status = reload_vocab_from_file()
+        return {"status": "ok", "updated": {req.wrong: req.right}, "reload": status}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vocab")
+async def vocab_info():
+    """Quick helper to inspect loaded vocab & replacements."""
+    return {
+        "builtin_terms": len(BUILTIN_MEDICAL_TERMS),
+        "extra_terms": EXTRA_TERMS[:64],
+        "extra_terms_count": len(EXTRA_TERMS),
+        "replacements_count": len(EXTRA_REPLACEMENTS),
+    }
 
 # ---------------------------
 # Entrypoint

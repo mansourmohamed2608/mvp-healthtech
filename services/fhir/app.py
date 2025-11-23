@@ -4,7 +4,7 @@ FHIR R4 Writeback Service
 Week 5 Day 29 (Oct 23, 2025)
 Writes SOAP notes to EHR using FHIR R4 API
 """
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
@@ -12,6 +12,16 @@ import httpx
 import os
 from datetime import datetime
 import json
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("fhir")
+# Optional OTEL
+try:
+    from otel_setup import init_otel
+    init_otel("fhir")
+except Exception:
+    logger.debug("OTEL init skipped for FHIR")
 
 app = FastAPI(title="FHIR Writeback Service", version="1.0.0")
 app.add_middleware(
@@ -20,11 +30,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
+if not INTERNAL_SECRET:
+    raise RuntimeError("INTERNAL_SECRET must be set for FHIR service")
+
+@app.middleware("http")
+async def internal_auth(request: Request, call_next):
+    if request.url.path.startswith("/health"):
+        return await call_next(request)
+    if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return await call_next(request)
 
 # Configuration
 FHIR_BASE_URL = os.getenv("FHIR_BASE_URL", "http://localhost:8080/fhir")
 FHIR_CLIENT_ID = os.getenv("FHIR_CLIENT_ID", "")
 FHIR_CLIENT_SECRET = os.getenv("FHIR_CLIENT_SECRET", "")
+FHIR_BEARER_TOKEN = os.getenv("FHIR_BEARER_TOKEN", "")
+FHIR_BASIC_AUTH_USER = os.getenv("FHIR_BASIC_AUTH_USER", "")
+FHIR_BASIC_AUTH_PASSWORD = os.getenv("FHIR_BASIC_AUTH_PASSWORD", "")
+logger = logging.getLogger("fhir")
+logging.basicConfig(level=logging.INFO)
 
 class SOAPNote(BaseModel):
     subjective: str
@@ -69,7 +95,8 @@ async def check_fhir_connection() -> bool:
 @app.post("/write", response_model=FHIRWriteResponse)
 async def write_soap_to_fhir(
     req: FHIRWriteRequest,
-    authorization: Optional[str] = Header(None)
+    authorization: Optional[str] = Header(None),
+    idempotency_key: Optional[str] = Header(None),
 ):
     """
     Write SOAP note to FHIR server as DocumentReference
@@ -82,8 +109,15 @@ async def write_soap_to_fhir(
     try:
         # Get access token (if using OAuth2)
         access_token = None
+        basic_auth = None
         if authorization:
             access_token = authorization.replace("Bearer ", "")
+        elif FHIR_BEARER_TOKEN:
+            access_token = FHIR_BEARER_TOKEN
+        elif FHIR_BASIC_AUTH_USER and FHIR_BASIC_AUTH_PASSWORD:
+            import base64
+            basic_token = base64.b64encode(f"{FHIR_BASIC_AUTH_USER}:{FHIR_BASIC_AUTH_PASSWORD}".encode()).decode()
+            basic_auth = f"Basic {basic_token}"
         elif FHIR_CLIENT_ID and FHIR_CLIENT_SECRET:
             access_token = await get_fhir_access_token()
         
@@ -105,7 +139,10 @@ async def write_soap_to_fhir(
         headers = {}
         if access_token:
             headers["Authorization"] = f"Bearer {access_token}"
+        elif basic_auth:
+            headers["Authorization"] = basic_auth
         headers["Content-Type"] = "application/fhir+json"
+        headers["Idempotency-Key"] = idempotency_key or generate_idempotency_key(req)
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             # Create/Update Encounter
@@ -138,7 +175,7 @@ async def write_soap_to_fhir(
             
             doc_id = doc_response.json().get("id")
         
-        print(f"✅ FHIR write successful: DocumentReference/{doc_id}, Encounter/{encounter_id}")
+        logger.info("FHIR write ok", extra={"docId": doc_id, "encounterId": encounter_id, "sessionId": req.sessionId})
         
         return FHIRWriteResponse(
             success=True,
@@ -149,10 +186,10 @@ async def write_soap_to_fhir(
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="FHIR server timeout")
     except Exception as e:
-        print(f"❌ FHIR write error: {str(e)}")
+        logger.error("FHIR write error", extra={"sessionId": req.sessionId, "error": str(e)})
         return FHIRWriteResponse(
             success=False,
-            error=str(e)
+            error="FHIR write failed"
         )
 
 async def get_fhir_access_token() -> str:
@@ -303,3 +340,7 @@ PLAN:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5004, log_level="info")
+
+def generate_idempotency_key(req: FHIRWriteRequest) -> str:
+    # Deterministic idempotency key: note/session/practitioner/patient
+    return f"note:{req.sessionId}:{req.patientId}:{req.practitionerId}"

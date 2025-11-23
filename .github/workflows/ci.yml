@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install gateway deps
+        run: |
+          cd gateway
+          npm install
+      - name: Run gateway tests
+        run: |
+          cd gateway
+          npm test -- --runInBand
+      - name: Install Python deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv python3-pip libpq-dev
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements-dev.txt
+      - name: ASR tests
+        run: |
+          cd services/asr
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt -r ../../requirements-dev.txt
+          INTERNAL_SECRET=test-internal pytest
+      - name: LLM tests
+        run: |
+          cd services/llm
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt -r ../../requirements-dev.txt
+          INTERNAL_SECRET=test-internal pytest
+      - name: TTS tests
+        run: |
+          cd services/tts
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt -r ../../requirements-dev.txt
+          INTERNAL_SECRET=test-internal pytest
+      - name: SOAP tests
+        run: |
+          cd services/soap
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt -r ../../requirements-dev.txt
+          INTERNAL_SECRET=test-internal pytest
+      - name: FHIR tests
+        run: |
+          cd services/fhir
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt -r ../../requirements-dev.txt
+          INTERNAL_SECRET=test-internal pytest
+      - name: E2E smoke (gateway)
+        run: |
+          cd scripts
+          JWT_SECRET=test-jwt-secret node e2e-smoke.js
