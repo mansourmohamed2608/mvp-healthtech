@@ -15,7 +15,7 @@ jobs:
       - name: Install gateway deps
         run: |
           cd gateway
-          npm install
+          npm install --legacy-peer-deps
       - name: Run gateway tests
         run: |
           cd gateway
