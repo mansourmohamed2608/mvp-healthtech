@@ -53,3 +53,55 @@ Thumbs.db
 # --- Data---
 **/data/
 **/kaggle_upload/
+
+# --- Project-specific safety / outputs ---
+# Model weights & checkpoints
+**/*.pt
+**/*.bin
+**/*.safetensors
+**/*.onnx
+**/*.ckpt
+
+# Dataset archives
+**/*.zip
+**/*.tar
+**/*.tar.gz
+**/*.7z
+
+# Media samples
+**/*.m4a
+**/*.mp3
+**/*.wav
+**/*.mp4
+
+# Notebooks (archive or external only)
+**/*.ipynb
+
+# Generated outputs and logs
+outputs/**
+*wer_comparison*.json
+*lora_wer_results.json
+*whisper_wer_comparison.json
+tmp_asr_test*.*
+
+# Local-only helpers
+*.ps1
+local_asr_only.py
+prepare_google_drive_data.py
+
+# Future data/research folders
+services/**/data/
+services/**/kaggle_upload/
+
+# Keep archived research tracked
+!archive/**
+
+# Standard Python/Node artifacts
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+**/venv/
+**/env/
+**/dist/
+**/build/
+coverage/

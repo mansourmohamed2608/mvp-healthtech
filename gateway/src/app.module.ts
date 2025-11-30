@@ -1,5 +1,4 @@
 // gateway/src/app.module.ts
-import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
@@ -17,6 +16,7 @@ import { LlmController } from './llm/llm.controller';
 import { TtsController } from './tts/tts.controller';
 import { SoapController } from './soap/soap.controller';
 import { FhirController } from './fhir/fhir.controller';
+import { HealthController } from './health.controller';
 import { AsrService } from './asr/asr.service';
 import { LlmService } from './llm/llm.service';
 import { TtsService } from './tts/tts.service';
@@ -28,6 +28,7 @@ import { RolesGuard } from './auth/roles.guard';
 import { MiddlewareConsumer, Module, RequestMethod } from '@nestjs/common';
 import { CorrelationMiddleware } from './middleware/correlation.middleware';
 import { AuditService } from './audit/audit.service';
+import { InternalHttpClient } from './http/internal-http-client.service';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { AuditService } from './audit/audit.service';
   ],
   controllers: [
     MetricsController,
+    HealthController,
     AsrController,
     LlmController,
     TtsController,
@@ -74,6 +76,7 @@ import { AuditService } from './audit/audit.service';
     VectorCacheService,
     KvCacheService,
     AuditService,
+    InternalHttpClient,
   ],
 })
 export class AppModule {

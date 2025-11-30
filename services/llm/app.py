@@ -59,7 +59,7 @@ def log_safe(level: int, msg: str, request: Request | None = None, session_id: s
 
 @app.middleware("http")
 async def internal_auth(request: Request, call_next):
-    if request.url.path.startswith("/health") or request.url.path.startswith("/metrics"):
+    if request.url.path.startswith("/health") or request.url.path.startswith("/ready") or request.url.path.startswith("/metrics"):
         return await call_next(request)
     if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -227,7 +227,17 @@ async def _run_llm_inference(prompt: str, max_new_tokens: int = 192) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "llm", "model": "Henrychur/MMed-Llama-3-8B", "correlationId": None}
+    return {"ok": True, "service": "llm"}
+
+
+@app.get("/ready")
+async def ready():
+    return {
+        "ready": model is not None,
+        "model": MODEL_NAME,
+        "device": str(model.device) if model else None,
+        "tokenizer": tokenizer.name_or_path if tokenizer else None,
+    }
 
 @app.get("/metrics")
 async def metrics():
@@ -246,7 +256,7 @@ async def correct_transcription(req: TranscriptionCorrectionRequest):
     - Contextual mistakes
     """
     try:
-        print(f"📝 Correction request: {len(req.text)} chars")
+        log_safe(logging.INFO, "LLM correction request", request=None, session_id=None, textLen=len(req.text))
         
         # Simpler, more direct prompt that's easier for the model to follow
         prompt = f"""صحح الأخطاء في هذا النص الطبي: {req.text}
@@ -274,7 +284,7 @@ async def correct_transcription(req: TranscriptionCorrectionRequest):
             )
         
         elapsed = time.time() - start_time
-        print(f"✅ Generation complete in {elapsed:.1f}s")
+        log_safe(logging.INFO, "LLM correction generation complete", request=None, session_id=None, latencyMs=int(elapsed * 1000))
 
         corrected = tokenizer.decode(outputs[0], skip_special_tokens=True)
         
@@ -316,13 +326,11 @@ async def correct_transcription(req: TranscriptionCorrectionRequest):
         
         # ✨ POST-PROCESSING: Apply medical corrections (+5-8% accuracy)
         corrected, dict_corrections = apply_corrections(corrected, dialect=req.dialect)
-        print(f"✅ Applied {dict_corrections} dictionary corrections")
+        logger.debug("Applied dictionary corrections", extra={"count": dict_corrections})
         
         # ✨ POST-PROCESSING: Normalize vital signs
         corrected = normalize_vital_signs(corrected)
-        print(f"✅ Normalized vital signs")
-        
-        print(f"✅ Final corrected text: {corrected[:100]}...")
+        logger.debug("Normalized vital signs")
 
         # Count differences
         corrections_made = len(set(req.text.split()) - set(corrected.split())) + dict_corrections
@@ -334,7 +342,8 @@ async def correct_transcription(req: TranscriptionCorrectionRequest):
             "dialect_normalized": True
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        log_safe(logging.ERROR, "LLM correction failed", request=None, session_id=None, error=str(type(e).__name__), textLen=len(req.text))
+        raise HTTPException(status_code=500, detail="Correction failed")
 
 
 @app.post("/infer", response_model=InferResponse)
@@ -636,7 +645,14 @@ Format your response as JSON with this structure:
         )
 
     except Exception as e:
-        print(f"Error in speaker role identification: {e}")
+        log_safe(
+            logging.ERROR,
+            "Speaker role identification failed",
+            request=None,
+            session_id=None,
+            segments=len(request.segments),
+            error=str(type(e).__name__),
+        )
         # Fallback to heuristic
         roles = analyze_speakers_heuristic(request.segments)
 

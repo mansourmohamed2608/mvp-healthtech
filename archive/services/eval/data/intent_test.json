@@ -1,0 +1,22 @@
+[
+  {
+    "message": "أريد حجز موعد مع الطبيب",
+    "expected_intent": "appointment"
+  },
+  {
+    "message": "عندي صداع شديد",
+    "expected_intent": "symptom"
+  },
+  {
+    "message": "أريد تجديد وصفتي الطبية",
+    "expected_intent": "prescription"
+  },
+  {
+    "message": "لدي حساسية من البنسلين",
+    "expected_intent": "medical_history"
+  },
+  {
+    "message": "والدي يشعر بألم في الصدر",
+    "expected_intent": "emergency"
+  }
+]

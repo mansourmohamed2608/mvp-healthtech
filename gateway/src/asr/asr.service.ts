@@ -1,7 +1,7 @@
 // gateway/src/asr/asr.service.ts
 import { Injectable, Logger } from '@nestjs/common';
-import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
+import { InternalHttpClient } from '../http/internal-http-client.service';
 
 // Response types for ASR service
 export interface SpeakerSegment {
@@ -44,6 +44,7 @@ export class AsrService {
     if (!process.env.INTERNAL_SECRET) throw new Error('INTERNAL_SECRET not set');
     return process.env.INTERNAL_SECRET;
   })();
+  constructor(private readonly http: InternalHttpClient) {}
 
   // Batch transcription with optional speaker role detection
   async transcribe(
@@ -53,23 +54,21 @@ export class AsrService {
     correlationId?: string,
   ): Promise<TranscriptionResponse> {
     const corr = correlationId || uuidv4();
-    const { data } = await axios.post<TranscriptionResponse>(
-      `${process.env.ASR_SERVICE_URL}/transcribe`,
+    const client = this.http.getClient({ baseUrl: process.env.ASR_SERVICE_URL || '', serviceName: 'asr' });
+    const { data } = await client.post<TranscriptionResponse>(
+      `/transcribe`,
       { audio, callSid },
-      { timeout: 15000, headers: { 'x-correlation-id': corr, 'x-internal-secret': this.internalSecret } },
+      { headers: { 'x-correlation-id': corr } },
     );
 
     // If speaker diarization was enabled and we have segments, identify roles
     if (identifySpeakers && data.segments && data.segments.length > 0) {
       try {
         this.logger.log(`Identifying speaker roles for ${data.segments.length} segments`);
-        const roleResponse = await axios.post(
-          `${this.llmServiceUrl}/identify-speakers`,
-          {
-            segments: data.segments,
-            context: 'medical'
-          },
-          { headers: { 'x-internal-secret': this.internalSecret } },
+        const llmClient = this.http.getClient({ baseUrl: this.llmServiceUrl, serviceName: 'llm' });
+        const roleResponse = await llmClient.post(
+          `/identify-speakers`,
+          { segments: data.segments, context: 'medical' },
         );
 
         // Add role information to the response
@@ -90,18 +89,14 @@ export class AsrService {
   }
 
   // Streaming transcription
-  async stream(audio: string, callSid: string): Promise<StreamResponse> {
+  async stream(audio: string, callSid: string, isFinal = false): Promise<StreamResponse> {
     const corr = uuidv4();
-    // Reuse the same /transcribe endpoint to keep one canonical contract
-    const { data } = await axios.post<TranscriptionResponse>(
-      `${process.env.ASR_SERVICE_URL}/transcribe`,
-      { audio, callSid },
-      { timeout: 15000, headers: { 'x-correlation-id': corr, 'x-internal-secret': this.internalSecret } },
+    const client = this.http.getClient({ baseUrl: process.env.ASR_SERVICE_URL || '', serviceName: 'asr' });
+    const { data } = await client.post<StreamResponse>(
+      `/stream/chunk`,
+      { audio, sessionId: callSid, isFinal },
+      { headers: { 'x-correlation-id': corr } },
     );
-    return {
-      partial: data.text,
-      final: data.text,
-      ...data,
-    };
+    return data;
   }
 }

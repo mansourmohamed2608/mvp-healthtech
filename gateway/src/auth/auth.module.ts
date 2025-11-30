@@ -6,6 +6,7 @@ import { JwtStrategy } from './jwt.strategy';
 import { OidcStrategy } from './strategies/oidc.strategy';
 import { AuthController } from './auth.controller';
 import { WsJwtGuard } from './ws-jwt.guard';
+import { AuditService } from '../audit/audit.service';
 
 @Module({
   imports: [
@@ -19,7 +20,7 @@ import { WsJwtGuard } from './ws-jwt.guard';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, OidcStrategy, WsJwtGuard],
-  exports: [AuthService, WsJwtGuard],
+  providers: [AuthService, JwtStrategy, OidcStrategy, WsJwtGuard, AuditService],
+  exports: [AuthService, WsJwtGuard, JwtModule, AuditService],
 })
 export class AuthModule {}

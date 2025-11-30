@@ -5,8 +5,8 @@
  * Week 3 Day 16 (Oct 10, 2025)
  */
 import { Injectable, Logger } from '@nestjs/common';
-import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
+import { InternalHttpClient } from '../http/internal-http-client.service';
 
 interface SynthesizeRequest {
   text: string;
@@ -30,6 +30,7 @@ export class TtsService {
     if (!process.env.INTERNAL_SECRET) throw new Error('INTERNAL_SECRET not set');
     return process.env.INTERNAL_SECRET;
   })();
+  constructor(private readonly http: InternalHttpClient) {}
 
   /**
    * Synthesize speech from text
@@ -38,16 +39,16 @@ export class TtsService {
   async synthesize(text: string, sessionId?: string): Promise<{ audioBase64: string; format?: string }> {
     try {
       const corr = uuidv4();
-      const response = await axios.post(
-        `${this.serviceUrl}/synthesize`,
+      const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'tts' });
+      const response = await client.post(
+        `/synthesize`,
         {
           text,
           sessionId,
           voice: 'ar-EG-SalmaNeural', // Arabic Egyptian female
         } as SynthesizeRequest,
         {
-          timeout: 15000,
-          headers: { 'x-correlation-id': corr, 'x-internal-secret': this.internalSecret },
+          headers: { 'x-correlation-id': corr },
         },
       );
 
@@ -65,8 +66,9 @@ export class TtsService {
    */
   async synthesizeStream(text: string, sessionId?: string): Promise<Buffer> {
     try {
-      const response = await axios.post(
-        `${this.serviceUrl}/synthesize/stream`,
+      const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'tts' });
+      const response = await client.post(
+        `/synthesize/stream`,
         {
           text,
           sessionId,
@@ -75,7 +77,7 @@ export class TtsService {
         {
           responseType: 'arraybuffer',
           timeout: 15000, // 15s timeout for streaming
-          headers: { 'x-internal-secret': this.internalSecret },
+          headers: { 'x-correlation-id': sessionId || uuidv4() },
         },
       );
 
@@ -91,7 +93,8 @@ export class TtsService {
    */
   async getVoices(): Promise<any> {
     try {
-      const response = await axios.get(`${this.serviceUrl}/voices`, { headers: { 'x-internal-secret': this.internalSecret } });
+      const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'tts' });
+      const response = await client.get(`/voices`);
       return response.data;
     } catch (error) {
       this.logger.error(`Failed to fetch voices: ${error}`);

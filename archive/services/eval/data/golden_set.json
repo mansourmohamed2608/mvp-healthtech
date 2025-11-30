@@ -1,0 +1,17 @@
+[
+  {
+    "audio_path": "data/test_audio/egy_sample1.wav",
+    "reference": "أنا عندي صداع شديد من امبارح",
+    "dialect": "egyptian"
+  },
+  {
+    "audio_path": "data/test_audio/lev_sample1.wav",
+    "reference": "عندي وجع راس كتير قوي",
+    "dialect": "levantine"
+  },
+  {
+    "audio_path": "data/test_audio/gulf_sample1.wav",
+    "reference": "عندي صداع شديد من أمس",
+    "dialect": "gulf"
+  }
+]

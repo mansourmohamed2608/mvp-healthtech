@@ -171,6 +171,13 @@ export class SessionService {
         sessionId, // Prevent sessionId from being changed
       };
 
+      // If Redis is unavailable, update the in-memory store directly
+      if (!this.redisAvailable || !this.redisClient) {
+        this.inMemoryStore.set(sessionId, updated);
+        this.logger.log(`Session updated (in-memory): ${sessionId}`);
+        return updated;
+      }
+
       const ttl = await this.redisClient.ttl(
         `${this.SESSION_PREFIX}${sessionId}`,
       );
@@ -191,6 +198,16 @@ export class SessionService {
 
   async delete(sessionId: string): Promise<void> {
     try {
+      if (!this.redisAvailable || !this.redisClient) {
+        const deleted = this.inMemoryStore.delete(sessionId);
+        if (!deleted) {
+          throw new NotFoundException(`Session ${sessionId} not found`);
+        }
+        this.logger.log(`Session deleted (in-memory): ${sessionId}`);
+        await this.markEnded(sessionId).catch(() => {});
+        return;
+      }
+
       const result = await this.redisClient.del(
         `${this.SESSION_PREFIX}${sessionId}`,
       );
@@ -217,10 +234,12 @@ export class SessionService {
         Date.now() + this.SESSION_TTL * 1000,
       ).toISOString();
 
-      await this.redisClient.expire(
-        `${this.SESSION_PREFIX}${sessionId}`,
-        this.SESSION_TTL,
-      );
+      if (this.redisAvailable && this.redisClient) {
+        await this.redisClient.expire(
+          `${this.SESSION_PREFIX}${sessionId}`,
+          this.SESSION_TTL,
+        );
+      }
 
       const updated = await this.update(sessionId, {
         expiresAt: newExpiresAt,

@@ -54,6 +54,22 @@ CREATE INDEX IF NOT EXISTS idx_soap_notes_patient ON soap_notes(patient_id);
 CREATE INDEX IF NOT EXISTS idx_soap_notes_clinician ON soap_notes(clinician_id);
 CREATE INDEX IF NOT EXISTS idx_soap_notes_status ON soap_notes(status);
 
+CREATE TABLE IF NOT EXISTS soap_jobs (
+  job_id text PRIMARY KEY,
+  session_id text,
+  patient_id text,
+  clinician_id text,
+  status text NOT NULL CHECK (status IN ('pending','processing','done','failed')),
+  attempts integer NOT NULL DEFAULT 0,
+  note_id uuid NULL,
+  error_code text,
+  last_error text,
+  correlation_id text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_soap_jobs_status ON soap_jobs(status);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
   actor_id text NOT NULL,

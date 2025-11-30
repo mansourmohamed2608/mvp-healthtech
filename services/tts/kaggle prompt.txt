@@ -1,0 +1,210 @@
+# ============================================================
+# 1) Install dependencies needed for Qwen2.5 Instruct on Kaggle
+# ============================================================
+# - transformers: to load and run the model
+# - accelerate: better GPU support
+# - sentencepiece, einops: often required by modern HF models
+!pip install -q "git+https://github.com/huggingface/transformers" accelerate sentencepiece einops
+
+
+# ============================================================
+# 2) Imports & MODEL LOADING
+# ============================================================
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+# We use the smaller 1.5B Instruct model to avoid OOM on Kaggle.
+# Later, for production, you might switch to a bigger model (e.g. 7B) on a real server.
+MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+
+# Detect if we have a GPU (Kaggle usually does if you turned it on in the settings)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# bfloat16 is more memory-efficient on GPU; on CPU we stick to float32
+dtype = torch.bfloat16 if device == "cuda" else torch.float32
+
+print(f"Using device = {device}, dtype = {dtype}, model = {MODEL_NAME}")
+
+# Tokenizer: turns text into tokens that the model can process
+tokenizer = AutoTokenizer.from_pretrained(
+    MODEL_NAME,
+    trust_remote_code=True  # Qwen uses a custom chat template
+)
+
+# The actual LLM weights
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    trust_remote_code=True,
+    torch_dtype=dtype,
+    device_map="auto" if device == "cuda" else None,  # spread across GPU if available
+)
+
+if device == "cuda":
+    model.to(device)
+
+
+# ============================================================
+# 3) SYSTEM PROMPT: "Brain" and Behavior of the Voice Agent
+# ============================================================
+# This is the *role* and *rules* for the assistant.
+# Think of it as: "How should the VA behave EVERY TIME?"
+#
+# Key ideas:
+# - It is a *medical booking* VA, NOT a diagnostic system.
+# - It speaks Arabic with Egyptian flavor and is friendly / calming.
+# - It always tries to extract the key booking fields:
+#   - Service type, doctor/specialty, date/time, full name, phone number.
+# - It asks ONE follow-up question at a time to keep voice UX smooth.
+#
+# NOTE: These instructions are read by the LLM, not by Python.
+VA_SYSTEM_PROMPT = """
+[ROLE]
+أنت مساعد افتراضي (Voice Agent) لعيادة/مركز طبي في مصر.
+وظيفتك الأساسية هي مساعدة المرضى في:
+- حجز المواعيد
+- تعديل / إلغاء المواعيد
+- إعطاء معلومات بسيطة عن المواعيد والسياسات (بدون تشخيص طبي).
+
+[GOALS]
+عند الحديث مع المريض، ركّز على:
+1) فهم ما يريد المريض:
+   - حجز جديد؟ تعديل موعد؟ إلغاء؟ استفسار بسيط؟
+2) جمع بيانات الحجز الأساسية:
+   - نوع الخدمة (مثلاً: كشف، متابعة، استشارة أونلاين)
+   - التخصص أو الطبيب (لو المريض حدده أو العيادة عندها أطباء محددين)
+   - اليوم المطلوب (تاريخ أو يوم في الأسبوع)
+   - التوقيت المفضل (صباحاً / مساءً، أو ساعة تقريبية)
+   - اسم المريض الثلاثي
+   - رقم الموبايل
+3) تأكيد البيانات في النهاية قبل "تثبيت" الحجز كلامياً:
+   - إعادة ذكر التاريخ، الساعة، الطبيب، نوع الزيارة، واسم المريض.
+
+[WHAT YOU *CANNOT* DO]
+- لا تعطي تشخيص طبي.
+- لا تعد المريض بأي إجراءات طبية أو أدوية.
+- لو المريض سأل عن أشياء طبية معقدة، قل له بلطف إنك مساعد مواعيد فقط،
+  ويمكنك فقط حجز موعد مع الطبيب ليجاوب على هذه الأسئلة.
+
+[STYLE / TONE]
+- تحدّث بالعربية الفصحى البسيطة مع لمسة لهجة مصرية خفيفة.
+- اجعل الجمل قصيرة وواضحة ومناسبة لقراءة TTS بصوت طبيعي.
+- كن لطيفاً ومطمئناً، خاصة عند وجود قلق أو ألم عند المريض.
+- لا تكثر من الإيموجيز أو علامات التعجب؛ اجعل الأسلوب مهنياً لكن ودوداً.
+
+[INTERACTION RULES]
+- كل مرة يسأل فيها المريض أو يرد عليك، فكّر:
+  1) هل لديّ كل البيانات اللازمة للحجز؟
+  2) لو لا، اسأل سؤال واحد فقط، واضح ومباشر (مثلاً: "تحب الحجز مع دكتور معين؟" أو "إمتى يناسبك الميعاد؟").
+- إذا احتجت تفترض مواعيد متاحة (في هذا الديمو لا توجد قاعدة بيانات حقيقية):
+  - تظاهر أنك "تتحقق من النظام"، ثم اقترح وقت منطقي، مثل:
+    "عندنا ميعاد متاح بكره الساعة ٦ مساءً، تحب أحجزه ليك؟"
+- عندما تكتمل البيانات، أعد تلخيص الحجز:
+  - "تمام يا أستاذ أحمد، حجزت لحضرتك كشف أسنان مع دكتور محمد يوم
+     الثلاثاء الساعة ٦ مساءً، ورقم الموبايل 0100..., صح كده؟"
+
+[OUTPUT FORMAT]
+- أجب دائماً بصوت المساعد فقط (لا تكتب تعليمات تقنية أو إنك نموذج ذكاء اصطناعي).
+- لا تعرض JSON أو تنسيقات برمجية.
+- اجعل الرد مناسباً للبث بصوت TTS في مكالمة هاتفية: جمل قصيرة، توقفات واضحة.
+"""
+
+
+# ============================================================
+# 4) Helper: generate_va_reply()
+# ============================================================
+# This function simulates *one turn* of the conversation:
+# - We pass:
+#     - latest user utterance (transcribed from ASR in a real system)
+#     - history of previous turns (to keep context)
+# - We build a "messages" list in the format Qwen expects:
+#     [system, user, assistant, user, assistant, ..., user]
+# - We run the model.generate() and decode only the new tokens.
+#
+# In your real voice agent:
+# - "user_utterance" will come from ASR (stream or final text)
+# - The returned text will go to TTS (Coqui, Edge, etc.) and then audio to the caller.
+def generate_va_reply(user_utterance, history=None, temperature=0.2, max_new_tokens=256):
+    if history is None:
+        history = []
+
+    # Start with system message (our big VA_SYSTEM_PROMPT above)
+    messages = [
+        {"role": "system", "content": VA_SYSTEM_PROMPT.strip()}
+    ]
+
+    # Add previous turns to preserve context across the call
+    # history is a list of dicts: { "user": "...", "assistant": "..." }
+    for turn in history:
+        messages.append({"role": "user", "content": turn["user"]})
+        messages.append({"role": "assistant", "content": turn["assistant"]})
+
+    # Now add the current user message (latest ASR result)
+    messages.append({"role": "user", "content": user_utterance})
+
+    # Qwen uses a chat template string format internally (like ChatGPT roles)
+    chat_text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,  # tells model: now it's assistant's turn
+    )
+
+    # Tokenize and move to device
+    inputs = tokenizer(chat_text, return_tensors="pt").to(device)
+
+    # Generate a reply
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,   # lower temp → more deterministic
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    # We only want the *newly generated* part (after the prompt tokens)
+    generated_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
+    text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    return text.strip()
+
+
+# ============================================================
+# 5) Demo conversation: simulate a Voice Agent booking flow
+# ============================================================
+# This section shows how a real call might look, but in text only.
+# Imagine:
+# - ASR gives us "user_1"
+# - We call generate_va_reply(...)
+# - We send the result to your TTS pipeline
+# - Then the caller answers (user_2), and so on...
+
+history = []
+
+# Turn 1: Patient starts the call and asks to book something
+user_1 = "أريد أحجز كشف أسنان بكرة بعد الظهر."
+assistant_1 = generate_va_reply(user_1, history)
+history.append({"user": user_1, "assistant": assistant_1})
+
+print("User:", user_1)
+print("\nAssistant:", assistant_1)
+print("\n" + "="*80 + "\n")
+
+# Turn 2: Patient provides more details (name + phone)
+user_2 = "تمام. اسمي أحمد حسن ورقم الموبايل 01001234567."
+assistant_2 = generate_va_reply(user_2, history)
+history.append({"user": user_2, "assistant": assistant_2})
+
+print("User:", user_2)
+print("\nAssistant:", assistant_2)
+print("\n" + "="*80 + "\n")
+
+# Turn 3: Patient confirms the proposed time
+user_3 = "الساعة ٦ مناسبة جداً، شكراً."
+assistant_3 = generate_va_reply(user_3, history)
+history.append({"user": user_3, "assistant": assistant_3})
+
+print("User:", user_3)
+print("\nAssistant:", assistant_3)
+
+# At this point, in a real system, you would:
+# - Persist the booking data to your DB (service, date, time, name, phone)
+# - Return the final assistant text to TTS and inform the patient of the confirmed booking.

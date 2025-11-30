@@ -91,6 +91,19 @@ services:
     volumes:
       - ../services/soap:/app
 
+  soap-worker:
+    build:
+      context: ../services/soap
+      dockerfile: Dockerfile.worker
+    environment:
+      - SOAP_QUEUE_URL=redis://redis:6379/0
+      - SOAP_SERVICE_URL=http://soap:5003
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/healthtech
+    depends_on:
+      - soap
+      - redis
+
   fhir:
     build: ../services/fhir
     ports:
@@ -136,6 +149,16 @@ services:
       - ../infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
+
+  retention:
+    build: ../services/eval
+    command: ["python", "retention_job.py"]
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/healthtech
+      - PHI_RETENTION_DAYS=${PHI_RETENTION_DAYS:-90}
+      - DRY_RUN=${RETENTION_DRY_RUN:-false}
+    depends_on:
+      - postgres
 
 volumes:
   gateway_node_modules:

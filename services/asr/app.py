@@ -28,6 +28,8 @@ import json
 import inspect
 from functools import lru_cache
 import traceback
+import asyncio
+import audioop
 
 import numpy as np
 import soundfile as sf
@@ -35,6 +37,7 @@ import torch
 import torchaudio
 import whisperx
 from pandas import DataFrame
+import logging
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,13 +48,37 @@ from dotenv import load_dotenv
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("asr")
+
+# Optional OTEL
+try:
+    from otel_setup import init_otel
+    init_otel("asr")
+except Exception:
+    logger.debug("OTEL init skipped for ASR")
+
+
+def safe_print(*args, **_kwargs):
+    # Avoid leaking PHI via stdout; count fields instead.
+    logger.debug("suppressed print", extra={"fields": len(args)})
+
+
+def log_safe(level: int, msg: str, session_id: str | None = None, **kwargs):
+    extra = {"sessionId": session_id}
+    extra.update({k: v for k, v in kwargs.items() if v is not None})
+    logger.log(level, msg, extra=extra)
+
+
+print = safe_print
+
 # AraBART for grammar correction
 try:
     from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
     ARABART_AVAILABLE = True
 except ImportError:
     ARABART_AVAILABLE = False
-    print("⚠️ transformers not installed - AraBART GEC disabled")
+    logger.warning("transformers not installed - AraBART GEC disabled")
 
 # LLM Corrector (medical-aware)
 try:
@@ -63,7 +90,7 @@ except ImportError:
         LLM_CORRECTOR_AVAILABLE = True
     except ImportError:
         LLM_CORRECTOR_AVAILABLE = False
-        print("⚠️ llm_corrector not found - LLM correction disabled")
+        logger.warning("llm_corrector not found - LLM correction disabled")
 
 # Prefer shared functions from text_fix_ar.py to avoid duplication
 try:
@@ -190,7 +217,7 @@ def load_extra_vocab() -> List[str]:
         return []
     path = Path(VOCAB_FILE)
     if not path.exists():
-        print(f"ℹ️ MEDICAL_VOCAB_FILE not found: {path}")
+        logger.info("MEDICAL_VOCAB_FILE not found", extra={"path": str(path)})
         return []
     try:
         if path.suffix.lower() == ".json":
@@ -202,7 +229,7 @@ def load_extra_vocab() -> List[str]:
             return []
         return _read_text_lines(path)
     except Exception as e:
-        print(f"⚠️ Failed to load MEDICAL_VOCAB_FILE terms: {e}")
+        logger.warning("Failed to load MEDICAL_VOCAB_FILE terms", extra={"error": str(e)})
         return []
 
 def load_replacements_map() -> Dict[str, str]:
@@ -219,7 +246,7 @@ def load_replacements_map() -> Dict[str, str]:
             cleaned = {str(k): str(v) for k, v in repl.items()}
             return cleaned
     except Exception as e:
-        print(f"⚠️ Failed to load replacements from MEDICAL_VOCAB_FILE: {e}")
+        logger.warning("Failed to load replacements from MEDICAL_VOCAB_FILE", extra={"error": str(e)})
     return {}
 
 def load_ambiguous_map() -> Dict[str, str]:
@@ -235,7 +262,7 @@ def load_ambiguous_map() -> Dict[str, str]:
         if isinstance(amb, dict):
             return {str(k): str(v) for k, v in amb.items()}
     except Exception as e:
-        print(f"⚠️ Failed to load ambiguous_replacements from MEDICAL_VOCAB_FILE: {e}")
+        logger.warning("Failed to load ambiguous_replacements from MEDICAL_VOCAB_FILE", extra={"error": str(e)})
     return {}
 
 def load_medical_keywords() -> List[str]:
@@ -251,7 +278,7 @@ def load_medical_keywords() -> List[str]:
         if isinstance(keys, list):
             return [str(k) for k in keys if str(k).strip()]
     except Exception as e:
-        print(f"⚠️ Failed to load medical_keywords from MEDICAL_VOCAB_FILE: {e}")
+        logger.warning("Failed to load medical_keywords from MEDICAL_VOCAB_FILE", extra={"error": str(e)})
     return []
 
 EXTRA_TERMS = load_extra_vocab()
@@ -280,7 +307,7 @@ def load_dialect_config() -> Tuple[bool, List[str]]:
             terms = []
         return preserve, terms
     except Exception as e:
-        print(f"⚠️ Failed to load dialect config from MEDICAL_VOCAB_FILE: {e}")
+        logger.warning("Failed to load dialect config from MEDICAL_VOCAB_FILE", extra={"error": str(e)})
     return False, []
 
 PRESERVE_DIALECT, EXTRA_DIALECT_TERMS = load_dialect_config()
@@ -329,8 +356,8 @@ def reload_vocab_from_file() -> dict:
             "preserve_dialect": PRESERVE_DIALECT,
         }
     except Exception as e:
-        traceback.print_exc()
-        return {"error": str(e)}
+        logger.exception("Failed to reload vocab from file", extra={"error": str(e)})
+        return {"error": "reload_failed"}
 
 def make_initial_prompt(dialect_hint: str = "egypt") -> str:
     """Create initial prompt for WhisperX with dialect awareness and medical vocabulary.
@@ -413,7 +440,7 @@ def post_process_text(text: str) -> str:
         # Full context → apply all ambiguous
         for pat, right in COMPILED_AMBIGUOUS_REPLACEMENTS:
             if DEBUG_AMBIGUOUS:
-                print(f"[AMBIG-APPLY] Global medical context, applying {pat.pattern} -> {right}")
+                logger.debug("AMBIG apply (global)", extra={"pattern": pat.pattern})
             t = pat.sub(right, t)
     elif has_medical:
         # Medical but dialect present → windowed application
@@ -430,20 +457,12 @@ def post_process_text(text: str) -> str:
                 for idx in indices:
                     start = max(0, idx - window)
                     end = min(len(tokens), idx + window + 1)
-                    neighborhood = set(tokens[start:end])
-                    if neighborhood & EXTRA_MEDICAL_KEYWORDS_NORM:
+                    if set(tokens[start:end]) & EXTRA_MEDICAL_KEYWORDS_NORM:
                         apply = True
-                        if DEBUG_AMBIGUOUS:
-                            print(f"[AMBIG-APPLY] Windowed match for '{wrong_raw}' at idx {idx}, neighborhood={tokens[start:end]}")
                         break
 
                 if apply:
                     t = pat.sub(right, t)
-                elif DEBUG_AMBIGUOUS and indices:
-                    for idx in indices:
-                        start = max(0, idx - window)
-                        end = min(len(tokens), idx + window + 1)
-                        print(f"[AMBIG-SKIP] '{wrong_raw}' at idx {idx}, neighborhood={tokens[start:end]} -> no medical keyword")
             except Exception:
                 continue
 
@@ -732,6 +751,9 @@ align_metadata = None
 diarize_model = None
 arabart_tokenizer = None
 arabart_model = None
+stream_buffers: Dict[str, List[bytes]] = {}
+stream_lock = asyncio.Lock()
+stream_meta: Dict[str, Dict[str, Any]] = {}
 
 # ---------------------------
 # Schemas
@@ -772,6 +794,20 @@ class TranscriptionResponse(BaseModel):
     model_used: str
     pipeline_mode: str
 
+
+class StreamChunkRequest(BaseModel):
+    audio: str  # base64 chunk
+    sessionId: str
+    format: Optional[str] = "mulaw"
+    sampleRate: Optional[int] = 8000
+    isFinal: Optional[bool] = False
+
+
+class StreamChunkResponse(BaseModel):
+    partial: str = ""
+    final: Optional[str] = None
+    isFinal: bool = False
+
 # ---------------------------
 # Utilities
 # ---------------------------
@@ -784,6 +820,18 @@ def decode_audio(audio_base64: str) -> Tuple[np.ndarray, int]:
         return audio_data, sample_rate
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to decode audio: {str(e)}")
+
+def decode_mulaw_chunk(audio_base64: str, sample_rate: int = 8000) -> np.ndarray:
+    """Decode mulaw 8k chunk to float32 16k mono."""
+    try:
+        pcm_mulaw = base64.b64decode(audio_base64)
+        pcm16 = audioop.ulaw2lin(pcm_mulaw, 2)
+        wave = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
+        if sample_rate != 16000:
+            wave = torchaudio.functional.resample(torch.from_numpy(wave), sample_rate, 16000).numpy()
+        return wave
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to decode mulaw chunk: {str(e)}")
 
 def format_segments_for_frontend(segments: List[Dict[str, Any]]) -> List[TranscriptionSegment]:
     formatted: List[TranscriptionSegment] = []
@@ -889,11 +937,14 @@ def align_segments(
 async def load_models():
     global whisper_model, align_model_a, align_metadata, diarize_model
 
-    print(f"Loading WhisperX model: {WHISPER_MODEL} on {DEVICE} (compute_type={COMPUTE_TYPE})...")
+    logger.info(
+        "Loading WhisperX model",
+        extra={"model": WHISPER_MODEL, "device": DEVICE, "computeType": COMPUTE_TYPE},
+    )
     whisper_model = whisperx.load_model(
         WHISPER_MODEL, DEVICE, compute_type=COMPUTE_TYPE, language="ar"
     )
-    print("✓ Base WhisperX model loaded")
+    logger.info("Base WhisperX model loaded")
 
     try:
         if not os.getenv("HUGGINGFACE_HUB_TOKEN") and HF_TOKEN:
@@ -903,23 +954,26 @@ async def load_models():
             device=DEVICE,
             model_name=ALIGNMENT_MODELS["ar"],
         )
-        print("✓ Alignment model cached")
+        logger.info("Alignment model cached", extra={"language": "ar"})
     except Exception as e:
         align_model_a = None
         align_metadata = None
-        print(f"⚠️ Could not cache Arabic aligner: {e}")
+        logger.warning("Could not cache Arabic aligner", extra={"error": str(e)})
 
     diar_loaded = False
     if ENABLE_DIARIZATION:
         if not HF_TOKEN:
-            print("ℹ️ ENABLE_DIARIZATION=true but no HF_TOKEN found → diarization disabled")
+            logger.info("Diarization disabled due to missing HF_TOKEN")
         else:
             try:
                 from pyannote.audio import Pipeline
                 try:
                     diarize_model = Pipeline.from_pretrained(PYANNOTE_MODEL, use_auth_token=HF_TOKEN)
                 except Exception as e_v32:
-                    print(f"⚠️ {PYANNOTE_MODEL} failed: {e_v32} — falling back to 3.1")
+                    logger.warning(
+                        "Primary diarization model failed, falling back",
+                        extra={"model": PYANNOTE_MODEL, "error": str(e_v32)},
+                    )
                     diarize_model = Pipeline.from_pretrained(
                         "pyannote/speaker-diarization-3.1", use_auth_token=HF_TOKEN
                     )
@@ -928,16 +982,20 @@ async def load_models():
                 diar_loaded = True
             except Exception as e:
                 diarize_model = None
-                print(f"⚠️ Diarization disabled: {e}")
+                logger.warning("Diarization disabled", extra={"error": str(e)})
     else:
-        print("ℹ️ ENABLE_DIARIZATION=false → diarization disabled")
+        logger.info("Diarization disabled via config")
 
-    print("=" * 80)
-    print("✓ ASR SERVICE READY")
-    print(f"Model: WhisperX {WHISPER_MODEL} | Device: {DEVICE} | ComputeType: {COMPUTE_TYPE}")
-    print(f"Aligner: {'loaded' if align_model_a is not None else 'not loaded'}")
-    print(f"Diarization: {'enabled' if diar_loaded and diarize_model is not None else 'disabled'}")
-    print("=" * 80)
+    logger.info(
+        "ASR service ready",
+        extra={
+            "model": WHISPER_MODEL,
+            "device": DEVICE,
+            "computeType": COMPUTE_TYPE,
+            "alignerCached": align_model_a is not None,
+            "diarization": bool(diar_loaded and diarize_model is not None),
+        },
+    )
 
 # ---------------------------
 # API endpoints
@@ -951,13 +1009,15 @@ async def transcribe_audio(request: TranscriptionRequest):
         audio_data, sample_rate = decode_audio(request.audio)
         audio_duration = len(audio_data) / float(sample_rate + 1e-12)
 
-        print(f"\n{'='*60}")
-        print("Transcription Request")
-        print(f"  Language: {request.language}")
-        print(f"  Duration: {audio_duration:.2f}s | Sample Rate: {sample_rate} Hz")
-        print(f"  Diarization: {request.enable_diarization and (diarize_model is not None)}")
-        print(f"  Mode: {'diarize-first' if (request.diarize_first if request.diarize_first is not None else DIARIZE_FIRST) else 'diarize-last'}")
-        print(f"{'-'*60}")
+        log_safe(
+            logging.INFO,
+            "ASR transcription request",
+            duration_sec=round(audio_duration, 2),
+            sample_rate=sample_rate,
+            language=request.language,
+            diarization=bool(request.enable_diarization and (diarize_model is not None)),
+            mode="diarize-first" if (request.diarize_first if request.diarize_first is not None else DIARIZE_FIRST) else "diarize-last",
+        )
 
         wave = torch.from_numpy(audio_data).float()
         if wave.dim() > 1:
@@ -976,7 +1036,7 @@ async def transcribe_audio(request: TranscriptionRequest):
         detected_lang = request.language or "ar"
 
         if use_diarize_first:
-            print("Diarize-first mode: running diarization...")
+            logger.info("ASR diarize-first path")
             diarization_start = time.time()
             waveform = torch.from_numpy(audio).float().unsqueeze(0)
             diarize_annotation = diarize_model(
@@ -985,7 +1045,7 @@ async def transcribe_audio(request: TranscriptionRequest):
                 max_speakers=request.max_speakers,
             )
             diarize_time = time.time() - diarization_start
-            print(f"  ✓ Diarized in {diarize_time:.2f}s")
+            logger.debug("Diarization complete", extra={"durationSec": round(diarize_time, 2)})
 
             diar_segments: List[Tuple[float, float, str]] = [
                 (seg.start, seg.end, spk) for seg, _, spk in diarize_annotation.itertracks(yield_label=True)
@@ -993,7 +1053,7 @@ async def transcribe_audio(request: TranscriptionRequest):
             diar_segments.sort(key=lambda x: x[0])
 
             segments: List[Dict[str, Any]] = []
-            print(f"Transcribing {len(diar_segments)} diarized chunks ...")
+            logger.info("Transcribing diarized chunks", extra={"chunks": len(diar_segments)})
             t_start = time.time()
             for (s, e, spk) in diar_segments:
                 s = float(s); e = float(e)
@@ -1009,12 +1069,12 @@ async def transcribe_audio(request: TranscriptionRequest):
                     seg["speaker"] = spk
                 segments.extend(result.get("segments", []))
             transcribe_time = time.time() - t_start
-            print(f"  ✓ Per-speaker transcription done in {transcribe_time:.2f}s")
+            logger.debug("Per-speaker transcription done", extra={"durationSec": round(transcribe_time, 2)})
 
             if align_model_a is not None and segments:
-                print("Word-level alignment (global)...")
+                logger.debug("Running global alignment")
                 segments = align_segments(segments, audio, detected_lang)
-                print("  ✓ Alignment complete")
+                logger.debug("Alignment complete")
 
                 diarize_df = DataFrame(
                     diarize_annotation.itertracks(yield_label=True),
@@ -1037,10 +1097,13 @@ async def transcribe_audio(request: TranscriptionRequest):
             rtf_ratio.observe(rtf_value)
 
             speakers_list = sorted(list({s.get("speaker") for s in segments if s.get("speaker")})) or None
-
-            print(f"{'-'*60}")
-            print(f"Segments: {len(formatted_segments)} | Total time: {total_time:.2f}s | RTF: {rtf_value:.2f}x")
-            print(f"{'='*60}\n")
+            log_safe(
+                logging.INFO,
+                "ASR diarize-first complete",
+                duration_sec=round(total_time, 2),
+                rtf=round(rtf_value, 3),
+                segments=len(formatted_segments),
+            )
 
             return TranscriptionResponse(
                 text=full_text,
@@ -1055,21 +1118,21 @@ async def transcribe_audio(request: TranscriptionRequest):
             )
 
         else:
-            print("Diarize-last mode: transcribing full audio...")
+            logger.info("ASR diarize-last path")
             t0 = time.time()
             result = transcribe_chunk(audio, detected_lang, request.dialect or "egypt", batch_sz, 0.0)
             detected_lang = result.get("language", detected_lang)
             t1 = time.time() - t0
-            print(f"  ✓ Transcribed in {t1:.2f}s")
+            logger.debug("Transcription done", extra={"durationSec": round(t1, 2)})
 
             if align_model_a is not None and result.get("segments"):
-                print("Word-level alignment...")
+                logger.debug("Word-level alignment")
                 result["segments"] = align_segments(result["segments"], audio, detected_lang)
-                print("  ✓ Alignment complete")
+                logger.debug("Alignment complete")
 
             speakers_list = None
             if request.enable_diarization and diarize_model is not None:
-                print("Assigning speakers with diarization...")
+                logger.debug("Assigning speakers via diarization")
                 waveform = torch.from_numpy(audio).float().unsqueeze(0)
                 diarize_annotation = diarize_model(
                     {"waveform": waveform, "sample_rate": 16000},
@@ -1092,15 +1155,15 @@ async def transcribe_audio(request: TranscriptionRequest):
 
             # LLM correction (if enabled)
             if ENABLE_LLM_CORRECTION and LLM_CORRECTOR_AVAILABLE:
-                print("Applying LLM medical correction...")
+                logger.debug("Applying LLM medical correction")
                 try:
                     segments = llm_correct_segments(segments, context="محادثة طبية في عيادة أسنان")
                     for seg in segments:
                         if "text_llm_corrected" in seg:
                             seg["text"] = seg["text_llm_corrected"]
-                    print("  ✓ LLM correction complete")
+                    logger.debug("LLM correction complete")
                 except Exception as e:
-                    print(f"  ⚠️ LLM correction failed: {e}")
+                    logger.warning("LLM correction failed", extra={"error": str(e)})
 
             full_text = " ".join([(s.get("text") or "").strip() for s in segments])
             formatted_segments = format_segments_for_frontend(segments)
@@ -1110,9 +1173,13 @@ async def transcribe_audio(request: TranscriptionRequest):
             transcription_duration.observe(total_time)
             rtf_ratio.observe(rtf_value)
 
-            print(f"{'-'*60}")
-            print(f"Segments: {len(formatted_segments)} | Total time: {total_time:.2f}s | RTF: {rtf_value:.2f}x")
-            print(f"{'='*60}\n")
+            log_safe(
+                logging.INFO,
+                "ASR diarize-last complete",
+                duration_sec=round(total_time, 2),
+                rtf=round(rtf_value, 3),
+                segments=len(formatted_segments),
+            )
 
             return TranscriptionResponse(
                 text=full_text,
@@ -1127,27 +1194,90 @@ async def transcribe_audio(request: TranscriptionRequest):
             )
 
     except Exception as e:
-        print(f"❌ Transcription error: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+        logger.exception("ASR transcription failed", extra={"error": str(type(e).__name__)})
+        raise HTTPException(status_code=500, detail="Transcription failed")
+
+
+@app.post("/stream/chunk", response_model=StreamChunkResponse)
+async def stream_chunk(request: StreamChunkRequest):
+    """
+    Streaming endpoint for low-latency partial transcripts.
+    - Accepts small mulaw chunks (8k) from gateway.
+    - Buffers per session with simple back-pressure (max 10 chunks).
+    - Returns best-effort partial transcript; on isFinal=true flushes final.
+    """
+    if not request.sessionId:
+        raise HTTPException(status_code=400, detail="sessionId required")
+
+    now = time.time()
+    silence_window_ms = float(os.getenv("STREAM_SILENCE_MS", "1200"))
+    rms_threshold = float(os.getenv("STREAM_SILENCE_RMS", "300"))
+
+    async with stream_lock:
+        buf = stream_buffers.get(request.sessionId) or []
+        if len(buf) > 10:
+            # back-pressure: drop oldest chunk
+            buf = buf[-10:]
+        buf.append(base64.b64decode(request.audio))
+        stream_buffers[request.sessionId] = buf
+        meta = stream_meta.get(request.sessionId) or {"last_ts": now, "silence_count": 0}
+        stream_meta[request.sessionId] = meta
+
+    # Merge buffered audio
+    chunks = stream_buffers.get(request.sessionId, [])
+    merged = b"".join(chunks)
+
+    # Decode and run quick transcription
+    audio_np = decode_mulaw_chunk(base64.b64encode(merged).decode("utf-8"), request.sampleRate or 8000)
+    # Simple silence detection
+    rms = audioop.rms(base64.b64decode(request.audio), 2) if request.audio else 0
+    final_due_to_silence = False
+    async with stream_lock:
+        meta = stream_meta.get(request.sessionId) or {"last_ts": now, "silence_count": 0}
+        last_ts = meta.get("last_ts", now)
+        if rms < rms_threshold:
+            meta["silence_count"] = meta.get("silence_count", 0) + 1
+        else:
+            meta["silence_count"] = 0
+        # Time-based
+        if (now - last_ts) * 1000 > silence_window_ms:
+            final_due_to_silence = True
+        # Consecutive silence
+        if meta.get("silence_count", 0) >= 3:
+            final_due_to_silence = True
+        meta["last_ts"] = now
+        stream_meta[request.sessionId] = meta
+
+    batch_sz = 1 if DEVICE in ("cpu", "mps") else 4
+    result = transcribe_chunk(audio_np, "ar", "egypt", batch_sz, 0.0)
+    partial_text = " ".join([(s.get("text") or "").strip() for s in result.get("segments", []) or []]).strip()
+
+    if request.isFinal or final_due_to_silence:
+        async with stream_lock:
+            stream_buffers.pop(request.sessionId, None)
+            stream_meta.pop(request.sessionId, None)
+        return StreamChunkResponse(partial=partial_text, final=partial_text, isFinal=True)
+
+    return StreamChunkResponse(partial=partial_text, isFinal=False)
 
 # ---------------------------
 # Health & aux endpoints
 # ---------------------------
 @app.get("/health")
 async def health_check():
+    return {"ok": True, "service": "asr"}
+
+
+@app.get("/ready")
+async def readiness():
     return {
-        "status": "healthy",
+        "ready": whisper_model is not None,
         "model": WHISPER_MODEL,
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
         "aligner_cached": align_model_a is not None,
-        "diarization_enabled": diarize_model is not None,
-        "vad_enabled": ENABLE_VAD,
-        "diarize_first_default": DIARIZE_FIRST,
-        "pyannote_model": PYANNOTE_MODEL,
+        "diarization_enabled": diarize_model is not None and ENABLE_DIARIZATION,
         "vocab_terms_builtin": len(BUILTIN_MEDICAL_TERMS),
-        "vocab_terms_extra": len(EXTRA_TERMS),
         "extra_replacements": len(EXTRA_REPLACEMENTS),
     }
 
@@ -1190,8 +1320,8 @@ async def vocab_update(req: VocabUpdateRequest):
         status = reload_vocab_from_file()
         return {"status": "ok", "updated": {req.wrong: req.right}, "reload": status}
     except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to update vocab", extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail="Failed to update vocab")
 
 @app.get("/vocab")
 async def vocab_info():

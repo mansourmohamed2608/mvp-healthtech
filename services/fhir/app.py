@@ -23,6 +23,17 @@ try:
 except Exception:
     logger.debug("OTEL init skipped for FHIR")
 
+
+def log_safe(level: int, msg: str, request: Request | None = None, session_id: str | None = None, **kwargs):
+    extra = {
+        "correlationId": request.headers.get("x-correlation-id") if request else None,
+        "sessionId": session_id,
+    }
+    for k, v in kwargs.items():
+        if v is not None:
+            extra[k] = v
+    logger.log(level, msg, extra=extra)
+
 app = FastAPI(title="FHIR Writeback Service", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -33,10 +44,12 @@ app.add_middleware(
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
 if not INTERNAL_SECRET:
     raise RuntimeError("INTERNAL_SECRET must be set for FHIR service")
+if not FHIR_BASE_URL:
+    raise RuntimeError("FHIR_BASE_URL must be set for FHIR service")
 
 @app.middleware("http")
 async def internal_auth(request: Request, call_next):
-    if request.url.path.startswith("/health"):
+    if request.url.path.startswith("/health") or request.url.path.startswith("/ready"):
         return await call_next(request)
     if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -49,8 +62,6 @@ FHIR_CLIENT_SECRET = os.getenv("FHIR_CLIENT_SECRET", "")
 FHIR_BEARER_TOKEN = os.getenv("FHIR_BEARER_TOKEN", "")
 FHIR_BASIC_AUTH_USER = os.getenv("FHIR_BASIC_AUTH_USER", "")
 FHIR_BASIC_AUTH_PASSWORD = os.getenv("FHIR_BASIC_AUTH_PASSWORD", "")
-logger = logging.getLogger("fhir")
-logging.basicConfig(level=logging.INFO)
 
 class SOAPNote(BaseModel):
     subjective: str
@@ -76,12 +87,14 @@ class FHIRWriteResponse(BaseModel):
 @app.get("/health")
 async def health():
     """Health check endpoint"""
-    return {
-        "ok": True,
-        "service": "fhir-writeback",
-        "fhir_base_url": FHIR_BASE_URL,
-        "connected": await check_fhir_connection(),
-    }
+    return {"ok": True, "service": "fhir-writeback"}
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness check: validates FHIR connectivity."""
+    connected = await check_fhir_connection()
+    return {"ready": connected, "fhir_base_url": FHIR_BASE_URL, "connected": connected}
 
 async def check_fhir_connection() -> bool:
     """Check if FHIR server is reachable"""
@@ -106,6 +119,14 @@ async def write_soap_to_fhir(
     - Encounter: Links to the clinical encounter
     - Composition: Structured document with sections
     """
+    log_safe(
+        logging.INFO,
+        "FHIR write request",
+        request=None,
+        session_id=req.sessionId,
+        patientId=req.patientId,
+        practitionerId=req.practitionerId,
+    )
     try:
         # Get access token (if using OAuth2)
         access_token = None
@@ -153,10 +174,14 @@ async def write_soap_to_fhir(
             )
             
             if encounter_response.status_code not in [200, 201]:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to create Encounter: {encounter_response.text}"
+                log_safe(
+                    logging.ERROR,
+                    "Failed to create Encounter",
+                    request=None,
+                    session_id=req.sessionId,
+                    status=encounter_response.status_code,
                 )
+                raise HTTPException(status_code=502, detail="Failed to create Encounter")
             
             encounter_id = encounter_response.json().get("id")
             
@@ -168,10 +193,14 @@ async def write_soap_to_fhir(
             )
             
             if doc_response.status_code not in [200, 201]:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to create DocumentReference: {doc_response.text}"
+                log_safe(
+                    logging.ERROR,
+                    "Failed to create DocumentReference",
+                    request=None,
+                    session_id=req.sessionId,
+                    status=doc_response.status_code,
                 )
+                raise HTTPException(status_code=502, detail="Failed to create DocumentReference")
             
             doc_id = doc_response.json().get("id")
         
@@ -184,6 +213,7 @@ async def write_soap_to_fhir(
         )
         
     except httpx.TimeoutException:
+        log_safe(logging.ERROR, "FHIR server timeout", request=None, session_id=req.sessionId)
         raise HTTPException(status_code=504, detail="FHIR server timeout")
     except Exception as e:
         logger.error("FHIR write error", extra={"sessionId": req.sessionId, "error": str(e)})

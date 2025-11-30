@@ -3,7 +3,7 @@ import { Controller, Post, Body, Logger, UseGuards, Req } from '@nestjs/common';
 import { AsrService, TranscriptionResponse, StreamResponse } from './asr.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { wrapError, camelResponse } from '../utils/http-utils';
-import { Request } from 'express';
+import type { Request } from 'express';
 import { MetricsController } from '../metrics/metrics.controller';
 
 class TranscribeDto {

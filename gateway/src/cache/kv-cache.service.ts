@@ -119,6 +119,19 @@ export class KvCacheService {
   }
 
   /**
+   * Lightweight readiness check.
+   */
+  async ping(): Promise<boolean> {
+    try {
+      await this.client.ping();
+      return true;
+    } catch (error) {
+      this.logger.warn('Redis ping failed', error);
+      return false;
+    }
+  }
+
+  /**
    * Cleanup on service shutdown
    */
   async onModuleDestroy() {

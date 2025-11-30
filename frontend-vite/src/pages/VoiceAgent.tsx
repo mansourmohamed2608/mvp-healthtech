@@ -9,9 +9,11 @@ import {
   IconPlayerPlay,
   IconPlayerStop,
   IconCheck,
-  IconAlertCircle
+  IconAlertCircle,
+  IconLoader2
 } from '@tabler/icons-react';
 import { Device, Call } from '@twilio/voice-sdk';
+import { StreamingTranscript, TranscriptItem } from '../components/StreamingTranscript';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -25,6 +27,8 @@ const VoiceAgent = () => {
   const [call, setCall] = useState<Call | null>(null);
   const [callStatus, setCallStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [transcript, setTranscript] = useState<Message[]>([]);
+  const [streamItems, setStreamItems] = useState<TranscriptItem[]>([]);
+  const [isThinking, setIsThinking] = useState(false);
   const [error, setError] = useState<string>('');
   const [isMuted, setIsMuted] = useState(false);
   const [deviceReady, setDeviceReady] = useState(false);
@@ -99,13 +103,14 @@ const VoiceAgent = () => {
     }
 
     try {
-      setCallStatus('connecting');
-      setError('');
-      setTranscript([]);
+        setCallStatus('connecting');
+        setError('');
+        setTranscript([]);
+        setStreamItems([]);
 
-      const params = {
-        To: '+1234567890', // Placeholder
-      };
+        const params = {
+          To: '+1234567890', // Placeholder
+        };
 
       const outgoingCall = await device.connect({ params });
       setCall(outgoingCall);
@@ -241,6 +246,7 @@ const VoiceAgent = () => {
                 </span>
               </div>
             )}
+            {callStatus === 'connecting' && <IconLoader2 className="animate-spin text-amber-500" />}
           </div>
 
           {/* Error Display */}
@@ -314,6 +320,11 @@ const VoiceAgent = () => {
             <IconPlayerPlay size={32} className="text-accent" />
             {language === 'ar' ? 'نص المحادثة' : 'Live Transcript'}
           </h2>
+          {callStatus === 'disconnected' && (
+            <div className="text-sm text-amber-600 dark:text-amber-400 mb-3">
+              {language === 'ar' ? 'تم فقد الاتصال. يمكنك إعادة الاتصال.' : 'Connection lost. You can reconnect to continue.'}
+            </div>
+          )}
           
           <div className="h-[500px] overflow-y-auto bg-slate-100 dark:bg-slate-800/50 rounded-2xl p-6 space-y-4 custom-scrollbar">
             {transcript.length === 0 ? (

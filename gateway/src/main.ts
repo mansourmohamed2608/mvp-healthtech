@@ -5,8 +5,10 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import morgan from 'morgan';
 import { LatencyMiddleware } from './middleware/latency.middleware';
 import { initOtel } from './observability/otel';
+import { validateEnv } from './config/env.validation';
 
 async function bootstrap() {
+  validateEnv();
   await initOtel();
   const app = await NestFactory.create(AppModule);
 

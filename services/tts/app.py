@@ -118,7 +118,7 @@ async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
 
 @app.middleware("http")
 async def internal_auth(request: Request, call_next):
-    if request.url.path.startswith("/health") or request.url.path.startswith("/metrics"):
+    if request.url.path.startswith("/health") or request.url.path.startswith("/ready") or request.url.path.startswith("/metrics"):
         return await call_next(request)
     if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -146,6 +146,15 @@ async def health():
         "device": DEVICE if TTS_ENGINE == "coqui" else "cpu",
         "model": COQUI_MODEL if TTS_ENGINE == "coqui" else VOICE,
         "correlationId": None,  # placeholder
+    }
+
+@app.get("/ready")
+async def ready():
+    """Readiness check for downstream orchestration."""
+    return {
+        "ready": TTS_ENGINE == "edge" or tts_model is not None,
+        "engine": TTS_ENGINE,
+        "model": COQUI_MODEL if TTS_ENGINE == "coqui" else VOICE,
     }
 
 @app.get("/metrics")
@@ -209,7 +218,8 @@ async def synthesize_stream(request: SynthesizeRequest):
         )
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Stream synthesis failed: {str(e)}")
+        log_safe(logging.ERROR, "Stream synthesis failed", request=None, session_id=request.sessionId, error=str(type(e).__name__))
+        raise HTTPException(status_code=500, detail="Stream synthesis failed")
 
 @app.get("/voices")
 async def list_voices():

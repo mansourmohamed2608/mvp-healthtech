@@ -30,6 +30,17 @@ def safe_print(*args, **_kwargs):
 
 print = safe_print
 
+
+def log_safe(level: int, msg: str, request: Request | None = None, session_id: str | None = None, **kwargs):
+    extra = {
+        "correlationId": request.headers.get("x-correlation-id") if request else None,
+        "sessionId": session_id,
+    }
+    for k, v in kwargs.items():
+        if v is not None:
+            extra[k] = v
+    logger.log(level, msg, extra=extra)
+
 app = FastAPI(title="SOAP Generator Service", version="1.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -41,10 +52,16 @@ app.add_middleware(
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
 if not INTERNAL_SECRET:
     raise RuntimeError("INTERNAL_SECRET must be set for SOAP service")
+def _require_env(keys):
+    missing = [k for k in keys if not os.getenv(k)]
+    if missing:
+        raise RuntimeError(f"Missing required env: {', '.join(missing)}")
+
+_require_env(["DATABASE_URL"])
 
 @app.middleware("http")
 async def internal_auth(request: Request, call_next):
-    if request.url.path.startswith("/health"):
+    if request.url.path.startswith("/health") or request.url.path.startswith("/ready"):
         return await call_next(request)
     if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -111,12 +128,28 @@ async def shutdown():
 # ---------------------------
 @app.get("/health")
 async def health():
-    return {
-        "ok": True,
-        "service": "soap-generator",
-        "llm_url": LLM_SERVICE_URL,
-        "db_connected": _pool is not None,
-    }
+    return {"ok": True, "service": "soap-generator"}
+
+
+@app.get("/ready")
+async def ready():
+    db_ok = False
+    llm_ok = False
+    if _pool:
+        try:
+            async with _pool.acquire() as conn:  # type: ignore
+                await conn.execute("SELECT 1")
+            db_ok = True
+        except Exception as e:
+            logger.warning("SOAP DB readiness check failed", extra={"error": str(e)})
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{LLM_SERVICE_URL}/health")
+            llm_ok = resp.status_code == 200
+    except Exception:
+        llm_ok = False
+
+    return {"ready": db_ok and llm_ok, "db": db_ok, "llm": llm_ok}
 
 @app.post("/generate", response_model=SOAPResponse)
 async def generate_soap(req: SOAPRequest):
@@ -126,6 +159,14 @@ async def generate_soap(req: SOAPRequest):
     prompt = build_soap_prompt(req.transcript, req.patientContext)
     session_id = req.sessionId or f"soap-{int(datetime.utcnow().timestamp())}"
 
+    log_safe(
+        logging.INFO,
+        "SOAP generation request",
+        session_id=session_id,
+        patient_id=req.patientId,
+        clinician_id=req.clinicianId,
+    )
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -133,13 +174,26 @@ async def generate_soap(req: SOAPRequest):
                 json={"message": prompt, "sessionId": session_id},
             )
         if response.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"LLM service error: {response.text}")
+            log_safe(
+                logging.ERROR,
+                "LLM service error during SOAP generation",
+                session_id=session_id,
+                status=response.status_code,
+            )
+            raise HTTPException(status_code=502, detail="LLM service error")
         llm_output = response.json()
         note_struct = parse_soap_sections(llm_output.get("reply", ""))
     except httpx.TimeoutException:
+        log_safe(logging.ERROR, "SOAP generation timeout talking to LLM", session_id=session_id)
         raise HTTPException(status_code=504, detail="LLM service timeout")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"SOAP generation failed: {e}")
+        log_safe(
+            logging.ERROR,
+            "SOAP generation failed",
+            session_id=session_id,
+            error=str(type(e).__name__),
+        )
+        raise HTTPException(status_code=500, detail="SOAP generation failed")
 
     record = await save_note({
         "session_id": session_id,

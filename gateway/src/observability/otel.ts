@@ -6,7 +6,8 @@ import { Logger } from '@nestjs/common';
  * and continue without tracing.
  */
 export async function initOtel() {
-  if (process.env.ENABLE_OTEL?.toLowerCase() !== 'true') {
+  const enabled = (process.env.OTEL_ENABLED || process.env.ENABLE_OTEL || '').toLowerCase() === 'true' || process.env.OTEL_ENABLED === '1';
+  if (!enabled) {
     return;
   }
 

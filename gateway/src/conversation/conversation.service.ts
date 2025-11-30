@@ -10,6 +10,7 @@ import { LlmService } from '../llm/llm.service';
 import { TtsService } from '../tts/tts.service';
 import { AsrService } from '../asr/asr.service';
 import { MetricsController } from '../metrics/metrics.controller';
+import { safeLog } from '../utils/safe-logger';
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -39,6 +40,10 @@ export class ConversationService {
   private readonly MAX_MESSAGES = 20; // Keep last 20 messages
   private readonly CONVERSATION_TTL = 7200; // 2 hours
   private redisAvailable = false;
+  private readonly llmEnabled =
+    (process.env.VOICE_AGENT_LLM_ENABLED || '1').toString().trim() !== '0';
+  private readonly cannedReply =
+    'مرحبا، هذا مجرد اختبار للصوت في النظام.';
 
   constructor(
     private readonly llmService: LlmService,
@@ -284,6 +289,7 @@ export class ConversationService {
     format: string; // 'mulaw' or 'wav'
     sampleRate: number;
     user?: any;
+    partialOnly?: boolean;
   }): Promise<{
     transcript: string;
     response: string;
@@ -310,24 +316,43 @@ export class ConversationService {
         return { transcript: '', response: '', audioResponse: '' };
       }
 
+      if (input.partialOnly) {
+        // For partial streaming we only return transcript
+        return { transcript, response: '', audioResponse: '' };
+      }
+
       // Avoid logging PHI; only log lengths
       this.logger.log(`Transcribed (${input.callSid}): ${transcript.length} chars`);
 
       // Save user message to conversation
       await this.appendMessage(input.callSid, 'user', transcript);
 
-      // 2. Get LLM response
-      const llmStart = process.hrtime();
-      const history = await this.getHistory(input.callSid);
-      const chatPayload = {
-        message: transcript,
-        history: history.map((m) => ({ role: m.role, content: m.content })),
-        sessionId: input.callSid,
-      };
-      const llmResult = await this.llmService.chat(chatPayload);
-      const response = llmResult.reply || '...';
-      this.llmMetric.observe({ endpoint: 'chat', status: 'ok' }, this.durationSeconds(llmStart));
-      this.logger.log(`LLM response (${input.callSid}) length=${response?.length ?? 0}`);
+      // 2. Get response (LLM or canned)
+      let response = this.cannedReply;
+      if (this.llmEnabled) {
+        const llmStart = process.hrtime();
+        const history = await this.getHistory(input.callSid);
+        const chatPayload = {
+          message: transcript,
+          history: history.map((m) => ({ role: m.role, content: m.content })),
+          sessionId: input.callSid,
+        };
+        try {
+          const llmResult = await this.llmService.chat(chatPayload);
+          response = llmResult.reply || this.cannedReply;
+          this.llmMetric.observe({ endpoint: 'chat', status: 'ok' }, this.durationSeconds(llmStart));
+          this.logger.log(`LLM response (${input.callSid}) length=${response?.length ?? 0}`);
+        } catch (error) {
+          this.llmMetric.observe({ endpoint: 'chat', status: 'error' }, this.durationSeconds(llmStart));
+          safeLog(this.logger, 'warn', 'LLM unavailable, using canned reply', {
+            callSid: input.callSid,
+            error: (error as any)?.message,
+          });
+          response = this.cannedReply;
+        }
+      } else {
+        this.logger.debug(`LLM disabled, using canned reply for ${input.callSid}`);
+      }
 
       // Save assistant message to conversation
       await this.appendMessage(input.callSid, 'assistant', response);

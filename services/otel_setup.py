@@ -9,8 +9,9 @@ logger = logging.getLogger("otel")
 
 
 def init_otel(service_name: str):
-    """Initialize OTEL tracing if ENABLE_OTEL=true and deps are available."""
-    if os.getenv("ENABLE_OTEL", "").lower() != "true":
+    """Initialize OTEL tracing if OTEL_ENABLED/ENABLE_OTEL=true and deps are available."""
+    enabled = os.getenv("OTEL_ENABLED", os.getenv("ENABLE_OTEL", "")).lower() in ("true", "1")
+    if not enabled:
         return
     try:
         from opentelemetry import trace  # type: ignore

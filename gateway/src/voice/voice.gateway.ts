@@ -14,6 +14,8 @@ import { ConversationService } from '../conversation/conversation.service';
 import { SessionService } from '../session/session.service';
 import { WsJwtGuard } from '../auth/ws-jwt.guard';
 import { MetricsController } from '../metrics/metrics.controller';
+import { safeLog } from '../utils/safe-logger';
+import { AsrService } from '../asr/asr.service';
 
 interface TwilioMediaMessage {
   event: 'connected' | 'start' | 'media' | 'stop' | 'mark';
@@ -66,11 +68,12 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly conversationService: ConversationService,
     private readonly sessionService: SessionService,
+    private readonly asrService: AsrService,
   ) {}
 
   handleConnection(client: WebSocket, request: any) {
     const callSid = this.extractCallSidFromUrl(request.url);
-    this.logger.log(`WebSocket connected: ${callSid || 'unknown'}`);
+    safeLog(this.logger, 'log', 'WebSocket connected', { callSid: callSid || 'unknown' });
     // Attach user claims from guard
     const user = (client as any).user || {};
 
@@ -102,10 +105,11 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // Find and remove the disconnected client
     for (const [callSid, ws] of this.activeStreams.entries()) {
       if (ws === client) {
-        this.logger.log(`WebSocket disconnected: ${callSid}`);
+        safeLog(this.logger, 'log', 'WebSocket disconnected', { callSid });
         this.activeStreams.delete(callSid);
         this.audioBuffers.delete(callSid);
         this.streamUsers.delete(callSid);
+        this.rateLimit.delete(callSid);
         this.sessionService.delete(callSid).catch(() => {});
         this.activeGauge.dec();
         break;
@@ -118,9 +122,10 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: string,
     @ConnectedSocket() client: WebSocket,
   ) {
+    let callSid: string | null = null;
     try {
       const message: TwilioMediaMessage = JSON.parse(data);
-      const callSid = this.findCallSidByClient(client);
+      callSid = this.findCallSidByClient(client);
       if (callSid && !this.allowMessage(callSid)) {
         this.logger.warn(`Rate limit hit for call ${callSid}`);
         return;
@@ -128,7 +133,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       switch (message.event) {
         case 'connected':
-          this.logger.log('Twilio Media Stream connected');
+          safeLog(this.logger, 'log', 'Twilio Media Stream connected', { callSid });
           break;
 
         case 'start':
@@ -152,7 +157,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
           this.logger.warn(`Unknown event type: ${message.event}`);
       }
     } catch (error) {
-      this.logger.error('Error handling WebSocket message', error);
+      safeLog(this.logger, 'error', 'Error handling WebSocket message', { callSid, error: (error as any)?.message });
     }
   }
 
@@ -162,8 +167,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     const { callSid, streamSid, mediaFormat } = message.start!;
     
-    this.logger.log(`Stream started: ${streamSid} for call: ${callSid}`);
-    this.logger.log(`Media format: ${JSON.stringify(mediaFormat)}`);
+    safeLog(this.logger, 'log', 'Stream started', { streamSid, callSid, mediaFormat });
 
     // Initialize audio buffer for this call
     this.audioBuffers.set(callSid, []);
@@ -197,7 +201,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     buffer.push(audioChunk);
     this.audioBuffers.set(callSid, buffer);
 
-    // Process audio every ~300ms (approximately 4800 bytes for mulaw at 8kHz)
+    // Process audio every ~300ms (approximately 2400-4800 bytes for mulaw at 8kHz)
     const totalBytes = buffer.reduce((sum, chunk) => sum + chunk.length, 0);
     
     if (totalBytes >= 2400) { // ~300ms of audio
@@ -209,7 +213,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       // Send to conversation service for transcription and processing
       try {
-        await this.processAudioChunk(callSid, combinedAudio);
+        await this.processAudioChunk(callSid, combinedAudio, false);
       } catch (error) {
         this.logger.error(`Error processing audio chunk for ${callSid}`, error);
       }
@@ -222,13 +226,13 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     const { callSid } = message.stop!;
     
-    this.logger.log(`Stream stopped for call: ${callSid}`);
+    safeLog(this.logger, 'log', 'Stream stopped', { callSid });
 
     // Process any remaining audio
     const buffer = this.audioBuffers.get(callSid);
     if (buffer && buffer.length > 0) {
       const combinedAudio = Buffer.concat(buffer);
-      await this.processAudioChunk(callSid, combinedAudio);
+      await this.processAudioChunk(callSid, combinedAudio, true);
     }
 
     // Cleanup
@@ -238,35 +242,40 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.rateLimit.delete(callSid);
   }
 
-  private async processAudioChunk(callSid: string, audioData: Buffer) {
+  private async processAudioChunk(callSid: string, audioData: Buffer, isFinal: boolean) {
     const user = this.streamUsers.get(callSid);
     try {
       // Convert mulaw to base64 for ASR service
       const base64Audio = audioData.toString('base64');
 
-      // Send to conversation service which will:
-      // 1. Forward to ASR for transcription
-      // 2. Send transcript to LLM for response
-      // 3. Send response to TTS for voice
-      // 4. Return voice audio to play back
-      const result = await this.conversationService.processVoiceInput({
-        callSid,
-        audio: base64Audio,
-        format: 'mulaw',
-        sampleRate: 8000,
-        user,
-      });
+      const streamResp = await this.asrService.stream(base64Audio, callSid, isFinal);
 
-      if (result.transcript) {
-        this.logger.log(`Transcript (${callSid}): ${result.transcript.length} chars`);
+      if (streamResp.partial) {
+        this.server.emit('partial_transcript', { callSid, text: streamResp.partial });
       }
 
-      // If we have a voice response, send it back to Twilio
-      if (result.audioResponse) {
-        await this.sendAudioToClient(callSid, result.audioResponse);
+      // If final or stream stop, run full pipeline
+      if (isFinal || streamResp.isFinal) {
+        const result = await this.conversationService.processVoiceInput({
+          callSid,
+          audio: base64Audio,
+          format: 'mulaw',
+          sampleRate: 8000,
+          user,
+        });
+
+        if (result.transcript) {
+          safeLog(this.logger, 'log', 'Transcript received', { callSid, length: result.transcript.length });
+          this.server.emit('final_transcript', { callSid, text: result.transcript });
+        }
+
+        if (result.audioResponse) {
+          await this.sendAudioToClient(callSid, result.audioResponse);
+        }
       }
     } catch (error) {
-      this.logger.error('Error processing audio chunk', error);
+      safeLog(this.logger, 'error', 'Error processing audio chunk', { callSid, error: (error as any)?.message });
+      this.server.emit('transcript_error', { callSid, message: 'ASR unavailable' });
     }
   }
 
