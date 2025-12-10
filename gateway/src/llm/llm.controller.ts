@@ -94,7 +94,10 @@ export class LlmController {
       const orchestratorUrl = process.env.ORCHESTRATOR_URL || 'http://localhost:5006';
       const response = await fetch(`${orchestratorUrl}/orchestrate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.INTERNAL_SECRET ? { 'x-internal-secret': process.env.INTERNAL_SECRET } : {}),
+        },
         body: JSON.stringify(dto),
       });
 

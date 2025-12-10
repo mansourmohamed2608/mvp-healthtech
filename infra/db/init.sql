@@ -84,6 +84,52 @@ CREATE INDEX IF NOT EXISTS idx_audit_resource_type ON audit_log(resource_type);
 CREATE INDEX IF NOT EXISTS idx_audit_resource_id ON audit_log(resource_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_log(created_at);
 
+-- Doctors and scheduling for VA booking
+CREATE TABLE IF NOT EXISTS doctors (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  name text NOT NULL,
+  specialty text NOT NULL,
+  clinic_name text NOT NULL DEFAULT 'علاجك'
+);
+
+CREATE TABLE IF NOT EXISTS doctor_schedules (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  doctor_id uuid NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
+  day_of_week int NOT NULL, -- 0=Sunday, 6=Saturday
+  start_time time NOT NULL,
+  end_time time NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS appointments (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  doctor_id uuid NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
+  patient_name text NOT NULL,
+  patient_phone text NOT NULL,
+  patient_dob text NOT NULL,
+  visit_type text,
+  specialty text,
+  start_datetime timestamptz NOT NULL,
+  end_datetime timestamptz,
+  no_marketing boolean DEFAULT false,
+  status text NOT NULL DEFAULT 'booked',
+  session_id text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_appt_doctor_time ON appointments(doctor_id, start_datetime);
+
+-- Seed example doctor and schedule
+INSERT INTO doctors (id, name, specialty, clinic_name)
+SELECT '00000000-0000-0000-0000-000000000001', 'دكتور علي', 'جلدية', 'علاجك'
+WHERE NOT EXISTS (SELECT 1 FROM doctors WHERE id = '00000000-0000-0000-0000-000000000001');
+
+INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
+SELECT '00000000-0000-0000-0000-000000000001', 2, '14:00', '16:00'
+WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000001' AND day_of_week=2 AND start_time='14:00');
+
+INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
+SELECT '00000000-0000-0000-0000-000000000001', 4, '10:00', '12:00'
+WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000001' AND day_of_week=4 AND start_time='10:00');
+
 -- TODO (retention/audit):
 -- - Define PHI retention policy (e.g., archive or delete after X days) using archived_at/deleted_at.
 -- - Add audit trail table (note_id, action, actor, at, metadata) for approvals/edits.

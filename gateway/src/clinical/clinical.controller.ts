@@ -4,8 +4,9 @@
  * Week 5 Day 30 (Oct 24, 2025)
  * Tracks note acceptance, edit distance, time to review
  */
-import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
 import { ClinicalMetricsService } from './clinical-metrics.service';
+import { JwtAuthGuard } from '../auth/jwt.guard';
 
 interface NoteReviewEvent {
   recordingId: string;
@@ -15,6 +16,7 @@ interface NoteReviewEvent {
   clinicianId?: string;
 }
 
+@UseGuards(JwtAuthGuard)
 @Controller('clinical')
 export class ClinicalController {
   constructor(private readonly metricsService: ClinicalMetricsService) {}

@@ -8,6 +8,7 @@ import {
   SessionResponseDto,
   CreateSessionResponseDto,
 } from './dto/session-response.dto';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class SessionService {
@@ -19,14 +20,14 @@ export class SessionService {
   private redisAvailable = false;
   private readonly pool: Pool | null;
 
-  constructor() {
+  constructor(private readonly config: ConfigService) {
     this.pool = this.createPool();
     this.initializeRedis();
   }
 
   private createPool(): Pool | null {
     try {
-      const url = process.env.DATABASE_URL;
+      const url = this.config.get<string>('DATABASE_URL');
       if (!url) return null;
       return new Pool({ connectionString: url });
     } catch (e) {
@@ -36,12 +37,14 @@ export class SessionService {
   }
 
   private initializeRedis() {
-    const redisUrl = `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}`;
+    const redisHost = this.config.get<string>('REDIS_HOST') || 'localhost';
+    const redisPort = this.config.get<string>('REDIS_PORT') || 6379;
+    const redisUrl = `redis://${redisHost}:${redisPort}`;
     
     try {
       this.redisClient = createClient({
         url: redisUrl,
-        password: process.env.REDIS_PASSWORD || undefined,
+        password: this.config.get<string>('REDIS_PASSWORD') || undefined,
         socket: {
           connectTimeout: 2000,
           reconnectStrategy: () => false,

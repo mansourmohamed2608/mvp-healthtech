@@ -72,6 +72,17 @@ services:
       - ../services/llm/data:/app/data
       - huggingface_cache:/cache
 
+  llm-va:
+    build: ../services/llm-va
+    ports:
+      - "5007:5007"
+    environment:
+      - VA_MODEL=Qwen/Qwen2.5-3B-Instruct
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
+    volumes:
+      - ../services/llm-va:/app
+      - huggingface_cache:/cache
+
   tts:
     build: ../services/tts
     ports:
@@ -126,6 +137,8 @@ services:
       - "5006:5006"
     environment:
       - LLM_ENDPOINT=http://llm:5001/infer
+      - CLINICAL_LLM_URL=http://llm:5001
+      - VA_LLM_URL=http://llm-va:5007
       - TRANSFORMERS_CACHE=/cache
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
     volumes:
@@ -133,6 +146,7 @@ services:
       - huggingface_cache:/cache
     depends_on:
       - llm
+      - llm-va
 
   redis:
     image: redis:7

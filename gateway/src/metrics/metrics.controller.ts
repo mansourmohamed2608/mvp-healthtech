@@ -4,7 +4,8 @@
  * Week 3 Day 19 (Oct 13, 2025)
  * Enhanced with custom metrics for ASR/LLM/TTS latency
  */
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/jwt.guard';
 import {
   Registry,
   collectDefaultMetrics,
@@ -91,6 +92,7 @@ const fhirErrors = new Counter({
   registers: [registry],
 });
 
+@UseGuards(JwtAuthGuard)
 @Controller('metrics')
 export class MetricsController {
   @Get()

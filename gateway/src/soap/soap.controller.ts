@@ -146,6 +146,7 @@ export class SoapController {
   }
 
   @Get('notes')
+  @Roles('clinician')
   async getNotes(
     @Query() query?: { status?: string; clinicianId?: string },
     @Req() req?: Request,

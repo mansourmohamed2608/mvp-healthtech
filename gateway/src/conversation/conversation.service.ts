@@ -11,6 +11,7 @@ import { TtsService } from '../tts/tts.service';
 import { AsrService } from '../asr/asr.service';
 import { MetricsController } from '../metrics/metrics.controller';
 import { safeLog } from '../utils/safe-logger';
+import { VaBookingService, SlotState } from '../va/va_booking.service';
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -49,6 +50,7 @@ export class ConversationService {
     private readonly llmService: LlmService,
     private readonly ttsService: TtsService,
     private readonly asrService: AsrService,
+    private readonly vaBookingService: VaBookingService,
   ) {
     // Try to connect to Redis, but don't block if it fails
     try {
@@ -79,6 +81,40 @@ export class ConversationService {
       this.logger.warn('⚠️  Redis initialization failed, using in-memory storage');
       this.redisAvailable = false;
     }
+  }
+
+  private async getSlots(sessionId: string): Promise<Record<string, any>> {
+    const state = await this.getState(sessionId);
+    const existing = (state?.context as any)?.slots || {};
+    return {
+      name: existing.name || '',
+      phone: existing.phone || '',
+      dob: existing.dob || '',
+      visit_type: existing.visit_type || '',
+      specialty: existing.specialty || '',
+      doctor_name: existing.doctor_name || '',
+      date: existing.date || '',
+      time: existing.time || '',
+      no_marketing: existing.no_marketing ?? null,
+    };
+  }
+
+  private async updateSlots(sessionId: string, slots: Record<string, any>) {
+    const state = await this.getState(sessionId);
+    const context = { ...(state?.context || {}), slots };
+    await this.updateContext(sessionId, context);
+  }
+
+  private bookingReady(slots: SlotState): boolean {
+    return (
+      slots.name.trim() !== '' &&
+      slots.phone.trim() !== '' &&
+      slots.dob.trim() !== '' &&
+      (slots.doctor_name.trim() !== '' || slots.specialty.trim() !== '') &&
+      slots.date.trim() !== '' &&
+      slots.time.trim() !== '' &&
+      (slots as any).booked !== true
+    );
   }
 
   /**
@@ -332,14 +368,36 @@ export class ConversationService {
       if (this.llmEnabled) {
         const llmStart = process.hrtime();
         const history = await this.getHistory(input.callSid);
+        const slots = await this.getSlots(input.callSid);
         const chatPayload = {
-          message: transcript,
+          transcript,
           history: history.map((m) => ({ role: m.role, content: m.content })),
           sessionId: input.callSid,
+          mode: 'voice_agent_va',
+          slots,
         };
         try {
-          const llmResult = await this.llmService.chat(chatPayload);
+          const llmResult = await this.llmService.orchestrate(chatPayload);
           response = llmResult.reply || this.cannedReply;
+          if (llmResult.slots) {
+            await this.updateSlots(input.callSid, llmResult.slots);
+            const bookingReady = this.bookingReady(llmResult.slots as SlotState);
+            if (bookingReady) {
+              const booking = await this.vaBookingService.tryBook(
+                llmResult.slots as SlotState,
+                input.callSid,
+              );
+              if (booking.success) {
+                response += `\nتم حجز موعد مع ${booking.doctorName} بتاريخ ${booking.start?.slice(0, 10)} في ${booking.start?.slice(11, 16)}. سنقوم بالتأكيد من مركز علاجك.`;
+                await this.updateSlots(input.callSid, { ...(llmResult.slots as any), booked: true });
+              } else if (booking.alternatives && booking.alternatives.length) {
+                const opts = booking.alternatives
+                  .map((o) => `${o.start.slice(0, 10)} الساعة ${o.start.slice(11, 16)}`)
+                  .join('، ');
+                response += `\n${booking.message || 'الموعد غير متاح'}، أقدر أقترح: ${opts}. أيهم يناسبك؟`;
+              }
+            }
+          }
           this.llmMetric.observe({ endpoint: 'chat', status: 'ok' }, this.durationSeconds(llmStart));
           this.logger.log(`LLM response (${input.callSid}) length=${response?.length ?? 0}`);
         } catch (error) {

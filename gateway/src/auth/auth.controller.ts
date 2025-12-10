@@ -1,5 +1,5 @@
 // gateway/src/auth/auth.controller.ts
-import { Controller, Get, Post, UseGuards, Req, Res, Logger, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, UseGuards, Req, Res, Logger, HttpCode, HttpStatus, UnauthorizedException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import type { Request, Response } from 'express';
@@ -17,10 +17,20 @@ export class AuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Req() req: Request) {
-    const { userId, metadata } = req.body;
-    
-    if (!userId) {
-      return { error: 'userId is required' };
+    // DEV-ONLY fallback auth. Replace with real IdP/OIDC before production.
+    const { userId, password, metadata } = req.body as any;
+    if (!userId || !password) {
+      throw new UnauthorizedException('userId and password are required');
+    }
+
+    const allowedUsers = (process.env.DEV_AUTH_USERS || 'dev:changeme').split(',').map((pair) => pair.trim());
+    const valid = allowedUsers.some((pair) => {
+      const [user, pass] = pair.split(':');
+      return user === userId && pass === password;
+    });
+
+    if (!valid) {
+      throw new UnauthorizedException('Invalid credentials (dev fallback)');
     }
 
     const token = await this.authService.generateToken(userId, metadata);
@@ -32,7 +42,7 @@ export class AuthController {
       resourceId: userId,
       metadata: { method: 'password', roles: metadata?.roles || [] },
     });
-    
+
     return token;
   }
 

@@ -41,9 +41,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
+INTERNAL_SECRET = os.getenv("INTERNAL_SECRET")
 if not INTERNAL_SECRET:
     raise RuntimeError("INTERNAL_SECRET must be set for FHIR service")
+
+FHIR_BASE_URL = os.getenv("FHIR_BASE_URL")
 if not FHIR_BASE_URL:
     raise RuntimeError("FHIR_BASE_URL must be set for FHIR service")
 
@@ -55,8 +57,6 @@ async def internal_auth(request: Request, call_next):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return await call_next(request)
 
-# Configuration
-FHIR_BASE_URL = os.getenv("FHIR_BASE_URL", "http://localhost:8080/fhir")
 FHIR_CLIENT_ID = os.getenv("FHIR_CLIENT_ID", "")
 FHIR_CLIENT_SECRET = os.getenv("FHIR_CLIENT_SECRET", "")
 FHIR_BEARER_TOKEN = os.getenv("FHIR_BEARER_TOKEN", "")

@@ -5,6 +5,11 @@ Handles intent extraction, entity recognition, and routing for medical conversat
 Port: 5006
 """
 import re
+from dotenv import load_dotenv, find_dotenv
+
+# Prefer .env.local for local dev, fallback to .env
+load_dotenv(find_dotenv(".env.local", usecwd=True), override=True)
+load_dotenv(find_dotenv(".env", usecwd=True), override=False)
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +21,18 @@ from starlette.responses import Response
 
 app = FastAPI(title="LLM Orchestrator")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "")
+CLINICAL_LLM_URL = os.environ.get("CLINICAL_LLM_URL", os.environ.get("LLM_ENDPOINT", "http://localhost:5001"))
+VA_LLM_URL = os.environ.get("VA_LLM_URL", "http://localhost:5007")
+
+@app.middleware("http")
+async def internal_auth(request, call_next):
+  if request.url.path.startswith("/health") or request.url.path.startswith("/metrics"):
+    return await call_next(request)
+  if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
+    raise HTTPException(status_code=403, detail="Unauthorized")
+  return await call_next(request)
 
 # Prometheus metrics
 orchestration_requests = Counter('orchestrator_requests_total', 'Total orchestration requests')
@@ -33,7 +50,10 @@ entity_extraction_duration = Histogram(
 class OrchestrateRequest(BaseModel):
     transcript: str
     sessionId: str
+    mode: str | None = "clinical_soap"
+    history: list[dict] | None = None
     context: dict = {}
+    slots: dict = {}
 
 class OrchestrateResponse(BaseModel):
     intent: str
@@ -42,7 +62,7 @@ class OrchestrateResponse(BaseModel):
     confidence: float
     routing: str
 
-LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:5001/infer")
+LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", f"{CLINICAL_LLM_URL}/infer")
 
 @app.get("/health")
 async def health():
@@ -94,24 +114,43 @@ async def orchestrate(req: OrchestrateRequest):
         routing = determine_routing(intent, entities, confidence)
         
         # Step 4: Call LLM for response generation
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                LLM_ENDPOINT,
-                json={
-                    "message": req.transcript,
-                    "sessionId": req.sessionId,
-                    "intent": intent
-                },
-                timeout=30.0,
-            )
-        data = response.json()
+        if req.mode == "voice_agent_va":
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{VA_LLM_URL}/chat",
+                    json={
+                        "message": req.transcript,
+                        "sessionId": req.sessionId,
+                        "mode": req.mode,
+                        "history": [],
+                        "slots": req.slots,
+                    },
+                    headers={"x-internal-secret": INTERNAL_SECRET} if INTERNAL_SECRET else {},
+                    timeout=30.0,
+                )
+            data = response.json()
+            reply = data.get("reply", "")
+        else:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    LLM_ENDPOINT,
+                    json={
+                        "message": req.transcript,
+                        "sessionId": req.sessionId,
+                        "intent": intent
+                    },
+                    headers={"x-internal-secret": INTERNAL_SECRET} if INTERNAL_SECRET else {},
+                    timeout=30.0,
+                )
+            data = response.json()
+            reply = data.get("reply", "")
         
         print(f"🎯 Orchestration: intent={intent} ({confidence:.2f}), entities={len(entities)}, routing={routing}, latency={int((time.time()-start_time)*1000)}ms")
         
         return {
             "intent": intent,
-            "entities": entities,
-            "reply": data.get("reply", ""),
+            "entities": data.get("slots", entities),
+            "reply": reply,
             "confidence": confidence,
             "routing": routing
         }

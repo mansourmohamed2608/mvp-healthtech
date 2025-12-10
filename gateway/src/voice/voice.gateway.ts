@@ -95,6 +95,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
         metadata: {
           clinicianId: user.sub,
           patientId: user.patientId || null,
+          mode: 'voice_agent_va',
         },
       }).catch((e) => this.logger.warn(`Session persist failed for ${callSid}: ${e}`));
       this.activeGauge.inc();

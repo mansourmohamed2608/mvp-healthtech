@@ -10,11 +10,21 @@ import {
   Logger,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { TwilioService } from './twilio.service';
 import { SessionService } from '../session/session.service';
 import type { TwilioWebhookBody } from '../types/twilio';
+import { JwtAuthGuard } from '../auth/jwt.guard';
+import { Roles } from '../auth/roles.decorator';
+
+const maskPhone = (input?: string) => {
+  if (!input) return input;
+  const digits = input.replace(/\D/g, '');
+  if (digits.length <= 4) return '*'.repeat(Math.max(0, digits.length - 2)) + digits.slice(-2);
+  return `${'*'.repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}`;
+};
 
 @Controller('twilio')
 export class TwilioController {
@@ -55,7 +65,7 @@ export class TwilioController {
     try {
       // Extract call metadata
       const metadata = this.twilioService.extractCallMetadata(body);
-      this.logger.log(`Call started: ${metadata.callSid} from ${metadata.from}`);
+      this.logger.log(`Call started: ${metadata.callSid} from ${maskPhone(metadata.from)}`);
 
       // Create session for this call
       await this.sessionService.create({
@@ -86,18 +96,19 @@ export class TwilioController {
 
   /**
    * Generate Twilio access token for frontend Voice SDK
+   * Protected: requires authenticated user (clinician/internal).
    */
   @Post('token')
+  @UseGuards(JwtAuthGuard)
+  @Roles('clinician')
   @HttpCode(HttpStatus.OK)
-  async getToken(
-    @Headers('x-twilio-identity') identity?: string,
-  ) {
+  async getToken(@Req() req: any) {
     try {
-      const userIdentity = identity || `user-${Date.now()}`;
+      const userIdentity = req.user?.sub || `user-${Date.now()}`;
       const token = this.twilioService.generateAccessToken(userIdentity);
-      
+
       this.logger.log(`Generated Twilio token for identity: ${userIdentity}`);
-      
+      // TODO: add rate limiting to this endpoint.
       return {
         token,
         identity: userIdentity,

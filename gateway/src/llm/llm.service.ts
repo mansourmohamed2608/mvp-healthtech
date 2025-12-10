@@ -15,6 +15,18 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface OrchestratePayload {
+  transcript: string;
+  sessionId: string;
+  mode?: string;
+  history?: ChatMessage[];
+  slots?: Record<string, any>;
+}
+
+export interface OrchestrateResponse extends LlmResponse {
+  slots?: Record<string, any>;
+}
+
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
@@ -23,6 +35,7 @@ export class LlmService {
     return process.env.INTERNAL_SECRET;
   })();
   private readonly serviceUrl = process.env.LLM_SERVICE_URL || '';
+  private readonly orchestratorUrl = process.env.ORCHESTRATOR_URL || '';
 
   constructor(private readonly http: InternalHttpClient) {}
 
@@ -44,6 +57,28 @@ export class LlmService {
       `/chat`,
       payload,
       { headers: { 'x-correlation-id': corr } },
+    );
+    return data;
+  }
+
+  async orchestrate(payload: OrchestratePayload): Promise<OrchestrateResponse> {
+    const corr = uuidv4();
+    const timeoutMs = payload.mode === 'voice_agent_va' ? 2000 : 20000;
+    const client = this.http.getClient({
+      baseUrl: this.orchestratorUrl || this.serviceUrl,
+      serviceName: 'orchestrator',
+      timeoutMs,
+    });
+    const { data } = await client.post<OrchestrateResponse>(
+      `/orchestrate`,
+      payload,
+      {
+        headers: {
+          'x-correlation-id': corr,
+          'x-internal-secret': this.internalSecret,
+        },
+        timeout: timeoutMs,
+      },
     );
     return data;
   }

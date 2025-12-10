@@ -7,6 +7,10 @@ export function validateEnv() {
     'TTS_SERVICE_URL',
     'SOAP_SERVICE_URL',
     'FHIR_SERVICE_URL',
+    'TWILIO_AUTH_TOKEN',
+    'TWILIO_ACCOUNT_SID',
+    'TWILIO_API_SECRET',
+    'FHIR_BASE_URL',
   ];
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length) {

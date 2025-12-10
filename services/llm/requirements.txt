@@ -4,6 +4,7 @@ uvicorn[standard]~=0.30
 pydantic~=2.9
 httpx~=0.27
 safetensors~=0.4
+python-dotenv~=1.0
 
 # ---- Core ML stack ----
 # GPU / Kaggle (CUDA 12.1 wheels)

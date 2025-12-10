@@ -29,12 +29,20 @@ import { MiddlewareConsumer, Module, RequestMethod } from '@nestjs/common';
 import { CorrelationMiddleware } from './middleware/correlation.middleware';
 import { AuditService } from './audit/audit.service';
 import { InternalHttpClient } from './http/internal-http-client.service';
+import { VaModule } from './va/va.module';
+import { join } from 'path';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ 
+    ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '../.env',  // Load from root .env
+      // Prefer .env.local for local dev, fallback to .env
+      envFilePath: [
+        join(__dirname, '..', '.env.local'),
+        join(__dirname, '..', '.env'),
+        join(__dirname, '..', '..', '.env.local'),
+        join(__dirname, '..', '..', '.env'),
+      ],
     }),
     ThrottlerModule.forRoot({
       throttlers: [
@@ -49,6 +57,7 @@ import { InternalHttpClient } from './http/internal-http-client.service';
     QueueModule,
     ClinicalModule,
     RAGModule,
+    VaModule,
   ],
   controllers: [
     MetricsController,

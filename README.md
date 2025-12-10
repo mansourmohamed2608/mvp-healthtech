@@ -58,6 +58,8 @@ This starts all 6 services automatically in separate windows.
 - Clinical Notes: http://localhost:3001/clinical-notes
 - API Docs: http://localhost:3000/metrics
 
+For non-Docker local development of the VA path on localhost (gateway, orchestrator, llm-va, frontend), see `docs/LOCAL_DEV.md`.
+
 ---
 
 ## Local Setup

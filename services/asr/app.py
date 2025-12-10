@@ -685,6 +685,17 @@ def identify_speaker_roles(segments: List[Dict[str, Any]]) -> List[Dict[str, Any
 app = FastAPI(title="ASR Service (WhisperX)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
+
+@app.middleware("http")
+async def internal_auth(request: Request, call_next):
+    # Allow health/ready/metrics without auth
+    if request.url.path.startswith("/health") or request.url.path.startswith("/ready") or request.url.path.startswith("/metrics"):
+        return await call_next(request)
+    if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    return await call_next(request)
+
 @app.middleware("http")
 async def _asr_postprocess_middleware(request: Request, call_next):
     """Middleware that post-processes /transcribe JSON responses."""
