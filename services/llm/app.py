@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
 from rag_store import rag_store
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
@@ -35,6 +34,19 @@ if not INTERNAL_SECRET:
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
 MAX_MESSAGE_LENGTH = int(os.getenv("LLM_MAX_MESSAGE_LENGTH", "4096"))
 MAX_HISTORY_TURNS = int(os.getenv("LLM_MAX_HISTORY_TURNS", "20"))
+
+
+def normalize_dialect(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized in ["egypt", "egyptian", "eg"]:
+        return "egypt"
+    if normalized in ["saudi", "ksa", "gulf", "gcc"]:
+        return "saudi"
+    return normalized
 
 
 def safe_print(*args, **_kwargs):
@@ -140,6 +152,7 @@ class ChatRequest(BaseModel):
     message: str
     sessionId: str
     intent: Optional[str] = None
+    dialect: Optional[str] = None
 
 class ChatResponse(BaseModel):
     reply: str
@@ -147,6 +160,36 @@ class ChatResponse(BaseModel):
     tokens_generated: int
     first_token_ms: float
     total_latency_ms: float
+
+class GenerateMessage(BaseModel):
+    role: str
+    content: str
+
+class GenerateRequest(BaseModel):
+    messages: List[GenerateMessage]
+    max_new_tokens: int = 256
+    temperature: float = 0.0
+    repetition_penalty: float = 1.05
+    sessionId: Optional[str] = None
+
+class GenerateResponse(BaseModel):
+    text: str
+    tokens_generated: int
+    first_token_ms: float
+    total_latency_ms: float
+
+class RagFaqRequest(BaseModel):
+    question: str
+    answer: str
+
+class RagNoteRequest(BaseModel):
+    title: Optional[str] = None
+    text: str
+    metadata: Optional[dict] = None
+
+class RagQueryRequest(BaseModel):
+    query: str
+    limit: int = 3
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_NAME = "Henrychur/MMed-Llama-3-8B"  # English base + Arabic post-processing = 70%+ accuracy
@@ -191,13 +234,6 @@ except Exception as e:
     model = model.to("cpu")
     print("✅ Model loaded on CPU (fp32, slower)")
 
-# Load LoRA weights if present
-try:
-    model = PeftModel.from_pretrained(model, "/app/lora-llama")
-    print("LoRA weights loaded successfully")
-except Exception as e:
-    print(f"No LoRA weights found: {e}")
-
 print("Model loaded successfully!")
 
 def _blocking_generate(prompt: str, max_new_tokens: int = 192) -> dict:
@@ -225,6 +261,62 @@ async def _run_llm_inference(prompt: str, max_new_tokens: int = 192) -> dict:
     """Async helper to make mocking/testing easier."""
     return await asyncio.to_thread(_blocking_generate, prompt, max_new_tokens)
 
+def _build_prompt_from_messages(messages: List[GenerateMessage]) -> str:
+    if hasattr(tokenizer, "apply_chat_template"):
+        raw_messages = [{"role": m.role, "content": m.content} for m in messages]
+        return tokenizer.apply_chat_template(
+            raw_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    lines = []
+    for msg in messages:
+        role = msg.role.strip().lower()
+        prefix = "system" if role == "system" else "user" if role == "user" else "assistant"
+        lines.append(f"{prefix}: {msg.content}")
+    lines.append("assistant:")
+    return "\n".join(lines)
+
+def _blocking_generate_prompt(
+    prompt: str,
+    max_new_tokens: int,
+    temperature: float,
+    repetition_penalty: float,
+) -> dict:
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    do_sample = temperature > 0
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature if do_sample else 1.0,
+            repetition_penalty=max(1.0, repetition_penalty),
+            pad_token_id=tokenizer.eos_token_id,
+            use_cache=True,
+        )
+    decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return {
+        "decoded": decoded,
+        "input_len": len(inputs["input_ids"][0]),
+        "output_len": len(outputs[0]),
+    }
+
+async def _run_llm_generate(
+    prompt: str,
+    max_new_tokens: int,
+    temperature: float,
+    repetition_penalty: float,
+) -> dict:
+    return await asyncio.to_thread(
+        _blocking_generate_prompt,
+        prompt,
+        max_new_tokens,
+        temperature,
+        repetition_penalty,
+    )
+
 @app.get("/health")
 async def health():
     return {"ok": True, "service": "llm"}
@@ -243,6 +335,98 @@ async def ready():
 async def metrics():
     """Prometheus metrics endpoint"""
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.post("/rag/faq")
+async def add_rag_faq(req: RagFaqRequest):
+    if not req.question or not req.answer:
+        raise HTTPException(status_code=400, detail="question and answer required")
+    rag_store.add_faq(req.question.strip(), req.answer.strip())
+    return {"ok": True}
+
+@app.post("/rag/note")
+async def add_rag_note(req: RagNoteRequest):
+    if not req.text:
+        raise HTTPException(status_code=400, detail="text required")
+    rag_store.add_note(req.text.strip(), title=req.title, metadata=req.metadata)
+    return {"ok": True}
+
+@app.post("/rag/query")
+async def query_rag(req: RagQueryRequest):
+    if not req.query:
+        raise HTTPException(status_code=400, detail="query required")
+    limit = max(1, min(req.limit or 3, 6))
+    notes = rag_store.get_relevant_notes(req.query, limit=limit)
+    faqs = rag_store.get_relevant_faqs(req.query, limit=limit)
+    protocols = rag_store.clinic_protocols
+    return {
+        "notes": notes,
+        "faqs": faqs,
+        "protocols": protocols,
+    }
+
+@app.get("/rag/notes")
+async def list_rag_notes():
+    return {"notes": rag_store.list_notes()}
+
+@app.post("/generate", response_model=GenerateResponse)
+async def generate(req: GenerateRequest, request: Request):
+    requests_total.inc()
+    if not req.messages:
+        raise HTTPException(status_code=400, detail="messages required")
+    if req.max_new_tokens < 1 or req.max_new_tokens > 512:
+        raise HTTPException(status_code=400, detail="max_new_tokens out of range")
+    try:
+        log_safe(
+            logging.INFO,
+            "Generate request",
+            request=request,
+            session_id=req.sessionId,
+            messageCount=len(req.messages),
+        )
+        prompt = _build_prompt_from_messages(req.messages)
+        generation_start = time.time()
+        try:
+            result = await asyncio.wait_for(
+                _run_llm_generate(
+                    prompt,
+                    req.max_new_tokens,
+                    req.temperature,
+                    req.repetition_penalty,
+                ),
+                timeout=LLM_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log_safe(logging.WARNING, "LLM generate timeout", request=request, session_id=req.sessionId)
+            raise HTTPException(status_code=504, detail="LLM service unavailable")
+
+        generation_time = time.time() - generation_start
+        decoded = result["decoded"]
+        tokens_generated = result["output_len"] - result["input_len"]
+
+        total_time_ms = generation_time * 1000
+        tokens_per_second.observe(tokens_generated / max(generation_time, 1e-6))
+        complete_response_duration.observe(total_time_ms)
+        first_token_latency.observe(generation_time * 0.15 * 1000)
+
+        log_safe(
+            logging.INFO,
+            "Generate response ready",
+            request=request,
+            session_id=req.sessionId,
+            tokens=tokens_generated,
+            totalMs=int(total_time_ms),
+        )
+        return GenerateResponse(
+            text=decoded,
+            tokens_generated=tokens_generated,
+            first_token_ms=generation_time * 0.15 * 1000,
+            total_latency_ms=total_time_ms,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_safe(logging.ERROR, "Generate failed", request=request, session_id=req.sessionId, error=str(type(e).__name__))
+        raise HTTPException(status_code=500, detail="LLM generation failed")
 
 @app.post("/correct-transcription", response_model=TranscriptionCorrectionResponse)
 async def correct_transcription(req: TranscriptionCorrectionRequest):
@@ -409,6 +593,8 @@ async def chat(req: ChatRequest, request: Request):
         history = history[-MAX_HISTORY_TURNS:]
 
     intent = req.intent or classify_intent(req.message)
+    dialect = normalize_dialect(req.dialect) or "egypt"
+    dialect_label = "المصرية" if dialect == "egypt" else "السعودية" if dialect == "saudi" else None
     log_safe(logging.INFO, "Chat request", request=request, session_id=req.sessionId, historyTurns=len(history), messageLen=len(req.message))
 
     history_lines = [f"{turn.role}: {turn.content}" for turn in history]
@@ -417,6 +603,17 @@ async def chat(req: ChatRequest, request: Request):
     prompt_parts = [
         "أنت مساعد طبي يتحدث العربية. كن مهذباً ودقيقاً في الإجابات.",
     ]
+    if dialect_label:
+        prompt_parts.append(f"تحدث باللهجة {dialect_label} بشكل طبيعي.")
+    rag_faqs = rag_store.get_relevant_faqs(req.message, limit=2)
+    rag_notes = rag_store.get_relevant_notes(req.message, limit=2)
+    if rag_faqs or rag_notes:
+        prompt_parts.append("معلومات من العيادة:")
+        for note in rag_notes:
+            title = note.get("title") or "معلومة"
+            prompt_parts.append(f"- {title}: {note.get('text', '')}")
+        for faq in rag_faqs:
+            prompt_parts.append(f"- {faq['question']}: {faq['answer']}")
     if history_text:
         prompt_parts.append("السياق السابق:")
         prompt_parts.append(history_text)
@@ -439,7 +636,13 @@ async def chat(req: ChatRequest, request: Request):
         decoded = result["decoded"]
         reply = decoded.split("المساعد:")[-1].strip()
 
-        reply, corrections_count = apply_corrections(reply, dialect="egypt")
+        preserve_dialect = dialect in {"egypt", "saudi"}
+        correction_dialect = "none" if preserve_dialect else dialect
+        reply, corrections_count = apply_corrections(
+            reply,
+            dialect=correction_dialect,
+            preserve_dialect=preserve_dialect,
+        )
         reply = normalize_vital_signs(normalize_medical_abbreviations(reply))
 
         total_time_ms = (time.time() - overall_start) * 1000
@@ -470,6 +673,7 @@ def build_rag_prompt(message: str, intent: str = "general") -> str:
 
     # Get relevant FAQs based on the message
     relevant_faqs = rag_store.get_relevant_faqs(message, limit=2)
+    relevant_notes = rag_store.get_relevant_notes(message, limit=2)
 
     # Build prompt with RAG context
     prompt_parts = [
@@ -492,6 +696,13 @@ def build_rag_prompt(message: str, intent: str = "general") -> str:
             prompt_parts.append(f"س: {faq['question']}")
             prompt_parts.append(f"ج: {faq['answer']}")
             prompt_parts.append("")
+
+    if relevant_notes:
+        prompt_parts.append("سياسات أو معلومات من العيادة:")
+        for note in relevant_notes:
+            title = note.get("title") or "معلومة"
+            prompt_parts.append(f"- {title}: {note.get('text', '')}")
+        prompt_parts.append("")
 
     # Add current conversation
     prompt_parts.append("المحادثة الحالية:")

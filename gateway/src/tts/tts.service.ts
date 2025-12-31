@@ -36,7 +36,11 @@ export class TtsService {
    * Synthesize speech from text
    * Returns base64 audio (mulaw/mp3/wav depending on engine)
    */
-  async synthesize(text: string, sessionId?: string): Promise<{ audioBase64: string; format?: string }> {
+  async synthesize(
+    text: string,
+    sessionId?: string,
+    voice?: string,
+  ): Promise<{ audioBase64: string; format?: string }> {
     try {
       const corr = uuidv4();
       const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'tts' });
@@ -45,7 +49,7 @@ export class TtsService {
         {
           text,
           sessionId,
-          voice: 'ar-EG-SalmaNeural', // Arabic Egyptian female
+          voice,
         } as SynthesizeRequest,
         {
           headers: { 'x-correlation-id': corr },
@@ -64,7 +68,7 @@ export class TtsService {
    * Synthesize and stream audio chunks
    * For real-time playback
    */
-  async synthesizeStream(text: string, sessionId?: string): Promise<Buffer> {
+  async synthesizeStream(text: string, sessionId?: string, voice?: string): Promise<Buffer> {
     try {
       const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'tts' });
       const response = await client.post(
@@ -72,7 +76,7 @@ export class TtsService {
         {
           text,
           sessionId,
-          voice: 'ar-EG-SalmaNeural',
+          voice,
         } as SynthesizeRequest,
         {
           responseType: 'arraybuffer',

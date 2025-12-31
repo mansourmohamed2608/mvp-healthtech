@@ -15,6 +15,7 @@ import { WsJwtGuard } from './auth/ws-jwt.guard';
 import { JwtAuthGuard } from './auth/jwt.guard';
 import { APP_GUARD } from '@nestjs/core';
 import { AuditService } from './audit/audit.service';
+import { InternalHttpClient } from './http/internal-http-client.service';
 
 jest.mock('./auth/jwt.guard', () => ({
   JwtAuthGuard: jest.fn().mockImplementation(() => ({ canActivate: () => true })),
@@ -44,6 +45,7 @@ describe('Gateway contract (mocked downstream)', () => {
         { provide: JwtAuthGuard, useValue: { canActivate: () => true } },
         { provide: APP_GUARD, useValue: { canActivate: () => true } },
         { provide: AuditService, useValue: { log: jest.fn() } },
+        InternalHttpClient,
       ],
     }).compile();
     app = moduleFixture.createNestApplication();
@@ -97,7 +99,6 @@ describe('Gateway contract (mocked downstream)', () => {
   it('/soap/generate and approve', async () => {
     mockedAxios.post
       .mockResolvedValueOnce({ data: { id: 'n1', status: 'pending', session_id: 's1', patient_id: 'p1', clinician_id: 'c1' } }) // SOAP generate
-      .mockResolvedValueOnce({ data: { id: 'n1', status: 'approved', session_id: 's1' } }) // SOAP approve
       .mockResolvedValueOnce({ data: { documentReferenceId: 'doc1', encounterId: 'enc1', success: true } }); // FHIR write
     mockedAxios.patch?.mockResolvedValueOnce({ data: { id: 'n1', status: 'approved', session_id: 's1', patient_id: 'p1', clinician_id: 'c1', encounter_id: 'enc1' } });
     mockedAxios.get.mockResolvedValueOnce({ data: { notes: [] } });
@@ -126,6 +127,61 @@ describe('Gateway contract (mocked downstream)', () => {
     // Verify FHIR was called with idempotency header
     const fhirCall = mockedAxios.post.mock.calls.find(([url]) => `${url}`.includes('/write'));
     expect(fhirCall?.[2]?.headers?.['Idempotency-Key']).toBeDefined();
+    expect(fhirCall?.[1]).toMatchObject({ patientId: 'p1', practitionerId: 'c1', sessionId: 's1' });
+  });
+
+  it('/soap/notes/:id/field updates field', async () => {
+    mockedAxios.patch?.mockResolvedValueOnce({
+      data: {
+        id: 'n1',
+        status: 'pending',
+        session_id: 's1',
+        patient_id: 'p1',
+        clinician_id: 'c1',
+        subjective: 'updated',
+        objective: '',
+        assessment: '',
+        plan: '',
+        soap_json: { Subjective: { 'Chief Complaint': 'updated' } },
+      },
+    });
+    const res = await request(app.getHttpServer())
+      .patch('/soap/notes/n1/field')
+      .set(auth())
+      .send({ fieldPath: 'Subjective.Chief Complaint', audio: 'YmFzZTY0', mode: 'append' })
+      .expect((r) => {
+        if (![200, 201].includes(r.status)) {
+          throw new Error(`Unexpected status ${r.status}`);
+        }
+      });
+    expect(res.body.subjective).toBe('updated');
+    expect(res.body.soapJson).toBeDefined();
+  });
+
+  it('/soap/notes/:id/sections updates sections', async () => {
+    mockedAxios.patch?.mockResolvedValueOnce({
+      data: {
+        id: 'n1',
+        status: 'pending',
+        session_id: 's1',
+        patient_id: 'p1',
+        clinician_id: 'c1',
+        subjective: 's',
+        objective: 'o',
+        assessment: 'a',
+        plan: 'p',
+      },
+    });
+    const res = await request(app.getHttpServer())
+      .patch('/soap/notes/n1/sections')
+      .set(auth())
+      .send({ soapText: 'Subjective: s\nObjective: o\nAssessment: a\nPlan: p' })
+      .expect((r) => {
+        if (![200, 201].includes(r.status)) {
+          throw new Error(`Unexpected status ${r.status}`);
+        }
+      });
+    expect(res.body.plan).toBe('p');
   });
 
   it('/fhir/Patient proxied', async () => {

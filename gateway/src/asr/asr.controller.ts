@@ -10,6 +10,9 @@ class TranscribeDto {
   audio: string;
   callSid?: string;
   dialect?: string;
+  language?: string;
+  enableDiarization?: boolean;
+  diarizeFirst?: boolean;
 }
 
 class StreamDto {
@@ -35,7 +38,13 @@ export class AsrController {
       const result = await this.asrService.transcribe(
         dto.audio,
         dto.callSid || `call-${Date.now()}`,
-        true  // Enable speaker role detection
+        {
+          identifySpeakers: true,
+          dialect: dto.dialect,
+          language: dto.language,
+          enableDiarization: dto.enableDiarization,
+          diarizeFirst: dto.diarizeFirst,
+        }
       );
       this.asrLatency.observe({ endpoint: 'transcribe', status: 'ok' }, this.durationSeconds(start));
       return camelResponse(result);

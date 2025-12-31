@@ -22,6 +22,7 @@ import { wrapError, camelResponse } from '../utils/http-utils';
 import type { Request } from 'express';
 import { AuditService } from '../audit/audit.service';
 import { safeLog } from '../utils/safe-logger';
+import { AsrService } from '../asr/asr.service';
 
 class CreateSoapDto {
   transcript!: string;
@@ -30,6 +31,44 @@ class CreateSoapDto {
   patientId!: string;
   practitionerId!: string;
   encounterId?: string;
+  templateId?: string;
+  templateJson?: Record<string, any>;
+  patientName?: string;
+  providerName?: string;
+  dateOfVisit?: string;
+}
+
+class UpdateSoapFieldDto {
+  fieldPath!: string;
+  audio?: string;
+  transcript?: string;
+  mode?: 'append' | 'replace';
+  valueType?: 'string' | 'list';
+  dialect?: string;
+  language?: string;
+}
+
+class UpdateSoapSectionsDto {
+  soapText?: string;
+  subjective?: string;
+  objective?: string;
+  assessment?: string;
+  plan?: string;
+}
+
+class PatientCreateDto {
+  displayName!: string;
+  externalId?: string;
+}
+
+class PatientDocumentDto {
+  title?: string;
+  content?: string;
+  contentBase64?: string;
+  fileName?: string;
+  contentType?: string;
+  source?: string;
+  summarize?: boolean;
 }
 
 @UseGuards(JwtAuthGuard)
@@ -52,6 +91,7 @@ export class SoapController {
   constructor(
     private readonly auditService: AuditService,
     private readonly http: InternalHttpClient,
+    private readonly asrService: AsrService,
   ) {
     const url = process.env.DATABASE_URL;
     this.pool = url ? new Pool({ connectionString: url }) : null;
@@ -89,6 +129,11 @@ export class SoapController {
         patientId: dto.patientId,
         clinicianId: dto.practitionerId,
         encounterId: dto.encounterId,
+        templateId: dto.templateId,
+        templateJson: dto.templateJson,
+        patientName: dto.patientName,
+        providerName: dto.providerName,
+        dateOfVisit: dto.dateOfVisit,
       };
       const asyncEnabled =
         process.env.SOAP_ASYNC_ENABLED === '1' ||
@@ -220,6 +265,222 @@ export class SoapController {
     return camelResponse(response.data);
   }
 
+  @Get('templates')
+  @Roles('clinician')
+  async listTemplates(@Req() req?: Request) {
+    const response = await this.soapClient.get(`/templates`, {
+      headers: { 'x-correlation-id': (req as any)?.correlationId },
+    });
+    return camelResponse(response.data);
+  }
+
+  @Get('templates/:id')
+  @Roles('clinician')
+  async getTemplate(@Param('id') id: string, @Req() req?: Request) {
+    const response = await this.soapClient.get(`/templates/${id}`, {
+      headers: { 'x-correlation-id': (req as any)?.correlationId },
+    });
+    return camelResponse(response.data);
+  }
+
+  @Post('templates')
+  @Roles('clinician')
+  async createTemplate(@Body() dto: any, @Req() req?: Request) {
+    const response = await this.soapClient.post(`/templates`, dto, {
+      headers: { 'x-correlation-id': (req as any)?.correlationId },
+    });
+    return camelResponse(response.data);
+  }
+
+  @Get('patients')
+  @Roles('clinician')
+  async listPatients(@Req() req?: Request) {
+    const response = await this.soapClient.get(`/patients`, {
+      headers: { 'x-correlation-id': (req as any)?.correlationId },
+    });
+    return camelResponse(response.data);
+  }
+
+  @Post('patients')
+  @Roles('clinician')
+  async createPatient(@Body() dto: PatientCreateDto, @Req() req?: Request) {
+    const response = await this.soapClient.post(`/patients`, dto, {
+      headers: { 'x-correlation-id': (req as any)?.correlationId },
+    });
+    return camelResponse(response.data);
+  }
+
+  @Get('patients/:id/documents')
+  @Roles('clinician')
+  async listPatientDocuments(@Param('id') id: string, @Req() req?: Request) {
+    const response = await this.soapClient.get(`/patients/${id}/documents`, {
+      headers: { 'x-correlation-id': (req as any)?.correlationId },
+    });
+    return camelResponse(response.data);
+  }
+
+  @Post('patients/:id/documents')
+  @Roles('clinician')
+  async uploadPatientDocument(
+    @Param('id') id: string,
+    @Body() dto: PatientDocumentDto,
+    @Req() req?: Request,
+  ) {
+    const response = await this.soapClient.post(`/patients/${id}/documents`, dto, {
+      headers: { 'x-correlation-id': (req as any)?.correlationId },
+    });
+    return camelResponse(response.data);
+  }
+
+  @Post('patients/:id/documents/:docId/summary')
+  @Roles('clinician')
+  async summarizePatientDocument(
+    @Param('id') id: string,
+    @Param('docId') docId: string,
+    @Req() req?: Request,
+  ) {
+    const response = await this.soapClient.post(
+      `/patients/${id}/documents/${docId}/summary`,
+      {},
+      { headers: { 'x-correlation-id': (req as any)?.correlationId } },
+    );
+    return camelResponse(response.data);
+  }
+
+  @Get('patients/:id/context')
+  @Roles('clinician')
+  async getPatientContext(@Param('id') id: string, @Req() req?: Request) {
+    const response = await this.soapClient.get(`/patients/${id}/context`, {
+      headers: { 'x-correlation-id': (req as any)?.correlationId },
+    });
+    return camelResponse(response.data);
+  }
+
+  @Get('patients/:id/rag')
+  @Roles('clinician')
+  async listPatientRag(@Param('id') id: string, @Req() req?: Request) {
+    const response = await this.soapClient.get(`/patients/${id}/rag`, {
+      headers: { 'x-correlation-id': (req as any)?.correlationId },
+    });
+    return camelResponse(response.data);
+  }
+
+  @Roles('clinician')
+  @Patch('notes/:id/field')
+  async updateNoteField(
+    @Param('id') id: string,
+    @Body() dto: UpdateSoapFieldDto,
+    @Req() req?: Request,
+  ) {
+    const start = process.hrtime();
+    try {
+      if (!dto.fieldPath || (!dto.audio && !dto.transcript)) {
+        throw new BadRequestException('fieldPath and audio/transcript required');
+      }
+      let transcript = dto.transcript?.trim() || '';
+      if (dto.audio) {
+        const asr = await this.asrService.transcribe(
+          dto.audio,
+          `soap-field-${id}-${Date.now()}`,
+          {
+            identifySpeakers: false,
+            dialect: dto.dialect,
+            language: dto.language || 'ar',
+            enableDiarization: false,
+            diarizeFirst: false,
+          },
+          (req as any)?.correlationId,
+        );
+        transcript = String(asr.text || '').trim();
+      }
+      if (!transcript) {
+        throw new BadRequestException('ASR transcript empty');
+      }
+      const actor = (req as any)?.user?.sub || 'unknown';
+      const response = await this.soapClient.patch(
+        `/notes/${id}/field`,
+        {
+          fieldPath: dto.fieldPath,
+          transcript,
+          mode: dto.mode,
+          valueType: dto.valueType,
+          actorId: actor,
+          source: dto.audio ? 'voice' : 'text',
+        },
+        { headers: { 'x-correlation-id': (req as any)?.correlationId } },
+      );
+      await this.auditService.log({
+        actorId: actor,
+        action: 'SOAP_NOTE_FIELD_UPDATED',
+        resourceType: 'soap_note',
+        resourceId: id,
+        metadata: {
+          fieldPath: dto.fieldPath,
+          mode: dto.mode || 'append',
+        },
+      });
+      this.soapLatency.observe(
+        { endpoint: 'field', status: 'ok' },
+        this.durationSeconds(start),
+      );
+      return camelResponse(response.data);
+    } catch (error) {
+      this.soapErrors.inc({ endpoint: 'field' });
+      this.soapLatency.observe(
+        { endpoint: 'field', status: 'error' },
+        this.durationSeconds(start),
+      );
+      wrapError(error, req);
+    }
+  }
+
+  @Roles('clinician')
+  @Patch('notes/:id/sections')
+  async updateNoteSections(
+    @Param('id') id: string,
+    @Body() dto: UpdateSoapSectionsDto,
+    @Req() req?: Request,
+  ) {
+    const start = process.hrtime();
+    try {
+      if (!dto.soapText && !dto.subjective && !dto.objective && !dto.assessment && !dto.plan) {
+        throw new BadRequestException('No section updates provided');
+      }
+      const actor = (req as any)?.user?.sub || 'unknown';
+      const response = await this.soapClient.patch(
+        `/notes/${id}/sections`,
+        {
+          soapText: dto.soapText,
+          subjective: dto.subjective,
+          objective: dto.objective,
+          assessment: dto.assessment,
+          plan: dto.plan,
+          actorId: actor,
+        },
+        { headers: { 'x-correlation-id': (req as any)?.correlationId } },
+      );
+      await this.auditService.log({
+        actorId: actor,
+        action: 'SOAP_NOTE_SECTIONS_UPDATED',
+        resourceType: 'soap_note',
+        resourceId: id,
+        metadata: {},
+      });
+      this.soapLatency.observe(
+        { endpoint: 'sections', status: 'ok' },
+        this.durationSeconds(start),
+      );
+      return camelResponse(response.data);
+    } catch (error) {
+      this.soapErrors.inc({ endpoint: 'sections' });
+      this.soapLatency.observe(
+        { endpoint: 'sections', status: 'error' },
+        this.durationSeconds(start),
+      );
+      wrapError(error, req);
+    }
+  }
+
   @Roles('clinician')
   @Patch('notes/:id/approve')
   async approveNote(@Param('id') id: string, @Req() req?: Request) {
@@ -231,9 +492,13 @@ export class SoapController {
       { headers: { 'x-correlation-id': (req as any)?.correlationId } },
     );
     const note = camelResponse(response.data);
+    const noteSessionId = note.sessionId ?? note.session_id ?? '';
+    const notePatientId = note.patientId ?? note.patient_id ?? '';
+    const noteClinicianId = note.clinicianId ?? note.clinician_id ?? '';
+    const noteEncounterId = note.encounterId ?? note.encounter_id ?? '';
     // Trigger FHIR write after approval
     try {
-      const idempotencyKey = `${note.id || id}:${note.encounter_id || 'none'}`;
+      const idempotencyKey = `${note.id || id}:${noteEncounterId || 'none'}`;
       const fhirAuthHeader = process.env.FHIR_BEARER_TOKEN
         ? { Authorization: `Bearer ${process.env.FHIR_BEARER_TOKEN}` }
         : {};
@@ -244,9 +509,9 @@ export class SoapController {
         resourceType: 'soap_note',
         resourceId: note.id,
         metadata: {
-          sessionId: note.session_id,
-          patientId: note.patient_id,
-          clinicianId: note.clinician_id,
+          sessionId: noteSessionId,
+          patientId: notePatientId,
+          clinicianId: noteClinicianId,
         },
       });
       await this.auditService.log({
@@ -255,8 +520,8 @@ export class SoapController {
         resourceType: 'soap_note',
         resourceId: note.id,
         metadata: {
-          patientId: note.patient_id,
-          clinicianId: note.clinician_id,
+          patientId: notePatientId,
+          clinicianId: noteClinicianId,
           noteId: note.id,
         },
       });
@@ -264,10 +529,10 @@ export class SoapController {
         `/write`,
         {
           soapNote: note,
-          patientId: note.patient_id,
-          practitionerId: note.clinician_id,
-          encounterId: note.encounter_id,
-          sessionId: note.session_id,
+          patientId: notePatientId,
+          practitionerId: noteClinicianId,
+          encounterId: noteEncounterId,
+          sessionId: noteSessionId || `${note.id || id}`,
         },
         {
           headers: {
@@ -283,10 +548,10 @@ export class SoapController {
         resourceType: 'soap_note',
         resourceId: note.id,
         metadata: {
-          patientId: note.patient_id,
-          clinicianId: note.clinician_id,
+          patientId: notePatientId,
+          clinicianId: noteClinicianId,
           noteId: note.id,
-          encounterId: note.encounter_id,
+          encounterId: noteEncounterId,
           httpStatus: 200,
         },
       });

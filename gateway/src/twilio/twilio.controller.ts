@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  TooManyRequestsException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { TwilioService } from './twilio.service';
@@ -29,6 +30,9 @@ const maskPhone = (input?: string) => {
 @Controller('twilio')
 export class TwilioController {
   private readonly logger = new Logger(TwilioController.name);
+  private readonly tokenRate = new Map<string, { count: number; ts: number }>();
+  private readonly tokenWindowMs = 60_000;
+  private readonly tokenLimit = Number(process.env.TWILIO_TOKEN_RATE_LIMIT || 10);
 
   constructor(
     private readonly twilioService: TwilioService,
@@ -105,10 +109,10 @@ export class TwilioController {
   async getToken(@Req() req: any) {
     try {
       const userIdentity = req.user?.sub || `user-${Date.now()}`;
+      this.enforceTokenRateLimit(userIdentity);
       const token = this.twilioService.generateAccessToken(userIdentity);
 
       this.logger.log(`Generated Twilio token for identity: ${userIdentity}`);
-      // TODO: add rate limiting to this endpoint.
       return {
         token,
         identity: userIdentity,
@@ -167,5 +171,18 @@ export class TwilioController {
     }
 
     return { ok: true, event: 'stop' };
+  }
+
+  private enforceTokenRateLimit(identity: string) {
+    const now = Date.now();
+    const window = this.tokenRate.get(identity);
+    if (!window || now - window.ts > this.tokenWindowMs) {
+      this.tokenRate.set(identity, { count: 1, ts: now });
+      return;
+    }
+    if (window.count >= this.tokenLimit) {
+      throw new TooManyRequestsException('Twilio token rate limit exceeded');
+    }
+    window.count += 1;
   }
 }

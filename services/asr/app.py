@@ -14,7 +14,7 @@ What's inside:
 - pyannote diarization: prefers 3.2+, falls back to 3.1 if needed
 - Prometheus metrics
 
-Note: LoRA/Transformers are intentionally NOT used.
+Note: Adapter tuning is intentionally not used.
 """
 
 import base64

@@ -5,6 +5,7 @@
  */
 import { Controller, Post, Get, Body, Query, UseGuards } from '@nestjs/common';
 import { VectorCacheService } from '../cache/vector-cache.service';
+import { InternalHttpClient } from '../http/internal-http-client.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { Roles } from '../auth/roles.decorator';
 import { camelResponse, wrapError } from '../utils/http-utils';
@@ -24,7 +25,15 @@ interface SearchDto {
 @Roles('clinician')
 @Controller('rag')
 export class RAGController {
-  constructor(private readonly vectorCache: VectorCacheService) {}
+  private readonly llmClient;
+
+  constructor(
+    private readonly vectorCache: VectorCacheService,
+    private readonly http: InternalHttpClient,
+  ) {
+    const llmUrl = process.env.LLM_SERVICE_URL || 'http://localhost:5001';
+    this.llmClient = this.http.getClient({ baseUrl: llmUrl, serviceName: 'llm' });
+  }
 
   @Post('store')
   async storeKnowledge(@Body() dto: StoreKnowledgeDto) {
@@ -55,6 +64,24 @@ export class RAGController {
     } catch (error) {
       wrapError(error);
     }
+  }
+
+  @Post('note')
+  async addClinicNote(@Body() dto: { title?: string; text: string; metadata?: Record<string, any> }) {
+    const response = await this.llmClient.post(`/rag/note`, dto);
+    return camelResponse(response.data);
+  }
+
+  @Post('faq')
+  async addFaq(@Body() dto: { question: string; answer: string }) {
+    const response = await this.llmClient.post(`/rag/faq`, dto);
+    return camelResponse(response.data);
+  }
+
+  @Get('notes')
+  async listNotes() {
+    const response = await this.llmClient.get(`/rag/notes`);
+    return camelResponse(response.data);
   }
 
   @Get('stats')

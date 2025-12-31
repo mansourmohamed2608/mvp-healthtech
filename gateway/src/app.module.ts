@@ -21,6 +21,7 @@ import { AsrService } from './asr/asr.service';
 import { LlmService } from './llm/llm.service';
 import { TtsService } from './tts/tts.service';
 import { ConversationService } from './conversation/conversation.service';
+import { ConversationController } from './conversation/conversation.controller';
 import { VectorCacheService } from './cache/vector-cache.service';
 import { KvCacheService } from './cache/kv-cache.service';
 import { JwtAuthGuard } from './auth/jwt.guard';
@@ -67,6 +68,7 @@ import { join } from 'path';
     TtsController,
     SoapController,
     FhirController,
+    ConversationController,
   ],
   providers: [
     {

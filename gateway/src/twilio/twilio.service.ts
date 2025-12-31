@@ -66,9 +66,10 @@ export class TwilioService {
       'مرحبا بك في النظام الصحي',
     );
 
-    // Start media streaming
+    // Start media streaming (append HMAC signature for WS auth)
     const start = response.start();
-    start.stream({ url: streamUrl }).parameter({
+    const signedStreamUrl = this.signStreamUrl(streamUrl, callSid);
+    start.stream({ url: signedStreamUrl }).parameter({
       name: 'callSid',
       value: callSid,
     });
@@ -77,6 +78,24 @@ export class TwilioService {
     response.pause({ length: 600 });
 
     return response.toString();
+  }
+
+  private signStreamUrl(streamUrl: string, callSid: string): string {
+    const secret = process.env.TWILIO_AUTH_TOKEN || process.env.WS_SHARED_SECRET || '';
+    if (!secret) {
+      return streamUrl;
+    }
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = createHmac('sha256', secret).update(`${callSid}:${ts}`).digest('hex');
+    try {
+      const url = new URL(streamUrl);
+      url.searchParams.set('sig', sig);
+      url.searchParams.set('ts', ts.toString());
+      return url.toString();
+    } catch (_err) {
+      const joiner = streamUrl.includes('?') ? '&' : '?';
+      return `${streamUrl}${joiner}sig=${sig}&ts=${ts}`;
+    }
   }
 
   /**

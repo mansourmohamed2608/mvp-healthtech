@@ -32,6 +32,7 @@ export class ConversationService {
   private readonly logger = new Logger(ConversationService.name);
   private readonly client: RedisClientType | null = null;
   private readonly inMemoryStore = new Map<string, Message[]>();
+  private readonly inMemoryContext = new Map<string, Record<string, any>>();
   private readonly inflight = new Map<string, number>();
   private readonly asrMetric = MetricsController.getAsrLatency();
   private readonly llmMetric = MetricsController.getLlmLatency();
@@ -45,6 +46,8 @@ export class ConversationService {
     (process.env.VOICE_AGENT_LLM_ENABLED || '1').toString().trim() !== '0';
   private readonly cannedReply =
     'مرحبا، هذا مجرد اختبار للصوت في النظام.';
+  private readonly voiceEgypt = process.env.TTS_VOICE_EGYPT || 'ar-EG-SalmaNeural';
+  private readonly voiceSaudi = process.env.TTS_VOICE_SAUDI || 'ar-SA-HamedNeural';
 
   constructor(
     private readonly llmService: LlmService,
@@ -208,12 +211,14 @@ export class ConversationService {
   async getState(sessionId: string): Promise<ConversationState | null> {
     try {
       const messages = await this.getMessages(sessionId, this.MAX_MESSAGES);
-      let context = {};
+      let context: Record<string, any> = {};
 
       if (this.redisAvailable && this.client) {
         const contextKey = `conv:context:${sessionId}`;
         const contextStr = await this.client.get(contextKey);
         context = contextStr ? JSON.parse(contextStr) : {};
+      } else {
+        context = this.inMemoryContext.get(sessionId) || {};
       }
 
       return {
@@ -233,7 +238,8 @@ export class ConversationService {
    */
   async updateContext(sessionId: string, context: Record<string, any>): Promise<void> {
     if (!this.redisAvailable || !this.client) {
-      this.logger.debug(`Context not persisted (in-memory mode)`);
+      this.inMemoryContext.set(sessionId, context || {});
+      this.logger.debug(`Context updated (in-memory mode)`);
       return;
     }
 
@@ -338,12 +344,22 @@ export class ConversationService {
     }
     this.inflight.set(input.callSid, current + 1);
     try {
+      const existingState = await this.getState(input.callSid);
+      const existingContext = (existingState?.context || {}) as Record<string, any>;
+      const preferences = (existingContext.preferences || {}) as Record<string, any>;
+      const preferredDialect = this.normalizeDialect(preferences.dialect);
+      const storedDialect = this.normalizeDialect(existingContext.dialect);
+      const hintDialect =
+        preferredDialect && preferredDialect !== 'auto'
+          ? preferredDialect
+          : storedDialect || 'egypt';
+
       const asrStart = process.hrtime();
       // 1. Transcribe audio using ASR service (with timeout/error handling)
       const { text: transcript } = await this.asrService.transcribe(
         input.audio,
         input.callSid,
-        true,
+        { identifySpeakers: true, dialect: hintDialect },
       );
       this.asrMetric.observe({ endpoint: 'transcribe', status: 'ok' }, this.durationSeconds(asrStart));
 
@@ -363,6 +379,20 @@ export class ConversationService {
       // Save user message to conversation
       await this.appendMessage(input.callSid, 'user', transcript);
 
+      const detectedDialect = this.detectDialect(transcript);
+      const resolvedDialect =
+        preferredDialect && preferredDialect !== 'auto'
+          ? preferredDialect
+          : detectedDialect || storedDialect || 'egypt';
+
+      if (resolvedDialect !== storedDialect || preferredDialect) {
+        await this.updateContext(input.callSid, {
+          ...existingContext,
+          dialect: resolvedDialect,
+          preferences: { ...preferences, dialect: preferredDialect || preferences.dialect || 'auto' },
+        });
+      }
+
       // 2. Get response (LLM or canned)
       let response = this.cannedReply;
       if (this.llmEnabled) {
@@ -375,6 +405,7 @@ export class ConversationService {
           sessionId: input.callSid,
           mode: 'voice_agent_va',
           slots,
+          dialect: resolvedDialect,
         };
         try {
           const llmResult = await this.llmService.orchestrate(chatPayload);
@@ -417,7 +448,8 @@ export class ConversationService {
 
       // 3. Synthesize voice response using TTS
       const ttsStart = process.hrtime();
-      const ttsResult = await this.ttsService.synthesize(response, input.callSid);
+      const voice = this.selectVoice(resolvedDialect, preferences.voice);
+      const ttsResult = await this.ttsService.synthesize(response, input.callSid, voice);
       // TTS returns base64 mulaw (8k) when available; Twilio media streams expect mulaw payloads.
       const audioResponse = ttsResult.audioBase64;
       this.ttsMetric.observe({ endpoint: 'synthesize', status: 'ok' }, this.durationSeconds(ttsStart));
@@ -444,6 +476,67 @@ export class ConversationService {
   /**
    * Utility: delay for retry logic
    */
+  private normalizeDialect(value?: string): string | null {
+    if (!value) return null;
+    const normalized = value.toString().trim().toLowerCase();
+    if (!normalized) return null;
+    if (normalized === 'auto') return 'auto';
+    if (['egypt', 'egyptian', 'eg'].includes(normalized)) return 'egypt';
+    if (['saudi', 'ksa', 'gulf', 'gcc'].includes(normalized)) return 'saudi';
+    return normalized;
+  }
+
+  private detectDialect(text: string): string | null {
+    if (!text) return null;
+    const lowered = text.toLowerCase();
+    const egyptianMarkers = [
+      'ازاي',
+      'إزاي',
+      'عايز',
+      'عاوز',
+      'عايزة',
+      'مش',
+      'ليه',
+      'أيوه',
+      'لسه',
+      'دلوقتي',
+      'بتاع',
+      'كده',
+      'حاجة',
+    ];
+    const saudiMarkers = [
+      'ايش',
+      'إيش',
+      'وش',
+      'وشلون',
+      'ليش',
+      'ابغى',
+      'أبغى',
+      'ودي',
+      'الحين',
+      'مره',
+      'ترى',
+      'حيل',
+    ];
+    const egyptScore = egyptianMarkers.reduce(
+      (score, marker) => (lowered.includes(marker) ? score + 1 : score),
+      0,
+    );
+    const saudiScore = saudiMarkers.reduce(
+      (score, marker) => (lowered.includes(marker) ? score + 1 : score),
+      0,
+    );
+    if (egyptScore === 0 && saudiScore === 0) return null;
+    if (egyptScore === saudiScore) return null;
+    return egyptScore > saudiScore ? 'egypt' : 'saudi';
+  }
+
+  private selectVoice(dialect: string, preferredVoice?: string): string | undefined {
+    if (preferredVoice) return preferredVoice;
+    if (dialect === 'saudi') return this.voiceSaudi;
+    return this.voiceEgypt;
+  }
+
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }

@@ -17,7 +17,7 @@ class VectorRAG:
         """Store text with embedding in vector cache"""
         try:
             response = await self.client.post(
-                f"{self.gateway_url}/vector/store",
+                f"{self.gateway_url}/rag/store",
                 json={
                     "key": key,
                     "text": text,
@@ -33,7 +33,7 @@ class VectorRAG:
         """Search for similar texts using vector similarity"""
         try:
             response = await self.client.post(
-                f"{self.gateway_url}/vector/search",
+                f"{self.gateway_url}/rag/search",
                 json={
                     "query": query,
                     "limit": limit,

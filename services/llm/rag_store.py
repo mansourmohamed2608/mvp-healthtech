@@ -76,6 +76,9 @@ class RAGStore:
             "appointment_hours": "نحن نعمل من الأحد إلى الخميس، 8 صباحاً - 8 مساءً. السبت 9 صباحاً - 2 مساءً.",
             "insurance_accepted": ["تأمين تعاوني", "بوبا", "التعاونية", "ميدغلف"],
         }
+
+        # Free-form clinic notes/policies
+        self.clinic_notes: List[Dict[str, Any]] = []
         
         # Load additional knowledge from files if available
         self._load_knowledge_files()
@@ -93,6 +96,13 @@ class RAGStore:
             with open(faqs_file, "r", encoding="utf-8") as f:
                 loaded_faqs = json.load(f)
                 self.medical_faqs.extend(loaded_faqs)
+
+        notes_file = self.knowledge_dir / "clinic_notes.json"
+        if notes_file.exists():
+            with open(notes_file, "r", encoding="utf-8") as f:
+                loaded_notes = json.load(f)
+                if isinstance(loaded_notes, list):
+                    self.clinic_notes.extend(loaded_notes)
     
     def get_few_shot_examples(self, intent: str, limit: int = 3) -> List[Dict[str, str]]:
         """Get few-shot examples for a specific intent"""
@@ -120,6 +130,22 @@ class RAGStore:
         # Sort by score and return top results
         scored_faqs.sort(reverse=True, key=lambda x: x[0])
         return [faq for score, faq in scored_faqs[:limit]]
+
+    def get_relevant_notes(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Get relevant clinic notes based on keyword matching"""
+        query_lower = query.lower()
+        scored_notes = []
+        for note in self.clinic_notes:
+            text = (note.get("text") or "").lower()
+            title = (note.get("title") or "").lower()
+            score = 0
+            query_words = set(query_lower.split())
+            score += len(query_words & set(text.split()))
+            score += len(query_words & set(title.split()))
+            if score > 0:
+                scored_notes.append((score, note))
+        scored_notes.sort(reverse=True, key=lambda x: x[0])
+        return [note for score, note in scored_notes[:limit]]
     
     def get_clinic_protocol(self, protocol_type: str) -> Any:
         """Get clinic-specific protocol"""
@@ -147,6 +173,19 @@ class RAGStore:
         
         # Save to file
         self._save_faqs()
+
+    def add_note(self, text: str, title: str | None = None, metadata: Dict[str, Any] | None = None):
+        """Add a free-form clinic note/policy"""
+        entry = {
+            "title": title or "معلومة",
+            "text": text,
+            "metadata": metadata or {},
+        }
+        self.clinic_notes.append(entry)
+        self._save_notes()
+
+    def list_notes(self) -> List[Dict[str, Any]]:
+        return list(self.clinic_notes)
     
     def _save_few_shot_examples(self):
         """Save few-shot examples to file"""
@@ -159,6 +198,12 @@ class RAGStore:
         faqs_file = self.knowledge_dir / "medical_faqs.json"
         with open(faqs_file, "w", encoding="utf-8") as f:
             json.dump(self.medical_faqs, f, ensure_ascii=False, indent=2)
+
+    def _save_notes(self):
+        """Save clinic notes to file"""
+        notes_file = self.knowledge_dir / "clinic_notes.json"
+        with open(notes_file, "w", encoding="utf-8") as f:
+            json.dump(self.clinic_notes, f, ensure_ascii=False, indent=2)
 
 
 # Global instance

@@ -1,6 +1,8 @@
 // API Client for HealthTech Backend Services
 // Supports both Gateway and Direct Service modes
 
+import { useAuthStore } from '@store/authStore';
+
 // Force all calls through the gateway to keep a single contract
 const envVars = (import.meta as any)?.env || {};
 const USE_DIRECT_SERVICES = false;
@@ -13,6 +15,11 @@ const SERVICE_URLS = {
   tts: envVars.VITE_TTS_URL || 'http://localhost:5002',
   soap: envVars.VITE_SOAP_URL || 'http://localhost:5003',
   fhir: envVars.VITE_FHIR_URL || 'http://localhost:5004',
+};
+
+const getAuthHeader = () => {
+  const token = useAuthStore.getState().token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
 class ApiClient {
@@ -49,6 +56,7 @@ class ApiClient {
         ...options,
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeader(),
           ...options?.headers,
         },
       });
@@ -83,6 +91,7 @@ class ApiClient {
         ...options,
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeader(),
           ...options?.headers,
         },
       });
@@ -97,8 +106,25 @@ class ApiClient {
     }
   }
 
+  async login(userId: string, password: string, roles: string[] = ['clinician']) {
+    return this.request<{ access_token: string; token_type: string; expires_in: number }>(
+      '/auth/login',
+      {
+        method: 'POST',
+        body: JSON.stringify({ userId, password, metadata: { roles } }),
+      }
+    );
+  }
+
   // ASR (Automatic Speech Recognition) Service
-  async transcribeAudio(audioData: any, callSid?: string, dialect?: string) {
+  async transcribeAudio(
+    audioBase64: string,
+    callSid?: string,
+    dialect?: string,
+    language?: string,
+    enableDiarization?: boolean,
+    diarizeFirst?: boolean
+  ) {
     const endpoint = '/asr/transcribe';
     return this.request<{
       text: string;
@@ -124,7 +150,14 @@ class ApiClient {
       rtf?: number;
     }>(endpoint, {
       method: 'POST',
-      body: JSON.stringify({ audio: audioData, callSid, dialect }),
+      body: JSON.stringify({
+        audio: audioBase64,
+        callSid,
+        dialect,
+        language,
+        enableDiarization,
+        diarizeFirst,
+      }),
     });
   }
 
@@ -196,18 +229,30 @@ class ApiClient {
     patientId?: string;
     practitionerId?: string;
     encounterId?: string;
+    templateId?: string;
+    templateJson?: Record<string, any>;
+    patientName?: string;
+    providerName?: string;
+    dateOfVisit?: string;
   }) {
     const endpoint = '/soap/generate';
     const service = 'soap';
 
     if (this.useDirect) {
       return this.serviceRequest<{
+        id: string;
+        status: string;
+        session_id: string;
+        patient_id?: string;
+        clinician_id?: string;
+        template_id?: string;
         subjective: string;
         objective: string;
         assessment: string;
         plan: string;
         icd_codes?: string[];
         cpt_codes?: string[];
+        soap_json?: any;
       }>(service, '/generate', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -215,12 +260,19 @@ class ApiClient {
     }
 
     return this.request<{
+      id: string;
+      status: string;
+      sessionId: string;
+      patientId?: string;
+      clinicianId?: string;
+      templateId?: string;
       subjective: string;
       objective: string;
       assessment: string;
       plan: string;
       icd_codes?: string[];
       cpt_codes?: string[];
+      soapJson?: any;
     }>(endpoint, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -247,6 +299,141 @@ class ApiClient {
 
   async rejectSOAPNote(id: string) {
     return this.request<any>(`/soap/notes/${id}/reject`, { method: 'PATCH' });
+  }
+
+  async updateSOAPNoteField(
+    id: string,
+    payload: {
+      fieldPath: string;
+      audio?: string;
+      transcript?: string;
+      mode?: 'append' | 'replace';
+      valueType?: 'string' | 'list';
+      dialect?: string;
+      language?: string;
+    }
+  ) {
+    return this.request<any>(`/soap/notes/${id}/field`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateSOAPNoteSections(
+    id: string,
+    payload: {
+      soapText?: string;
+      subjective?: string;
+      objective?: string;
+      assessment?: string;
+      plan?: string;
+    }
+  ) {
+    return this.request<any>(`/soap/notes/${id}/sections`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async listSoapTemplates() {
+    return this.request<{ templates: Array<{ id: string; name: string; isSystem?: boolean }> }>(
+      '/soap/templates',
+      { method: 'GET' }
+    );
+  }
+
+  async getSoapTemplate(id: string) {
+    return this.request<{ id: string; name: string; template: any; isSystem?: boolean }>(
+      `/soap/templates/${id}`,
+      { method: 'GET' }
+    );
+  }
+
+  async createSoapTemplate(payload: { name: string; template: any; id?: string }) {
+    return this.request<{ id: string }>('/soap/templates', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async listPatients() {
+    return this.request<{ patients: Array<{ id: string; displayName?: string; externalId?: string }> }>(
+      '/soap/patients',
+      { method: 'GET' }
+    );
+  }
+
+  async createPatient(payload: { displayName: string; externalId?: string }) {
+    return this.request<{ id: string; displayName?: string; externalId?: string }>(
+      '/soap/patients',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+  }
+
+  async listPatientDocuments(patientId: string) {
+    return this.request<{ documents: Array<any> }>(`/soap/patients/${patientId}/documents`, {
+      method: 'GET',
+    });
+  }
+
+  async uploadPatientDocument(
+    patientId: string,
+    payload: {
+      title?: string;
+      content?: string;
+      contentBase64?: string;
+      fileName?: string;
+      contentType?: string;
+      source?: string;
+      summarize?: boolean;
+    }
+  ) {
+    return this.request<any>(`/soap/patients/${patientId}/documents`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async summarizePatientDocument(patientId: string, docId: string) {
+    return this.request<any>(`/soap/patients/${patientId}/documents/${docId}/summary`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  async getPatientContext(patientId: string) {
+    return this.request<any>(`/soap/patients/${patientId}/context`, {
+      method: 'GET',
+    });
+  }
+
+  async listPatientRagItems(patientId: string) {
+    return this.request<{ items: Array<any> }>(`/soap/patients/${patientId}/rag`, {
+      method: 'GET',
+    });
+  }
+
+  async addRagNote(payload: { title?: string; text: string; metadata?: Record<string, any> }) {
+    return this.request<{ ok: boolean }>('/rag/note', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async addRagFaq(payload: { question: string; answer: string }) {
+    return this.request<{ ok: boolean }>('/rag/faq', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async listRagNotes() {
+    return this.request<{ notes: Array<{ title?: string; text: string; metadata?: any }> }>('/rag/notes', {
+      method: 'GET',
+    });
   }
 
   // FHIR Integration Service
@@ -299,16 +486,22 @@ class ApiClient {
   }
 
   // Clinical Notes
-  async getClinicalNotes() {
-    return this.request<Array<any>>('/clinical/notes', {
+  async getClinicalMetricsDashboard() {
+    return this.request<any>('/clinical/metrics/dashboard', {
       method: 'GET',
     });
   }
 
-  async createClinicalNote(note: any) {
-    return this.request<any>('/clinical/notes', {
+  async recordClinicalReview(payload: {
+    recordingId: string;
+    accepted: boolean;
+    editDistance: number;
+    timeToReview: number;
+    clinicianId?: string;
+  }) {
+    return this.request<any>('/clinical/review', {
       method: 'POST',
-      body: JSON.stringify(note),
+      body: JSON.stringify(payload),
     });
   }
 
@@ -362,6 +555,20 @@ class ApiClient {
     return this.request<any>('/fhir/health', { method: 'GET' });
   }
 
+  async getConversationHistory(sessionId: string, limit: number = 50) {
+    return this.request<{ messages: Array<{ role: string; content: string; timestamp: number }> }>(
+      `/conversation/${sessionId}/messages?limit=${limit}`,
+      { method: 'GET' }
+    );
+  }
+
+  async updateConversationPreferences(sessionId: string, prefs: { dialect?: string; voice?: string }) {
+    return this.request<{ ok: boolean; preferences: any }>(`/conversation/${sessionId}/preferences`, {
+      method: 'POST',
+      body: JSON.stringify(prefs),
+    });
+  }
+
   // Twilio Voice Service
   async getTwilioToken(identity?: string) {
     return this.request<{ token: string; identity: string }>('/twilio/token', {
@@ -371,61 +578,6 @@ class ApiClient {
   }
 
   // Convenience methods for Clinical Notes page
-  async transcribeAudioFile(formData: FormData) {
-    const service = 'asr';
-
-    if (this.useDirect) {
-      const response = await fetch(`${SERVICE_URLS[service]}/transcribe`, {
-        method: 'POST',
-        body: formData,
-      });
-      if (!response.ok) {
-        throw new Error(`Transcription failed: ${response.statusText}`);
-      }
-      return await response.json();
-    }
-
-    const response = await fetch(`${this.baseUrl}/asr/transcribe`, {
-      method: 'POST',
-      body: formData,
-    });
-    if (!response.ok) {
-      throw new Error(`Transcription failed: ${response.statusText}`);
-    }
-    return await response.json();
-  }
-
-  async generateSoapNote(transcript: string) {
-    const endpoint = '/soap/generate';
-    const service = 'soap';
-
-    if (this.useDirect) {
-      return this.serviceRequest<{
-        soapNote?: string;
-        soap?: string;
-        subjective: string;
-        objective: string;
-        assessment: string;
-        plan: string;
-      }>(service, '/generate', {
-        method: 'POST',
-        body: JSON.stringify({ transcript }),
-      });
-    }
-
-    return this.request<{
-      soapNote?: string;
-      soap?: string;
-      subjective: string;
-      objective: string;
-      assessment: string;
-      plan: string;
-    }>(endpoint, {
-      method: 'POST',
-      body: JSON.stringify({ transcript }),
-    });
-  }
-
   async convertToFHIR(data: {
     soapNote: any;
     patientId: string;

@@ -13,6 +13,7 @@ from prometheus_client import Histogram, Counter, generate_latest, CONTENT_TYPE_
 from starlette.responses import Response
 from pathlib import Path
 import asyncio
+import httpx
 
 from prompt_builder import build_va_prompt
 from slot_extractor import extract_slots
@@ -35,6 +36,9 @@ VA_MODEL = os.getenv("VA_MODEL", "Qwen/Qwen2.5-3B-Instruct")
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
 VA_DEVICE = os.getenv("VA_DEVICE", "cpu")
 VA_DTYPE = os.getenv("VA_DTYPE", "float16")
+# Hospital RAG (shared policies/FAQ) hosted by LLM service
+RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://localhost:5001").rstrip("/")
+RAG_TIMEOUT_SECONDS = float(os.getenv("RAG_TIMEOUT_SECONDS", "2.5"))
 # Accept both VA_MAX_CONCURRENT and VA_MAX_CONCURRENCY for compatibility
 MAX_CONCURRENT = int(os.getenv("VA_MAX_CONCURRENT") or os.getenv("VA_MAX_CONCURRENCY") or "4")
 
@@ -111,6 +115,7 @@ class ChatRequest(BaseModel):
     sessionId: str
     mode: str
     slots: Optional[Dict[str, Any]] = {}
+    dialect: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -118,6 +123,81 @@ class ChatResponse(BaseModel):
     slots: Dict[str, Any]
     intent: str
     latency_ms: float
+
+
+def normalize_dialect(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized in ["egypt", "egyptian", "eg"]:
+        return "egypt"
+    if normalized in ["saudi", "ksa", "gulf", "gcc"]:
+        return "saudi"
+    if normalized == "auto":
+        return None
+    return normalized
+
+
+def _is_missing(slots: Dict[str, Any], key: str) -> bool:
+    if key not in slots:
+        return True
+    value = slots.get(key)
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    return False
+
+
+def _first_missing_label(slots: Dict[str, Any]) -> Optional[str]:
+    order = [
+        ("name", "الاسم الكامل"),
+        ("phone", "رقم الجوال"),
+        ("dob", "تاريخ الميلاد"),
+        ("doctor_name", "اسم الطبيب"),
+        ("specialty", "التخصص المطلوب"),
+        ("date", "التاريخ المناسب"),
+        ("time", "الوقت المناسب"),
+    ]
+    for key, label in order:
+        if _is_missing(slots, key):
+            return label
+    return None
+
+
+def _canned_reply(dialect: Optional[str], slots: Dict[str, Any]) -> str:
+    missing = _first_missing_label(slots)
+    if dialect == "saudi":
+        if missing:
+            return f"يعطيك العافية، ممكن {missing}؟"
+        return "تم تمام، بأكد لك الحجز وأرسله لك بعد قليل."
+    # default egyptian
+    if missing:
+        return f"تمام، ممكن {missing}؟"
+    return "تمام كده، هأكد لك الحجز وأبعت لك التفاصيل."
+
+
+async def fetch_rag_context(query: str) -> Dict[str, Any]:
+    if not query or not RAG_SERVICE_URL:
+        return {}
+    headers = {"x-internal-secret": INTERNAL_SECRET} if INTERNAL_SECRET else {}
+    try:
+        async with httpx.AsyncClient(timeout=RAG_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                f"{RAG_SERVICE_URL}/rag/query",
+                json={"query": query, "limit": 3},
+                headers=headers,
+            )
+        if response.status_code != 200:
+            return {}
+        data = response.json()
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
 
 
 @app.get("/health")
@@ -134,31 +214,25 @@ async def metrics():
 async def chat(req: ChatRequest):
     if req.mode != "voice_agent_va":
         raise HTTPException(status_code=400, detail="Invalid mode for VA service")
-    print("HIT /chat with:", req.dict())
     requests_total.inc()
     start = time.time()
-
-    duration = (time.time() - start) * 1000
-    latency_seconds.observe(duration / 1000)
-    return ChatResponse(
-        reply="أهلًا وسهلًا، أنا ليان من مركز علاجك. هذا رد تجريبي سريع بدون تشغيل النموذج.",
-        slots=req.slots or {},
-        intent="debug_stub",
-        latency_ms=duration,
-    )
+    dialect = normalize_dialect(req.dialect)
     async with semaphore:
         # Extract slots heuristically before building prompt
         current_slots = req.slots or {}
         extracted_slots = extract_slots(req.message, current_slots)
+        rag_context = await fetch_rag_context(req.message)
         system_prompt = load_system_prompt()
         prompt = build_va_prompt(
             system_prompt=system_prompt,
             history=req.history or [],
             slots=extracted_slots,
             user_message=req.message,
+            dialect=dialect,
+            rag_context=rag_context,
         )
 
-        reply = "أهلًا وسهلًا، أنا ليان من مركز علاجك. أقدر أساعدك في حجز موعد. ما الوقت المناسب لك؟"
+        reply = _canned_reply(dialect, extracted_slots)
         if _MODEL_AVAILABLE and _MODEL and _TOKENIZER:
             try:
                 inputs = _TOKENIZER(prompt, return_tensors="pt").to(_MODEL.device)
@@ -174,7 +248,7 @@ async def chat(req: ChatRequest):
             except Exception as e:
                 import logging
                 logging.error(f"VA generation failed, using fallback: {e}")
-        # No change to slots yet beyond extraction (LLM post-processing could be added)
+
         updated_slots = extracted_slots
         duration = (time.time() - start) * 1000
         latency_seconds.observe(duration / 1000)

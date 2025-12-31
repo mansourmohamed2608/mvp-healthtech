@@ -3,28 +3,41 @@ import { Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Menu, X, Moon, Sun, Globe } from 'lucide-react';
 import { useThemeStore } from '@store/themeStore';
+import { useAuthStore } from '@store/authStore';
 import { useScrollPosition } from '@hooks/useScrollPosition';
-import MagneticButton from '@components/UI/MagneticButton';
 import clsx from 'clsx';
+import api from '../../utils/api';
 
 const Navbar = () => {
   const [isOpen, setIsOpen] = useState(false);
   const { theme, language, toggleTheme, setLanguage } = useThemeStore();
+  const { token, userId, setAuth, clearAuth } = useAuthStore();
   const { scrollY, scrollDirection } = useScrollPosition();
   const location = useLocation();
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [loginUserId, setLoginUserId] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
 
   const isScrolled = scrollY > 50;
   const shouldHide = scrollDirection === 'down' && scrollY > 200;
 
   const navItems = [
-    { name: language === 'ar' ? 'الرئيسية' : 'Home', path: '/' },
-    { name: language === 'ar' ? 'الميزات' : 'Features', path: '/features' },
     { name: language === 'ar' ? 'المساعد الصوتي' : 'Voice Agent', path: '/voice-agent' },
-    { name: language === 'ar' ? 'الملاحظات السريرية' : 'Clinical Notes', path: '/features/clinical-notes' },
-    { name: language === 'ar' ? 'لوحة التحكم' : 'Dashboard', path: '/dashboard' },
-    { name: language === 'ar' ? 'من نحن' : 'About', path: '/about' },
-    { name: language === 'ar' ? 'الأسعار' : 'Pricing', path: '/pricing' },
+    { name: language === 'ar' ? 'الملاحظات السريرية' : 'Clinical Notes', path: '/clinical-notes' },
   ];
+
+  const handleLogin = async () => {
+    try {
+      setLoginError('');
+      const data = await api.login(loginUserId, loginPassword, ['clinician']);
+      setAuth(data.access_token, loginUserId || null, ['clinician']);
+      setLoginOpen(false);
+      setLoginPassword('');
+    } catch (err: any) {
+      setLoginError(err.message || 'Login failed');
+    }
+  };
 
   return (
     <motion.nav
@@ -131,13 +144,26 @@ const Navbar = () => {
               </AnimatePresence>
             </motion.button>
 
-            {/* CTA Button */}
+            {/* Auth */}
             <div className="hidden lg:block">
-              <Link to="/demo">
-                <MagneticButton>
-                  {language === 'ar' ? 'جرب المنصة' : 'Try Demo'}
-                </MagneticButton>
-              </Link>
+              {token ? (
+                <button
+                  onClick={() => {
+                    clearAuth();
+                    setLoginOpen(false);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-sm font-medium"
+                >
+                  {language === 'ar' ? 'تسجيل الخروج' : 'Sign out'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => setLoginOpen(!loginOpen)}
+                  className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-sm font-medium"
+                >
+                  {language === 'ar' ? 'تسجيل الدخول' : 'Sign in'}
+                </button>
+              )}
             </div>
 
             {/* Mobile Menu Button */}
@@ -178,11 +204,68 @@ const Navbar = () => {
                   {item.name}
                 </Link>
               ))}
-              <Link to="/demo" onClick={() => setIsOpen(false)}>
-                <button className="w-full magnetic-btn">
-                  {language === 'ar' ? 'جرب المنصة' : 'Try Demo'}
+              {token ? (
+                <button
+                  onClick={() => {
+                    clearAuth();
+                    setIsOpen(false);
+                  }}
+                  className="w-full px-4 py-3 rounded-lg text-base font-medium hover:bg-gray-100 dark:hover:bg-dark-800 text-left"
+                >
+                  {language === 'ar' ? 'تسجيل الخروج' : 'Sign out'}
                 </button>
-              </Link>
+              ) : (
+                <button
+                  onClick={() => {
+                    setLoginOpen(true);
+                    setIsOpen(false);
+                  }}
+                  className="w-full px-4 py-3 rounded-lg text-base font-medium hover:bg-gray-100 dark:hover:bg-dark-800 text-left"
+                >
+                  {language === 'ar' ? 'تسجيل الدخول' : 'Sign in'}
+                </button>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Login Panel */}
+      <AnimatePresence>
+        {loginOpen && !token && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            className="absolute right-6 top-24 w-80 bg-black/80 backdrop-blur-md border border-white/10 rounded-2xl p-4 z-50"
+          >
+            <div className="space-y-3">
+              <input
+                value={loginUserId}
+                onChange={(e) => setLoginUserId(e.target.value)}
+                placeholder={language === 'ar' ? 'اسم المستخدم' : 'User ID'}
+                className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm"
+              />
+              <input
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder={language === 'ar' ? 'كلمة المرور' : 'Password'}
+                type="password"
+                className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm"
+              />
+              {loginError && <p className="text-xs text-red-300">{loginError}</p>}
+              <button
+                onClick={handleLogin}
+                className="w-full py-2 rounded-lg bg-gradient-to-r from-accent-500 to-accent-600 text-white text-sm font-medium"
+              >
+                {language === 'ar' ? 'تسجيل' : 'Sign in'}
+              </button>
+              {userId && (
+                <p className="text-xs text-gray-300">
+                  {language === 'ar' ? 'المستخدم:' : 'User:'} {userId}
+                </p>
+              )}
             </div>
           </motion.div>
         )}

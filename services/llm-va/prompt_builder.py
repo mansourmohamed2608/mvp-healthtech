@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Any
 
 
 CANONICAL_KEYS = {
@@ -42,7 +42,14 @@ def build_slot_summary(slots: Dict[str, any]) -> str:
     return "\n".join(parts)
 
 
-def build_va_prompt(system_prompt: str, history: List[dict], slots: Dict[str, str], user_message: str) -> str:
+def build_va_prompt(
+    system_prompt: str,
+    history: List[dict],
+    slots: Dict[str, str],
+    user_message: str,
+    dialect: str | None = None,
+    rag_context: Dict[str, Any] | None = None,
+) -> str:
     """Compose prompt for VA: system + short history + slot summary + user message."""
     history_lines = []
     for turn in history[-5:]:
@@ -50,9 +57,40 @@ def build_va_prompt(system_prompt: str, history: List[dict], slots: Dict[str, st
         content = turn.get("content", "")
         history_lines.append(f"{role}: {content}")
     slot_summary = build_slot_summary(slots)
+    dialect_hint = ""
+    if dialect == "saudi":
+        dialect_hint = "استخدمي لهجة سعودية طبيعية (خليجية بسيطة)."
+    elif dialect == "egypt":
+        dialect_hint = "استخدمي لهجة مصرية طبيعية."
     prompt_parts = [
         system_prompt.strip(),
         "",
+    ]
+    if dialect_hint:
+        prompt_parts.extend([dialect_hint, ""])
+    if rag_context:
+        notes = rag_context.get("notes") or []
+        protocols = rag_context.get("protocols") or {}
+        context_lines = []
+        for note in notes[:3]:
+            title = note.get("title") or "معلومة"
+            text = note.get("text") or ""
+            if text:
+                context_lines.append(f"- {title}: {text}")
+        if protocols:
+            hours = protocols.get("appointment_hours")
+            insurance = protocols.get("insurance_accepted")
+            if hours:
+                context_lines.append(f"- ساعات العمل: {hours}")
+            if isinstance(insurance, list) and insurance:
+                context_lines.append(f"- التأمين المقبول: {', '.join(insurance)}")
+        if context_lines:
+            prompt_parts.extend([
+                "معلومات عن العيادة:",
+                "\n".join(context_lines),
+                "",
+            ])
+    prompt_parts.extend([
         "المحادثة السابقة (مختصرة):",
         "\n".join(history_lines) if history_lines else "لا يوجد تاريخ سابق.",
         "",
@@ -64,5 +102,5 @@ def build_va_prompt(system_prompt: str, history: List[dict], slots: Dict[str, st
         "",
         f"المستخدم: {user_message}",
         "المساعد:",
-    ]
+    ])
     return "\n".join(prompt_parts)

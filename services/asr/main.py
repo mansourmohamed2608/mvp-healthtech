@@ -1,7 +1,0 @@
-# TODO Remove file
-from fastapi import FastAPI
-app = FastAPI()
-
-@app.get('/health')
-def health():
-    return {'ok': True, 'svc': __name__}

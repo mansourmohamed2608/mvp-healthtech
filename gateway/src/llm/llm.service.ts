@@ -21,6 +21,7 @@ export interface OrchestratePayload {
   mode?: string;
   history?: ChatMessage[];
   slots?: Record<string, any>;
+  dialect?: string;
 }
 
 export interface OrchestrateResponse extends LlmResponse {

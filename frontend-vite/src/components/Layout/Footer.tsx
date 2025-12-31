@@ -6,10 +6,6 @@ import {
   Linkedin,
   Mail,
   Heart,
-  Stethoscope,
-  FileText,
-  Mic,
-  Database
 } from 'lucide-react';
 import { useThemeStore } from '@store/themeStore';
 
@@ -19,23 +15,11 @@ const Footer = () => {
 
   const footerLinks = {
     product: [
-      { name: language === 'ar' ? 'الميزات' : 'Features', path: '/features' },
-      { name: language === 'ar' ? 'التسعير' : 'Pricing', path: '/pricing' },
-      { name: language === 'ar' ? 'التجربة' : 'Demo', path: '/demo' },
-      { name: language === 'ar' ? 'لوحة التحكم' : 'Dashboard', path: '/dashboard' },
+      { name: language === 'ar' ? 'المساعد الصوتي' : 'Voice Agent', path: '/voice-agent' },
+      { name: language === 'ar' ? 'الملاحظات السريرية' : 'Clinical Notes', path: '/clinical-notes' },
     ],
-    features: [
-      { name: language === 'ar' ? 'النصوص الطبية' : 'Clinical Notes', path: '/features/clinical-notes', icon: FileText },
-      { name: language === 'ar' ? 'النسخ الصوتي' : 'Voice Transcription', path: '/features/voice-transcription', icon: Mic },
-      { name: language === 'ar' ? 'تكامل FHIR' : 'FHIR Integration', path: '/features/fhir-integration', icon: Database },
-      { name: language === 'ar' ? 'توليد SOAP' : 'SOAP Generation', path: '/features/soap-generation', icon: Stethoscope },
-    ],
-    company: [
-      { name: language === 'ar' ? 'من نحن' : 'About Us', path: '/about' },
-      { name: language === 'ar' ? 'المدونة' : 'Blog', path: '/blog' },
-      { name: language === 'ar' ? 'وظائف' : 'Careers', path: '/careers' },
-      { name: language === 'ar' ? 'اتصل بنا' : 'Contact', path: '/contact' },
-    ],
+    features: [],
+    company: [],
   };
 
   const socialLinks = [
@@ -51,7 +35,7 @@ const Footer = () => {
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-accent-500/5 to-accent-600/10 pointer-events-none" />
 
       <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-12 mb-12">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-12 mb-12">
           {/* Brand Section */}
           <div className="lg:col-span-2">
             <div className="flex items-center space-x-3 mb-6">
@@ -110,45 +94,6 @@ const Footer = () => {
               ))}
             </ul>
           </div>
-
-          {/* Features Links */}
-          <div>
-            <h4 className="font-semibold mb-4 text-gray-900 dark:text-white">
-              {language === 'ar' ? 'الميزات' : 'Features'}
-            </h4>
-            <ul className="space-y-3">
-              {footerLinks.features.map((link) => (
-                <li key={link.path}>
-                  <Link
-                    to={link.path}
-                    className="flex items-center space-x-2 text-gray-600 dark:text-gray-400 hover:text-accent-500 transition-colors group"
-                  >
-                    <link.icon className="w-4 h-4 group-hover:scale-110 transition-transform" />
-                    <span>{link.name}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Company Links */}
-          <div>
-            <h4 className="font-semibold mb-4 text-gray-900 dark:text-white">
-              {language === 'ar' ? 'الشركة' : 'Company'}
-            </h4>
-            <ul className="space-y-3">
-              {footerLinks.company.map((link) => (
-                <li key={link.path}>
-                  <Link
-                    to={link.path}
-                    className="text-gray-600 dark:text-gray-400 hover:text-accent-500 transition-colors"
-                  >
-                    {link.name}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
         </div>
 
         {/* Bottom Bar */}
@@ -165,14 +110,6 @@ const Footer = () => {
               {language === 'ar' ? 'جميع الحقوق محفوظة.' : 'All rights reserved.'}
             </p>
 
-            <div className="flex space-x-6 text-sm text-gray-600 dark:text-gray-400">
-              <Link to="/privacy" className="hover:text-accent-500 transition-colors">
-                {language === 'ar' ? 'سياسة الخصوصية' : 'Privacy Policy'}
-              </Link>
-              <Link to="/terms" className="hover:text-accent-500 transition-colors">
-                {language === 'ar' ? 'الشروط والأحكام' : 'Terms of Service'}
-              </Link>
-            </div>
           </div>
         </div>
       </div>

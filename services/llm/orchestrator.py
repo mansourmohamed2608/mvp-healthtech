@@ -54,6 +54,7 @@ class OrchestrateRequest(BaseModel):
     history: list[dict] | None = None
     context: dict = {}
     slots: dict = {}
+    dialect: str | None = None
 
 class OrchestrateResponse(BaseModel):
     intent: str
@@ -61,6 +62,7 @@ class OrchestrateResponse(BaseModel):
     reply: str
     confidence: float
     routing: str
+    slots: dict | None = None
 
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", f"{CLINICAL_LLM_URL}/infer")
 
@@ -107,6 +109,8 @@ async def orchestrate(req: OrchestrateRequest):
         # Step 2: Entity Extraction
         entity_start = time.time()
         entities = extract_entities(req.transcript, intent)
+        slots = extract_slots(req.transcript, req.slots or {})
+        dialect = normalize_dialect(req.dialect)
         entity_duration_ms = (time.time() - entity_start) * 1000
         entity_extraction_duration.observe(entity_duration_ms)
         
@@ -122,8 +126,9 @@ async def orchestrate(req: OrchestrateRequest):
                         "message": req.transcript,
                         "sessionId": req.sessionId,
                         "mode": req.mode,
-                        "history": [],
-                        "slots": req.slots,
+                        "history": req.history or [],
+                        "slots": slots,
+                        "dialect": dialect,
                     },
                     headers={"x-internal-secret": INTERNAL_SECRET} if INTERNAL_SECRET else {},
                     timeout=30.0,
@@ -152,7 +157,8 @@ async def orchestrate(req: OrchestrateRequest):
             "entities": data.get("slots", entities),
             "reply": reply,
             "confidence": confidence,
-            "routing": routing
+            "routing": routing,
+            "slots": data.get("slots", slots),
         }
     except Exception as e:
         import traceback
@@ -256,6 +262,82 @@ def extract_entities(message: str, intent: str) -> dict:
             entities['medications'] = medications
     
     return entities
+
+
+def normalize_dialect(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized in ["egypt", "egyptian", "eg"]:
+        return "egypt"
+    if normalized in ["saudi", "ksa", "gulf", "gcc"]:
+        return "saudi"
+    return normalized
+
+
+def extract_slots(message: str, current: dict) -> dict:
+    slots = {**(current or {})}
+    text = message or ""
+
+    if not slots.get("phone"):
+        phone_match = re.search(r"(?:\\+?966|0)?\\d{8,12}", text.replace(" ", ""))
+        if phone_match:
+            slots["phone"] = phone_match.group(0)
+
+    if not slots.get("name"):
+        name_match = re.search(r"(?:اسمي|انا|أنا|اسمى)\\s+([\\w\\u0600-\\u06FF]+(?:\\s+[\\w\\u0600-\\u06FF]+){0,2})", text)
+        if name_match:
+            slots["name"] = name_match.group(1).strip()
+
+    if not slots.get("doctor_name"):
+        doc_match = re.search(r"(?:دكتور|دكتورة)\\s+([\\w\\u0600-\\u06FF]+)", text)
+        if doc_match:
+            slots["doctor_name"] = doc_match.group(1).strip()
+
+    if not slots.get("specialty"):
+        specialties = [
+            "جلدية",
+            "باطنة",
+            "أطفال",
+            "اطفال",
+            "أسنان",
+            "اسنان",
+            "نساء",
+            "ولادة",
+            "عظام",
+            "عيون",
+            "انف",
+            "اذن",
+            "انف واذن",
+        ]
+        for spec in specialties:
+            if spec in text:
+                slots["specialty"] = spec
+                break
+
+    if not slots.get("date"):
+        date_match = re.search(r"\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4}", text)
+        if date_match:
+            slots["date"] = date_match.group(0)
+
+    if not slots.get("time"):
+        time_match = re.search(r"(\\d{1,2})[:٫](\\d{2})", text)
+        if time_match:
+            slots["time"] = f"{time_match.group(1)}:{time_match.group(2)}"
+        else:
+            hour_match = re.search(r"(?:الساعة|ساعه)\\s*(\\d{1,2})", text)
+            if hour_match:
+                slots["time"] = f"{hour_match.group(1)}:00"
+
+    if slots.get("no_marketing") is None:
+        if "لا" in text and ("رسائل" in text or "تسويق" in text):
+            slots["no_marketing"] = True
+        elif "اريد" in text and ("رسائل" in text or "تسويق" in text):
+            slots["no_marketing"] = False
+
+    return slots
 
 
 def determine_routing(intent: str, entities: dict, confidence: float) -> str:

@@ -31,15 +31,16 @@ class FakeConn:
                 "session_id": params[0],
                 "patient_id": params[1],
                 "clinician_id": params[2],
-                "status": params[3],
-                "raw_transcript": params[4],
-                "soap_json": params[5],
-                "subjective": params[6],
-                "objective": params[7],
-                "assessment": params[8],
-                "plan": params[9],
-                "icd_codes": params[10],
-                "cpt_codes": params[11],
+                "template_id": params[3],
+                "status": params[4],
+                "raw_transcript": params[5],
+                "soap_json": params[6],
+                "subjective": params[7],
+                "objective": params[8],
+                "assessment": params[9],
+                "plan": params[10],
+                "icd_codes": params[11],
+                "cpt_codes": params[12],
                 "created_at": "now",
                 "updated_at": "now",
             }
@@ -48,11 +49,25 @@ class FakeConn:
         # UPDATE
         if query.lower().startswith("update"):
             note_id = params[0]
-            status = params[1]
             row = self.store.get(note_id)
             if not row:
                 return None
-            row["status"] = status
+            lower = query.lower()
+            if "set status" in lower:
+                status = params[1]
+                row["status"] = status
+            elif "set soap_json" in lower:
+                row["soap_json"] = params[1]
+                row["subjective"] = params[2]
+                row["objective"] = params[3]
+                row["assessment"] = params[4]
+                row["plan"] = params[5]
+                row["raw_transcript"] = params[6]
+            elif "set subjective" in lower:
+                row["subjective"] = params[1]
+                row["objective"] = params[2]
+                row["assessment"] = params[3]
+                row["plan"] = params[4]
             self.store[note_id] = row
             return row
         # SELECT WHERE
@@ -72,6 +87,9 @@ class FakeConn:
                 want = params[-1]
                 rows = [r for r in rows if r["clinician_id"] == want]
         return rows
+
+    async def execute(self, query, *params):
+        return ""
 
 
 class FakeAcquire:
@@ -108,17 +126,43 @@ class FakeHTTPXClient:
         return False
 
     async def post(self, url, json=None, headers=None):
-        # mimic llm infer returning reply
-        if "infer" in url:
-            return SimpleNamespace(status_code=200, json=lambda: {"reply": "subjective\nobjective\nassessment\nplan"})
-        # default success
+        if "generate" in url:
+            messages = (json or {}).get("messages", [])
+            system = messages[0]["content"] if messages else ""
+            if "chief_complaint" in system:
+                return SimpleNamespace(
+                    status_code=200,
+                    json=lambda: {"text": '{"chief_complaint":"pain","hpi":"2 days","ros":""}'},
+                )
+            if "patient_education" in system:
+                return SimpleNamespace(
+                    status_code=200,
+                    json=lambda: {"text": '{"instructions":["rest"],"follow_up":"in 1 week","patient_education":["hydration"]}'},
+                )
+            if "clinical note editor" in system:
+                return SimpleNamespace(
+                    status_code=200,
+                    json=lambda: {"text": '{"value":"updated field"}'},
+                )
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "text": (
+                        "Subjective: tooth pain for 2 days.\n"
+                        "Objective: mild swelling noted.\n"
+                        "Assessment: dental pain.\n"
+                        "Plan: analgesics and follow-up."
+                    )
+                },
+            )
         return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
 
 
 def setup_fakes():
     # Inject fake pool and httpx client before TestClient runs startup
     soap_app._pool = FakePool()
-    soap_app.httpx.AsyncClient = FakeHTTPXClient  # type: ignore
+    import llm_client as llm_client_module
+    llm_client_module.httpx.AsyncClient = FakeHTTPXClient  # type: ignore
 
 
 def run_tests():
@@ -140,6 +184,24 @@ def run_tests():
     approve = client.patch(f"/notes/{note_id}/approve", headers={"x-internal-secret": "test_secret"})
     assert approve.status_code == 200
     assert approve.json()["status"] == "approved"
+
+    # Update sections
+    sections = client.patch(
+        f"/notes/{note_id}/sections",
+        json={"soapText": "Subjective: s\nObjective: o\nAssessment: a\nPlan: p"},
+        headers={"x-internal-secret": "test_secret"},
+    )
+    assert sections.status_code == 200
+    assert sections.json()["plan"] == "p"
+
+    # Update field
+    field = client.patch(
+        f"/notes/{note_id}/field",
+        json={"fieldPath": "Subjective.Chief Complaint", "transcript": "اضافة"},
+        headers={"x-internal-secret": "test_secret"},
+    )
+    assert field.status_code == 200
+    assert field.json()["subjective"]
 
     # List
     notes = client.get("/notes", headers={"x-internal-secret": "test_secret"})

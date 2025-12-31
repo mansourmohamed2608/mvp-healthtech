@@ -15,6 +15,32 @@ CREATE TABLE IF NOT EXISTS patients (
   created_at timestamptz DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS patient_documents (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  patient_id text NOT NULL,
+  title text,
+  content_text text NOT NULL,
+  content_type text,
+  source text,
+  summary_text text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_patient_documents_patient ON patient_documents(patient_id);
+
+CREATE TABLE IF NOT EXISTS patient_rag_items (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  patient_id text NOT NULL,
+  item_type text NOT NULL,
+  title text,
+  content_text text NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  source_id text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_patient_rag_patient ON patient_rag_items(patient_id);
+CREATE INDEX IF NOT EXISTS idx_patient_rag_type ON patient_rag_items(item_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_patient_rag_unique ON patient_rag_items(patient_id, item_type, source_id);
+
 CREATE TABLE IF NOT EXISTS sessions (
   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
   session_id text NOT NULL,
@@ -31,6 +57,7 @@ CREATE TABLE IF NOT EXISTS soap_notes (
   session_id text NOT NULL,
   patient_id text NOT NULL,
   clinician_id text NOT NULL,
+  template_id text,
   status text NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
   raw_transcript text NOT NULL,
   soap_json jsonb NOT NULL,
@@ -53,6 +80,17 @@ CREATE INDEX IF NOT EXISTS idx_soap_notes_session ON soap_notes(session_id);
 CREATE INDEX IF NOT EXISTS idx_soap_notes_patient ON soap_notes(patient_id);
 CREATE INDEX IF NOT EXISTS idx_soap_notes_clinician ON soap_notes(clinician_id);
 CREATE INDEX IF NOT EXISTS idx_soap_notes_status ON soap_notes(status);
+
+CREATE TABLE IF NOT EXISTS soap_templates (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  template jsonb NOT NULL,
+  created_by text,
+  is_system boolean DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_soap_templates_created_at ON soap_templates(created_at);
 
 CREATE TABLE IF NOT EXISTS soap_jobs (
   job_id text PRIMARY KEY,
@@ -130,7 +168,22 @@ INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
 SELECT '00000000-0000-0000-0000-000000000001', 4, '10:00', '12:00'
 WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000001' AND day_of_week=4 AND start_time='10:00');
 
--- TODO (retention/audit):
--- - Define PHI retention policy (e.g., archive or delete after X days) using archived_at/deleted_at.
--- - Add audit trail table (note_id, action, actor, at, metadata) for approvals/edits.
--- - Consider soft-delete vs hard-delete hooks in application services.
+CREATE TABLE IF NOT EXISTS retention_policy (
+  id text PRIMARY KEY,
+  retention_days integer NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO retention_policy (id, retention_days)
+VALUES ('phi', 90)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS soap_note_audit (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  note_id uuid NOT NULL REFERENCES soap_notes(id) ON DELETE CASCADE,
+  actor_id text NOT NULL,
+  action text NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_soap_note_audit_note ON soap_note_audit(note_id);

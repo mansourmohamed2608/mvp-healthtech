@@ -12,7 +12,7 @@ jest.mock('redis', () => ({
 
 describe('ConversationService', () => {
   const llmMock: Partial<LlmService> = {
-    chat: jest.fn().mockResolvedValue({ reply: 'assistant reply', intent: 'general' }),
+    orchestrate: jest.fn().mockResolvedValue({ reply: 'assistant reply', intent: 'general' }),
   };
   const ttsMock: Partial<TtsService> = {
     synthesize: jest.fn().mockResolvedValue({ audioBase64: 'YmFzZTY0', format: 'mulaw' }),
@@ -42,10 +42,13 @@ describe('ConversationService', () => {
     expect(result.response).toBe('assistant reply');
     expect(result.audioResponse).toBe('YmFzZTY0');
     expect(ttsMock.synthesize).toHaveBeenCalled();
-    expect(llmMock.chat).toHaveBeenCalledWith({
-      message: 'user said hello',
+    expect(llmMock.orchestrate).toHaveBeenCalledWith({
+      transcript: 'user said hello',
       history: expect.any(Array),
       sessionId: 'call-1',
+      mode: 'voice_agent_va',
+      slots: expect.any(Object),
+      dialect: expect.any(String),
     });
   });
 });

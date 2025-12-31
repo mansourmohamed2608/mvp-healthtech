@@ -5,6 +5,7 @@ pydantic~=2.9
 httpx~=0.27
 safetensors~=0.4
 python-dotenv~=1.0
+prometheus-client~=0.21
 
 # ---- Core ML stack ----
 # GPU / Kaggle (CUDA 12.1 wheels)
@@ -25,7 +26,7 @@ sentencepiece~=0.2
 # ---- Optional: quantization / speed-ups (enable later) ----
 # auto-gptq~=0.7           # for GPTQ-quantized weights (Linux)
 # optimum~=1.22            # ONNX / BetterTransformer paths
-# peft~=0.11               # LoRA adapters (Week 2+)
+# bitsandbytes~=0.43       # optional 8-bit/4-bit quantization
 
 # ---- Dev & tests (optional) ----
 # pytest~=8.3

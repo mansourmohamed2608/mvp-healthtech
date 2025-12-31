@@ -14,10 +14,15 @@ export class WsJwtGuard implements CanActivate {
       const { sig, ts } = this.extractSigAndTs(client);
       const url: string = client?.upgradeReq?.url || client?.url || '';
       const callSid = this.extractCallSid(url);
-      if (!jwtToken || !sig || !ts || !callSid) throw new UnauthorizedException();
+      if (!sig || !ts || !callSid) throw new UnauthorizedException();
       if (!this.validateHmac(sig, ts, callSid)) throw new UnauthorizedException();
-      const payload = this.jwtService.verify(jwtToken);
-      (client as any).user = payload;
+      if (jwtToken) {
+        const payload = this.jwtService.verify(jwtToken);
+        (client as any).user = payload;
+      } else {
+        (client as any).user = { sub: 'twilio', roles: ['twilio'] };
+        (client as any).twilio = true;
+      }
       (client as any).callSid = callSid;
       return true;
     } catch (_e) {

@@ -10,6 +10,7 @@ services:
       - NODE_ENV=development
       - PORT=3000
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET}
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:?set TWILIO_AUTH_TOKEN}
       - ASR_SERVICE_URL=http://asr:5000
       - LLM_SERVICE_URL=http://llm:5001
@@ -50,10 +51,10 @@ services:
           devices:
             - capabilities: [gpu]  # remove if no GPU
     environment:
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - TRANSFORMERS_CACHE=/cache
     volumes:
       - ../services/asr:/app
-      - ../services/asr/lora_ckpt:/app/lora_ckpt
       - huggingface_cache:/cache
 
   llm:
@@ -66,6 +67,7 @@ services:
           devices:
             - capabilities: [gpu]
     environment:
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - TRANSFORMERS_CACHE=/cache
     volumes:
       - ../services/llm:/app
@@ -88,6 +90,7 @@ services:
     ports:
       - "5002:5002"
     environment:
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - PYTORCH_ENABLE_MPS_FALLBACK=1
     volumes:
       - ../services/tts:/app

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useThemeStore } from '@store/themeStore';
+import { useAuthStore } from '@store/authStore';
 import {
   IconPhone,
   IconPhoneOff,
@@ -10,52 +11,132 @@ import {
   IconPlayerStop,
   IconCheck,
   IconAlertCircle,
-  IconLoader2
+  IconLoader2,
+  IconSettings
 } from '@tabler/icons-react';
 import { Device, Call } from '@twilio/voice-sdk';
-import { StreamingTranscript, TranscriptItem } from '../components/StreamingTranscript';
+import api from '../utils/api';
 
 interface Message {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
 }
 
 const VoiceAgent = () => {
   const { language } = useThemeStore();
+  const { token } = useAuthStore();
   const [device, setDevice] = useState<Device | null>(null);
   const [call, setCall] = useState<Call | null>(null);
   const [callStatus, setCallStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [transcript, setTranscript] = useState<Message[]>([]);
-  const [streamItems, setStreamItems] = useState<TranscriptItem[]>([]);
   const [isThinking, setIsThinking] = useState(false);
   const [error, setError] = useState<string>('');
   const [isMuted, setIsMuted] = useState(false);
   const [deviceReady, setDeviceReady] = useState(false);
+  const [callSid, setCallSid] = useState<string>('');
+  const [dialectPreference, setDialectPreference] = useState<'auto' | 'egypt' | 'saudi'>('auto');
+  const [voicePreference, setVoicePreference] = useState<'auto' | 'egypt' | 'saudi'>('auto');
+  const [prefsStatus, setPrefsStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [prefsError, setPrefsError] = useState<string>('');
+  const [introMessage, setIntroMessage] = useState<Message | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+
+  const resolveVoiceId = (pref: string) => {
+    if (pref === 'egypt') return 'ar-EG-SalmaNeural';
+    if (pref === 'saudi') return 'ar-SA-HamedNeural';
+    return undefined;
+  };
 
   // Auto-scroll transcript to bottom
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcript]);
 
-  // Initialize Twilio Device on mount
+  // Sync voice preferences to backend once connected
   useEffect(() => {
-    async function initTwilioDevice() {
-      try {
-        // Try to get token from gateway (POST /twilio/token)
-        const response = await fetch('http://localhost:3001/twilio/token', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        });
-        if (!response.ok) {
-          throw new Error('Failed to fetch Twilio token from gateway');
-        }
-        const { token } = await response.json();
+    if (!callSid || callStatus !== 'connected') return;
+    let cancelled = false;
 
-        const twilioDevice = new Device(token, {
+    const syncPreferences = async () => {
+      setPrefsStatus('saving');
+      setPrefsError('');
+      try {
+        const voicePayload = voicePreference === 'auto' ? 'auto' : resolveVoiceId(voicePreference);
+        await api.updateConversationPreferences(callSid, {
+          dialect: dialectPreference,
+          voice: voicePayload,
+        });
+        if (!cancelled) {
+          setPrefsStatus('saved');
+        }
+      } catch (err: any) {
+        console.error('Failed to update preferences:', err);
+        if (!cancelled) {
+          setPrefsStatus('error');
+          setPrefsError(err.message || 'Failed to update preferences');
+        }
+      }
+    };
+
+    syncPreferences();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [callSid, callStatus, dialectPreference, voicePreference]);
+
+  // Poll conversation history for transcript updates
+  useEffect(() => {
+    if (!callSid || callStatus !== 'connected') return;
+    let cancelled = false;
+
+    const fetchHistory = async () => {
+      try {
+        const data = await api.getConversationHistory(callSid, 80);
+        if (cancelled) return;
+        const historyMessages: Message[] = (data.messages || []).map((msg: any) => ({
+          role: msg.role === 'assistant' || msg.role === 'system' ? msg.role : 'user',
+          content: msg.content,
+          timestamp: new Date(msg.timestamp),
+        }));
+        const merged = introMessage ? [introMessage, ...historyMessages] : historyMessages;
+        setTranscript(merged);
+        const last = historyMessages[historyMessages.length - 1];
+        setIsThinking(!!last && last.role === 'user');
+      } catch (err: any) {
+        console.error('Failed to fetch transcript history:', err);
+        setError((prev) => prev || `Transcript sync failed: ${err.message || 'unknown error'}`);
+        setIsThinking(false);
+      }
+    };
+
+    fetchHistory();
+    const intervalId = window.setInterval(fetchHistory, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [callSid, callStatus, introMessage]);
+
+  // Initialize Twilio Device on auth token change
+  useEffect(() => {
+    let mounted = true;
+    let twilioDevice: Device | null = null;
+
+    async function initTwilioDevice() {
+      if (!token) {
+        setDeviceReady(false);
+        setDevice(null);
+        setError(language === 'ar' ? 'يرجى تسجيل الدخول لبدء المكالمة.' : 'Sign in to start a call.');
+        return;
+      }
+      try {
+        const { token: twilioToken } = await api.getTwilioToken();
+        if (!mounted) return;
+
+        twilioDevice = new Device(twilioToken, {
           codecPreferences: [Call.Codec.Opus, Call.Codec.PCMU],
           edge: 'ashburn',
         });
@@ -78,23 +159,24 @@ const VoiceAgent = () => {
         });
 
         await twilioDevice.register();
+        if (!mounted) return;
         setDevice(twilioDevice);
       } catch (err: any) {
         console.error('Failed to initialize Twilio Device:', err);
-        setError(`Initialization failed: ${err.message}. Make sure gateway is running on localhost:3001`);
+        setError(`Initialization failed: ${err.message}. Check gateway and auth token.`);
         setDeviceReady(false);
       }
     }
 
     initTwilioDevice();
 
-    // Cleanup on unmount
     return () => {
-      if (device) {
-        device.destroy();
+      mounted = false;
+      if (twilioDevice) {
+        twilioDevice.destroy();
       }
     };
-  }, []);
+  }, [token]);
 
   const startCall = async () => {
     if (!device) {
@@ -106,7 +188,10 @@ const VoiceAgent = () => {
         setCallStatus('connecting');
         setError('');
         setTranscript([]);
-        setStreamItems([]);
+        setIntroMessage(null);
+        setCallSid('');
+        setPrefsStatus('idle');
+        setPrefsError('');
 
         const params = {
           To: '+1234567890', // Placeholder
@@ -118,21 +203,31 @@ const VoiceAgent = () => {
       outgoingCall.on('accept', () => {
         console.log('✅ Call connected');
         setCallStatus('connected');
-        setTranscript([
-          {
-            role: 'assistant',
-            content: language === 'ar' 
-              ? 'مرحبا بك في النظام الطبي الذكي. كيف يمكنني مساعدتك؟'
-              : 'Welcome to the smart medical assistant. How can I help you?',
-            timestamp: new Date(),
-          },
-        ]);
+        const callParams = (outgoingCall as any)?.parameters || {};
+        const sid =
+          callParams.CallSid ||
+          callParams.callSid ||
+          callParams.call_sid ||
+          '';
+        if (sid) {
+          setCallSid(sid);
+        }
+        const greeting: Message = {
+          role: 'system',
+          content: language === 'ar' 
+            ? 'مرحبا بك في النظام الطبي الذكي. كيف يمكنني مساعدتك؟'
+            : 'Welcome to the smart medical assistant. How can I help you?',
+          timestamp: new Date(),
+        };
+        setIntroMessage(greeting);
+        setTranscript([greeting]);
       });
 
       outgoingCall.on('disconnect', () => {
         console.log('Call disconnected');
         setCallStatus('disconnected');
         setCall(null);
+        setCallSid('');
         setTimeout(() => setCallStatus('idle'), 2000);
       });
 
@@ -140,6 +235,7 @@ const VoiceAgent = () => {
         console.log('Call cancelled');
         setCallStatus('idle');
         setCall(null);
+        setCallSid('');
       });
 
       outgoingCall.on('error', (error: any) => {
@@ -160,6 +256,8 @@ const VoiceAgent = () => {
       call.disconnect();
       setCall(null);
       setCallStatus('idle');
+      setCallSid('');
+      setIntroMessage(null);
     }
   };
 
@@ -263,6 +361,11 @@ const VoiceAgent = () => {
               </motion.div>
             )}
           </AnimatePresence>
+          {callSid && (
+            <div className="mb-6 text-xs text-slate-500 dark:text-slate-400">
+              {language === 'ar' ? 'معرّف الجلسة:' : 'Session ID:'} {callSid}
+            </div>
+          )}
 
           {/* Control Buttons */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -307,6 +410,74 @@ const VoiceAgent = () => {
               </>
             )}
           </div>
+
+          {/* Voice Settings */}
+          <div className="mt-8 border-t border-white/10 pt-6">
+            <div className="flex items-center gap-2 mb-4">
+              <IconSettings size={20} className="text-accent" />
+              <h3 className="text-lg font-semibold text-slate-800 dark:text-white">
+                {language === 'ar' ? 'إعدادات الصوت' : 'Voice Settings'}
+              </h3>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-slate-600 dark:text-slate-300 mb-2">
+                  {language === 'ar' ? 'اللهجة' : 'Dialect'}
+                </label>
+                <select
+                  value={dialectPreference}
+                  onChange={(e) => setDialectPreference(e.target.value as 'auto' | 'egypt' | 'saudi')}
+                  className="w-full px-4 py-3 bg-white/70 dark:bg-slate-900/60 border border-white/20 rounded-xl text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  <option value="auto">{language === 'ar' ? 'كشف تلقائي' : 'Auto-detect'}</option>
+                  <option value="egypt">{language === 'ar' ? 'مصري' : 'Egyptian'}</option>
+                  <option value="saudi">{language === 'ar' ? 'سعودي' : 'Saudi'}</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-slate-600 dark:text-slate-300 mb-2">
+                  {language === 'ar' ? 'الصوت' : 'Voice'}
+                </label>
+                <select
+                  value={voicePreference}
+                  onChange={(e) => setVoicePreference(e.target.value as 'auto' | 'egypt' | 'saudi')}
+                  className="w-full px-4 py-3 bg-white/70 dark:bg-slate-900/60 border border-white/20 rounded-xl text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  <option value="auto">{language === 'ar' ? 'تلقائي حسب اللهجة' : 'Auto by dialect'}</option>
+                  <option value="egypt">{language === 'ar' ? 'مصري (Salma)' : 'Egyptian (Salma)'}</option>
+                  <option value="saudi">{language === 'ar' ? 'سعودي (Hamed)' : 'Saudi (Hamed)'}</option>
+                </select>
+              </div>
+            </div>
+            <div className="mt-3 text-xs text-slate-500 dark:text-slate-400 flex items-center gap-2">
+              {callStatus !== 'connected' && (
+                <span>
+                  {language === 'ar' ? 'سيتم تطبيق الإعدادات عند الاتصال.' : 'Preferences apply once the call connects.'}
+                </span>
+              )}
+              {callStatus === 'connected' && prefsStatus === 'saving' && (
+                <span className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                  <IconLoader2 size={14} className="animate-spin" />
+                  {language === 'ar' ? 'جارٍ الحفظ...' : 'Saving...'}
+                </span>
+              )}
+              {callStatus === 'connected' && prefsStatus === 'saved' && (
+                <span className="flex items-center gap-2 text-green-600 dark:text-green-400">
+                  <IconCheck size={14} />
+                  {language === 'ar' ? 'تم الحفظ' : 'Saved'}
+                </span>
+              )}
+              {callStatus === 'connected' && prefsStatus === 'error' && (
+                <span className="flex items-center gap-2 text-red-600 dark:text-red-400">
+                  <IconAlertCircle size={14} />
+                  {language === 'ar' ? 'فشل الحفظ' : 'Save failed'}
+                </span>
+              )}
+            </div>
+            {prefsError && callStatus === 'connected' && (
+              <p className="text-xs text-red-500 mt-2">{prefsError}</p>
+            )}
+          </div>
         </motion.div>
 
         {/* Transcript Card */}
@@ -320,6 +491,12 @@ const VoiceAgent = () => {
             <IconPlayerPlay size={32} className="text-accent" />
             {language === 'ar' ? 'نص المحادثة' : 'Live Transcript'}
           </h2>
+          {isThinking && callStatus === 'connected' && (
+            <div className="mb-4 text-sm text-slate-500 dark:text-slate-400 flex items-center gap-2">
+              <IconLoader2 size={16} className="animate-spin" />
+              {language === 'ar' ? 'المساعد يجهز الرد...' : 'Assistant is responding...'}
+            </div>
+          )}
           {callStatus === 'disconnected' && (
             <div className="text-sm text-amber-600 dark:text-amber-400 mb-3">
               {language === 'ar' ? 'تم فقد الاتصال. يمكنك إعادة الاتصال.' : 'Connection lost. You can reconnect to continue.'}
@@ -347,13 +524,21 @@ const VoiceAgent = () => {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -20 }}
-                    className={`flex ${msg.role === 'user' ? 'justify-start' : 'justify-end'}`}
+                    className={`flex ${
+                      msg.role === 'user'
+                        ? 'justify-start'
+                        : msg.role === 'system'
+                          ? 'justify-center'
+                          : 'justify-end'
+                    }`}
                   >
                     <div
                       className={`max-w-[80%] rounded-2xl p-5 shadow-lg ${
                         msg.role === 'user'
                           ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white'
-                          : 'bg-gradient-to-br from-green-500 to-emerald-600 text-white'
+                          : msg.role === 'system'
+                            ? 'bg-slate-200/80 dark:bg-slate-700/80 text-slate-700 dark:text-slate-200'
+                            : 'bg-gradient-to-br from-green-500 to-emerald-600 text-white'
                       }`}
                     >
                       <p className="text-lg leading-relaxed mb-2" dir={language === 'ar' ? 'rtl' : 'ltr'}>

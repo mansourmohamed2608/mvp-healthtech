@@ -10,6 +10,8 @@ import base64
 import audioop
 import os
 import logging
+import inspect
+import wave
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,14 +40,21 @@ def safe_print(*args, **_kwargs):
 
 print = safe_print
 
-# Try Coqui TTS; fallback will synthesize silence to keep contract (no mp3 fallback)
-TTS_ENGINE = "edge"  # Default label; we will synthesize silence if Coqui unavailable
+# Try Coqui TTS; fallback to Edge if available, otherwise synthesize silence
+TTS_ENGINE = "edge"  # Default label; prefer Edge when Coqui is unavailable
 try:
     from TTS.api import TTS as CoquiTTS
     TTS_ENGINE = "coqui"
     logger.info("Using Coqui TTS")
 except ImportError:
-    logger.warning("Coqui TTS not available, will use silent fallback mulaw audio")
+    logger.warning("Coqui TTS not available, attempting Edge TTS")
+
+try:
+    import edge_tts
+    EDGE_AVAILABLE = True
+except ImportError:
+    EDGE_AVAILABLE = False
+    logger.warning("edge-tts not available, will use silent fallback mulaw audio")
 
 # Configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -55,6 +64,7 @@ TWILIO_SAMPLE_RATE = 8000
 VOICE = "ar-EG-SalmaNeural"  # Edge-TTS Arabic voice (Egyptian female)
 COQUI_MODEL = "tts_models/ar/css10/vits"  # Coqui Arabic model
 TTS_TIMEOUT_SECONDS = float(os.getenv("TTS_TIMEOUT_SECONDS", "10"))
+EDGE_OUTPUT_FORMAT = "riff-16khz-16bit-mono-pcm"
 
 logger.info("TTS Service starting", extra={"device": DEVICE, "engine": TTS_ENGINE})
 
@@ -100,21 +110,82 @@ def log_safe(level: int, msg: str, request: Request | None = None, session_id: s
     logger.log(level, msg, extra=extra)
 
 # Internal helpers
-def _blocking_tts_generate(text: str, voice: Optional[str]) -> bytes:
-    """Blocking TTS generation that always returns mulaw bytes (8kHz)."""
-    if TTS_ENGINE == "coqui" and tts_model:
-        audio_np = tts_model.tts(text=text)
-        audio_int16 = (np.array(audio_np) * 32767).astype(np.int16)
-        pcm_bytes = audio_int16.tobytes()
-        pcm_8k, _ = audioop.ratecv(pcm_bytes, 2, 1, SAMPLE_RATE, TWILIO_SAMPLE_RATE, None)
-        mulaw_bytes = audioop.lin2ulaw(pcm_8k, 2)
-        return mulaw_bytes
-    # Fallback: 1s silence in mulaw to keep contract consistent
+def _silence_mulaw() -> bytes:
     pcm_silence = (b"\x00\x00") * int(TWILIO_SAMPLE_RATE)
     return audioop.lin2ulaw(pcm_silence, 2)
 
+
+def _coqui_generate(text: str) -> bytes:
+    audio_np = tts_model.tts(text=text)
+    audio_int16 = (np.array(audio_np) * 32767).astype(np.int16)
+    pcm_bytes = audio_int16.tobytes()
+    pcm_8k, _ = audioop.ratecv(pcm_bytes, 2, 1, SAMPLE_RATE, TWILIO_SAMPLE_RATE, None)
+    return audioop.lin2ulaw(pcm_8k, 2)
+
+
+def _edge_kwargs() -> dict:
+    if not EDGE_AVAILABLE:
+        return {}
+    try:
+        params = inspect.signature(edge_tts.Communicate.__init__).parameters
+        if "output_format" in params:
+            return {"output_format": EDGE_OUTPUT_FORMAT}
+        if "format" in params:
+            return {"format": EDGE_OUTPUT_FORMAT}
+    except Exception:
+        return {}
+    return {}
+
+
+def _decode_wave_bytes(wav_bytes: bytes) -> tuple[bytes, int, int]:
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        channels = wf.getnchannels()
+        sample_width = wf.getsampwidth()
+        rate = wf.getframerate()
+        pcm = wf.readframes(wf.getnframes())
+    if channels > 1:
+        pcm = audioop.tomono(pcm, sample_width, 0.5, 0.5)
+    return pcm, rate, sample_width
+
+
+async def _edge_generate(text: str, voice: Optional[str]) -> bytes:
+    if not EDGE_AVAILABLE:
+        return _silence_mulaw()
+    voice_id = voice or VOICE
+    audio_bytes = b""
+    communicate = edge_tts.Communicate(text=text, voice=voice_id, **_edge_kwargs())
+    async for chunk in communicate.stream():
+        if chunk.get("type") == "audio":
+            audio_bytes += chunk.get("data", b"")
+    if not audio_bytes:
+        return _silence_mulaw()
+    try:
+        pcm_bytes, rate, sample_width = _decode_wave_bytes(audio_bytes)
+        pcm_8k, _ = audioop.ratecv(pcm_bytes, sample_width, 1, rate, TWILIO_SAMPLE_RATE, None)
+        return audioop.lin2ulaw(pcm_8k, sample_width)
+    except Exception:
+        return _silence_mulaw()
+
+
+def _should_use_edge(voice: Optional[str]) -> bool:
+    if not EDGE_AVAILABLE:
+        return False
+    if voice and voice.strip():
+        return True
+    if TTS_ENGINE == "edge":
+        return True
+    return False
+
+
 async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
-    return await asyncio.to_thread(_blocking_tts_generate, text, voice)
+    if _should_use_edge(voice):
+        try:
+            return await _edge_generate(text, voice)
+        except Exception:
+            return _silence_mulaw()
+    if TTS_ENGINE == "coqui" and tts_model:
+        return await asyncio.to_thread(_coqui_generate, text)
+    return _silence_mulaw()
 
 @app.middleware("http")
 async def internal_auth(request: Request, call_next):

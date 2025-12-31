@@ -2,13 +2,18 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.8.2
+python-dotenv==1.0.1
+prometheus-client==0.21.1
 
 # Audio processing
 soundfile==0.12.1
 librosa==0.10.2
+numpy==1.26.4
+pandas==2.2.2
 
 # Whisper and ML packages
-openai-whisper==20231117
+whisperx==3.1.1
+pyannote.audio==3.2.1
 torch==2.3.1
 torchaudio==2.3.1
 transformers==4.44.2

@@ -50,14 +50,28 @@ export class AsrService {
   async transcribe(
     audio: string,
     callSid: string,
-    identifySpeakers: boolean = true,
+    opts?: {
+      identifySpeakers?: boolean;
+      dialect?: string;
+      language?: string;
+      enableDiarization?: boolean;
+      diarizeFirst?: boolean;
+    },
     correlationId?: string,
   ): Promise<TranscriptionResponse> {
     const corr = correlationId || uuidv4();
     const client = this.http.getClient({ baseUrl: process.env.ASR_SERVICE_URL || '', serviceName: 'asr' });
+    const identifySpeakers = opts?.identifySpeakers ?? true;
     const { data } = await client.post<TranscriptionResponse>(
       `/transcribe`,
-      { audio, callSid },
+      {
+        audio,
+        callSid,
+        dialect: opts?.dialect,
+        language: opts?.language,
+        enable_diarization: opts?.enableDiarization,
+        diarize_first: opts?.diarizeFirst,
+      },
       { headers: { 'x-correlation-id': corr } },
     );
 

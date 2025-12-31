@@ -76,24 +76,26 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     safeLog(this.logger, 'log', 'WebSocket connected', { callSid: callSid || 'unknown' });
     // Attach user claims from guard
     const user = (client as any).user || {};
+    const isTwilio = (client as any).twilio === true || user.sub === 'twilio';
 
     // Require authenticated WS
-    if (!user || !user.sub) {
+    if ((!user || !user.sub) && !isTwilio) {
       this.logger.warn('Unauthorized WS connection attempt');
       client.close();
       return;
     }
 
     if (callSid) {
+      const userId = user.sub || `twilio:${callSid}`;
       this.activeStreams.set(callSid, client);
       this.audioBuffers.set(callSid, []);
       this.streamUsers.set(callSid, user);
       // persist session
       this.sessionService.create({
-        userId: user.sub,
+        userId,
         callSid,
         metadata: {
-          clinicianId: user.sub,
+          clinicianId: isTwilio ? null : user.sub,
           patientId: user.patientId || null,
           mode: 'voice_agent_va',
         },

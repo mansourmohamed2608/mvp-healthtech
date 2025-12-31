@@ -79,6 +79,14 @@ MEDICAL_CORRECTIONS = {
     "صيدليه": "صيدلية",  # Pharmacy
 }
 
+STYLE_NORMALIZATIONS = {
+    "دكتور",
+    "مستشفا",
+    "المستشفا",
+    "عياده",
+    "صيدليه",
+}
+
 # Dialect-specific corrections (Egyptian → MSA)
 EGYPTIAN_TO_MSA = {
     "وجع": "ألم",  # Pain
@@ -107,7 +115,7 @@ LEVANTINE_TO_MSA = {
 }
 
 
-def apply_corrections(text: str, dialect: str = "egypt") -> tuple[str, int]:
+def apply_corrections(text: str, dialect: str = "egypt", preserve_dialect: bool = False) -> tuple[str, int]:
     """
     Apply medical corrections to Arabic text
     
@@ -128,7 +136,7 @@ def apply_corrections(text: str, dialect: str = "egypt") -> tuple[str, int]:
         "levant": LEVANTINE_TO_MSA,
     }
     
-    if dialect in dialect_map:
+    if not preserve_dialect and dialect in dialect_map:
         for wrong, correct in dialect_map[dialect].items():
             if wrong in corrected:
                 corrected = corrected.replace(wrong, correct)
@@ -136,6 +144,8 @@ def apply_corrections(text: str, dialect: str = "egypt") -> tuple[str, int]:
     
     # Apply general medical corrections
     for wrong, correct in MEDICAL_CORRECTIONS.items():
+        if preserve_dialect and wrong in STYLE_NORMALIZATIONS:
+            continue
         if wrong in corrected:
             corrected = corrected.replace(wrong, correct)
             corrections_count += 1
