@@ -835,9 +835,9 @@ export default function ClinicalNotes() {
                 status: 'completed',
                 transcript,
                 soapNote,
-                soapJson: soapResponse.soapJson ?? soapResponse.soap_json,
+                soapJson: (soapResponse as any).soapJson ?? (soapResponse as any).soap_json,
                 noteId: soapResponse.id,
-                templateId: soapResponse.templateId ?? soapResponse.template_id,
+                templateId: (soapResponse as any).templateId ?? (soapResponse as any).template_id,
                 dialect: selectedDialect,
                 autoDetected: selectedDialect === 'auto',
               }

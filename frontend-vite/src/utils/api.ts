@@ -17,7 +17,7 @@ const SERVICE_URLS = {
   fhir: envVars.VITE_FHIR_URL || 'http://localhost:5004',
 };
 
-const getAuthHeader = () => {
+const getAuthHeader = (): Record<string, string> => {
   const token = useAuthStore.getState().token;
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
