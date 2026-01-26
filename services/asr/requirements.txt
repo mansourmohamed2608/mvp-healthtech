@@ -13,10 +13,9 @@ pandas==2.2.2
 
 # Whisper and ML packages - pinned for compatibility
 # whisperx 3.1.4 requires faster-whisper==1.0.1
+# faster-whisper 1.0.1 requires tokenizers<0.16,>=0.13 (will be installed automatically)
 faster-whisper==1.0.1
 whisperx==3.1.4
-# Pin tokenizers to resolve version conflicts
-tokenizers>=0.19,<0.20
 pyannote.audio==3.1.1
 torch==2.3.1
 torchaudio==2.3.1
