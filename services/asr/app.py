@@ -964,8 +964,11 @@ async def load_models():
         "Loading WhisperX model",
         extra={"model": WHISPER_MODEL, "device": DEVICE, "computeType": COMPUTE_TYPE},
     )
+    # VAD model path - can be pre-downloaded to avoid broken S3 URL issue
+    vad_model_fp = os.getenv("VAD_MODEL_PATH", None)
     whisper_model = whisperx.load_model(
-        WHISPER_MODEL, DEVICE, compute_type=COMPUTE_TYPE, language="ar"
+        WHISPER_MODEL, DEVICE, compute_type=COMPUTE_TYPE, language="ar",
+        vad_model_fp=vad_model_fp
     )
     logger.info("Base WhisperX model loaded")
 
