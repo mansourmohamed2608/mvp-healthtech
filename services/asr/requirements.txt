@@ -12,7 +12,8 @@ numpy==1.26.4
 pandas==2.2.2
 
 # Whisper and ML packages - pinned for compatibility
-faster-whisper==1.0.0
+# Use faster-whisper 1.1.0+ which supports newer tokenizers
+faster-whisper==1.1.0
 whisperx==3.1.1
 pyannote.audio==3.1.1
 torch==2.3.1
