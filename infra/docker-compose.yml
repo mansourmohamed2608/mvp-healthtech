@@ -1,4 +1,4 @@
-﻿version: '3.8'
+version: '3.8'
 services:
   gateway:
     build: ../gateway
@@ -12,6 +12,9 @@ services:
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET}
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:?set TWILIO_AUTH_TOKEN}
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/healthtech
+      - OTEL_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
       - ASR_SERVICE_URL=http://asr:5000
       - LLM_SERVICE_URL=http://llm:5001
       - TTS_SERVICE_URL=http://tts:5002
@@ -53,6 +56,8 @@ services:
     environment:
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - TRANSFORMERS_CACHE=/cache
+      - OTEL_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
     volumes:
       - ../services/asr:/app
       - huggingface_cache:/cache
@@ -69,6 +74,10 @@ services:
     environment:
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - TRANSFORMERS_CACHE=/cache
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=va_rag
+      - OTEL_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
     volumes:
       - ../services/llm:/app
       - ../services/llm/data:/app/data
@@ -81,6 +90,9 @@ services:
     environment:
       - VA_MODEL=Qwen/Qwen2.5-3B-Instruct
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
+      - RAG_SERVICE_URL=http://llm:5001
+      - OTEL_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
     volumes:
       - ../services/llm-va:/app
       - huggingface_cache:/cache
@@ -92,6 +104,8 @@ services:
     environment:
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - PYTORCH_ENABLE_MPS_FALLBACK=1
+      - OTEL_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
     volumes:
       - ../services/tts:/app
 
@@ -102,6 +116,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/healthtech
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
+      - OTEL_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
     volumes:
       - ../services/soap:/app
 
@@ -130,6 +146,8 @@ services:
       - FHIR_BASIC_AUTH_USER=${FHIR_BASIC_AUTH_USER:-}
       - FHIR_BASIC_AUTH_PASSWORD=${FHIR_BASIC_AUTH_PASSWORD:-}
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
+      - OTEL_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
     volumes:
       - ../services/fhir:/app
 
@@ -156,6 +174,66 @@ services:
     ports:
       - "6379:6379"
 
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - gateway
+      - asr
+      - llm
+      - tts
+      - llm-va
+      - orchestrator
+
+  loki:
+    image: grafana/loki:2.9.0
+    command: -config.file=/etc/loki/loki.yml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ../infra/observability/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ../infra/observability/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3002:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+      - loki
+
+  otel-collector:
+    image: otel/opentelemetry-collector:latest
+    command: ["--config=/etc/otel-collector.yml"]
+    ports:
+      - "4318:4318"
+    volumes:
+      - ../infra/observability/otel-collector.yml:/etc/otel-collector.yml:ro
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
   postgres:
     image: postgres:16
     environment:
@@ -181,3 +259,7 @@ volumes:
   gateway_node_modules:
   frontend_vite_node_modules:
   huggingface_cache:
+  qdrant_storage:
+  prometheus_data:
+  grafana_data:
+  loki_data:

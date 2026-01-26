@@ -39,9 +39,11 @@ export interface StreamResponse {
 @Injectable()
 export class AsrService {
   private readonly logger = new Logger(AsrService.name);
-  private readonly llmServiceUrl = process.env.LLM_SERVICE_URL || 'http://localhost:5001';
+  private readonly llmServiceUrl =
+    process.env.LLM_SERVICE_URL || 'http://localhost:5001';
   private readonly internalSecret = (() => {
-    if (!process.env.INTERNAL_SECRET) throw new Error('INTERNAL_SECRET not set');
+    if (!process.env.INTERNAL_SECRET)
+      throw new Error('INTERNAL_SECRET not set');
     return process.env.INTERNAL_SECRET;
   })();
   constructor(private readonly http: InternalHttpClient) {}
@@ -56,11 +58,15 @@ export class AsrService {
       language?: string;
       enableDiarization?: boolean;
       diarizeFirst?: boolean;
+      enableAlignment?: boolean;
     },
     correlationId?: string,
   ): Promise<TranscriptionResponse> {
     const corr = correlationId || uuidv4();
-    const client = this.http.getClient({ baseUrl: process.env.ASR_SERVICE_URL || '', serviceName: 'asr' });
+    const client = this.http.getClient({
+      baseUrl: process.env.ASR_SERVICE_URL || '',
+      serviceName: 'asr',
+    });
     const identifySpeakers = opts?.identifySpeakers ?? true;
     const { data } = await client.post<TranscriptionResponse>(
       `/transcribe`,
@@ -71,6 +77,7 @@ export class AsrService {
         language: opts?.language,
         enable_diarization: opts?.enableDiarization,
         diarize_first: opts?.diarizeFirst,
+        enable_alignment: opts?.enableAlignment,
       },
       { headers: { 'x-correlation-id': corr } },
     );
@@ -78,21 +85,24 @@ export class AsrService {
     // If speaker diarization was enabled and we have segments, identify roles
     if (identifySpeakers && data.segments && data.segments.length > 0) {
       try {
-        this.logger.log(`Identifying speaker roles for ${data.segments.length} segments`);
-        const llmClient = this.http.getClient({ baseUrl: this.llmServiceUrl, serviceName: 'llm' });
-        const roleResponse = await llmClient.post(
-          `/identify-speakers`,
-          { segments: data.segments, context: 'medical' },
+        this.logger.log(
+          `Identifying speaker roles for ${data.segments.length} segments`,
         );
+        const llmClient = this.http.getClient({
+          baseUrl: this.llmServiceUrl,
+          serviceName: 'llm',
+        });
+        const roleResponse = await llmClient.post(`/identify-speakers`, {
+          segments: data.segments,
+          context: 'medical',
+        });
 
         // Add role information to the response
         data.roles = roleResponse.data.roles;
         data.primary_doctor = roleResponse.data.primary_doctor;
         data.primary_patient = roleResponse.data.primary_patient;
 
-        this.logger.log(
-          `Roles identified for call ${callSid}`,
-        );
+        this.logger.log(`Roles identified for call ${callSid}`);
       } catch (error) {
         this.logger.warn(`Failed to identify speaker roles: ${error.message}`);
         // Continue without role detection - not critical
@@ -103,9 +113,16 @@ export class AsrService {
   }
 
   // Streaming transcription
-  async stream(audio: string, callSid: string, isFinal = false): Promise<StreamResponse> {
+  async stream(
+    audio: string,
+    callSid: string,
+    isFinal = false,
+  ): Promise<StreamResponse> {
     const corr = uuidv4();
-    const client = this.http.getClient({ baseUrl: process.env.ASR_SERVICE_URL || '', serviceName: 'asr' });
+    const client = this.http.getClient({
+      baseUrl: process.env.ASR_SERVICE_URL || '',
+      serviceName: 'asr',
+    });
     const { data } = await client.post<StreamResponse>(
       `/stream/chunk`,
       { audio, sessionId: callSid, isFinal },

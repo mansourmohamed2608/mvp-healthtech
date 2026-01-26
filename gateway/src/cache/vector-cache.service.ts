@@ -22,7 +22,12 @@ export class VectorCacheService {
   /**
    * Store a vector with metadata
    */
-  async store(id: string, vector: number[], text: string, metadata: Record<string, any> = {}): Promise<void> {
+  async store(
+    id: string,
+    vector: number[],
+    text: string,
+    metadata: Record<string, any> = {},
+  ): Promise<void> {
     // Implement LRU eviction if cache is full
     if (this.cache.size >= this.MAX_ENTRIES) {
       const firstKey = this.cache.keys().next().value;
@@ -36,10 +41,17 @@ export class VectorCacheService {
   /**
    * Find similar vectors using cosine similarity
    */
-  async findSimilar(queryVector: number[], limit = 5): Promise<VectorEntry[]> {
+  async findSimilar(
+    queryVector: number[],
+    limit = 5,
+    tenantId?: string,
+  ): Promise<VectorEntry[]> {
     const results: Array<{ entry: VectorEntry; similarity: number }> = [];
 
     for (const entry of this.cache.values()) {
+      if (tenantId && entry.metadata?.tenantId !== tenantId) {
+        continue;
+      }
       const similarity = this.cosineSimilarity(queryVector, entry.vector);
       results.push({ entry, similarity });
     }
@@ -81,6 +93,22 @@ export class VectorCacheService {
       maxSize: this.MAX_ENTRIES,
       utilizationPercent: (this.cache.size / this.MAX_ENTRIES) * 100,
     };
+  }
+
+  /**
+   * Purge all vectors belonging to a specific tenant (PR-15 retention compliance)
+   * @returns number of deleted entries
+   */
+  async purgeByTenant(tenantId: string): Promise<number> {
+    let deleted = 0;
+    for (const [key, entry] of this.cache.entries()) {
+      if (entry.metadata?.tenantId === tenantId || key.startsWith(`${tenantId}:`)) {
+        this.cache.delete(key);
+        deleted++;
+      }
+    }
+    this.logger.log(`Purged ${deleted} vectors for tenant ${tenantId}`);
+    return deleted;
   }
 
   /**

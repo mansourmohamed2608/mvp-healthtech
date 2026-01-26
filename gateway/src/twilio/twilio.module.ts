@@ -12,4 +12,3 @@ import { SessionModule } from '../session/session.module';
   exports: [TwilioService, CodecNegotiatorService],
 })
 export class TwilioModule {}
-

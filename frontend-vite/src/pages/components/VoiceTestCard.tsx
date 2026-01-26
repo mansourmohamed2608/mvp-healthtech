@@ -13,7 +13,7 @@ export default function VoiceTestCard() {
       const testAudio = 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
       const asr = await api.transcribeAudio(testAudio, 'test-call-sid');
       const llm = await api.inferMessage('Hello, how are you?', 'test-session', 'greeting');
-      const tts = await api.synthesizeSpeech('مرحبا، كيف حالك؟', 'ar-EG-SalmaNeural');
+    const tts = await api.synthesizeSpeech('مرحبا، كيف حالك؟', 'egtts');
       setResult({ asr, llm, tts: { ...tts, audio: (tts.audio || '').substring(0, 50) + '...' } });
     } catch (e: any) {
       setError(e?.message || String(e));

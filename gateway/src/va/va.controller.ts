@@ -1,22 +1,30 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards, Req } from '@nestjs/common';
 import { VaBookingService } from './va_booking.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard, getTenantId } from '../auth/tenant.guard';
 import { Roles } from '../auth/roles.decorator';
 import { Pool } from 'pg';
 import { ConfigService } from '@nestjs/config';
+import type { Request } from 'express';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Roles('clinician')
 @Controller('va')
 export class VaController {
   private pool: Pool | null;
-  constructor(private readonly vaService: VaBookingService, config: ConfigService) {
+  constructor(
+    private readonly vaService: VaBookingService,
+    config: ConfigService,
+  ) {
     const url = config.get<string>('DATABASE_URL');
     this.pool = url ? new Pool({ connectionString: url }) : null;
   }
 
   @Get('appointments')
-  async listAppointments(@Query('doctorId') doctorId?: string, @Query('date') date?: string) {
+  async listAppointments(
+    @Query('doctorId') doctorId?: string,
+    @Query('date') date?: string,
+  ) {
     if (!this.pool) return { appointments: [] };
     const client = await this.pool.connect();
     try {

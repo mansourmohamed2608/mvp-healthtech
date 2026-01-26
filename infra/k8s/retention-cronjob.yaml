@@ -1,0 +1,66 @@
+# infra/k8s/retention-cronjob.yaml
+# Runs PHI retention job daily at 02:00 UTC
+# Deletes records older than PHI_RETENTION_DAYS (default 90)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: phi-retention-job
+  namespace: healthtech
+  labels:
+    app: healthtech
+    component: retention
+spec:
+  schedule: "0 2 * * *"  # Daily at 02:00 UTC
+  concurrencyPolicy: Forbid  # Don't run if previous job still running
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600  # 1 hour max
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: healthtech
+            component: retention
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: retention
+              image: healthtech/eval:latest
+              command: ["python", "retention_job.py"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: healthtech-secrets
+                      key: database-url
+                - name: PHI_RETENTION_DAYS
+                  value: "90"
+                - name: DRY_RUN
+                  value: "false"  # Set to "true" for testing
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "256Mi"
+                  cpu: "200m"
+          serviceAccountName: healthtech-retention
+---
+# ServiceAccount for retention job (minimal permissions)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: healthtech-retention
+  namespace: healthtech
+---
+# Secret template (fill in actual values via sealed-secrets or external-secrets)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: healthtech-secrets
+  namespace: healthtech
+type: Opaque
+stringData:
+  database-url: "postgresql://postgres:CHANGE_ME@postgres:5432/healthtech"

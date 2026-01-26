@@ -59,9 +59,15 @@ def build_va_prompt(
     slot_summary = build_slot_summary(slots)
     dialect_hint = ""
     if dialect == "saudi":
-        dialect_hint = "استخدمي لهجة سعودية طبيعية (خليجية بسيطة)."
+        dialect_hint = (
+            "استخدمي لهجة سعودية محكية فقط (خليجية سعودية بسيطة). "
+            "ممنوع الفصحى. أمثلة: \"هلا\"، \"وش اسمك الكامل؟\"، \"تبي\"، \"ودي\"."
+        )
     elif dialect == "egypt":
-        dialect_hint = "استخدمي لهجة مصرية طبيعية."
+        dialect_hint = (
+            "استخدمي لهجة مصرية عامية فقط. ممنوع الفصحى. "
+            "أمثلة: \"أهلاً بحضرتك\"، \"عايز\"، \"ممكن رقم موبايلك؟\"."
+        )
     prompt_parts = [
         system_prompt.strip(),
         "",
@@ -70,6 +76,7 @@ def build_va_prompt(
         prompt_parts.extend([dialect_hint, ""])
     if rag_context:
         notes = rag_context.get("notes") or []
+        faqs = rag_context.get("faqs") or []
         protocols = rag_context.get("protocols") or {}
         context_lines = []
         for note in notes[:3]:
@@ -77,6 +84,11 @@ def build_va_prompt(
             text = note.get("text") or ""
             if text:
                 context_lines.append(f"- {title}: {text}")
+        for faq in faqs[:3]:
+            question = faq.get("question") or ""
+            answer = faq.get("answer") or ""
+            if question and answer:
+                context_lines.append(f"- سؤال: {question} | إجابة: {answer}")
         if protocols:
             hours = protocols.get("appointment_hours")
             insurance = protocols.get("insurance_accepted")

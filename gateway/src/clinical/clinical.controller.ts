@@ -7,6 +7,7 @@
 import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
 import { ClinicalMetricsService } from './clinical-metrics.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard } from '../auth/tenant.guard';
 
 interface NoteReviewEvent {
   recordingId: string;
@@ -16,7 +17,7 @@ interface NoteReviewEvent {
   clinicianId?: string;
 }
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('clinical')
 export class ClinicalController {
   constructor(private readonly metricsService: ClinicalMetricsService) {}
@@ -35,7 +36,7 @@ export class ClinicalController {
   @Get('metrics/dashboard')
   async getDashboard() {
     const metrics = await this.metricsService.getMetrics();
-    
+
     return {
       overview: {
         totalNotes: metrics.totalNotes,

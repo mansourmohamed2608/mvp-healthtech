@@ -1,0 +1,49 @@
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+.venv311/
+venv/
+env/
+
+# Build/distribution
+build/
+dist/
+*.egg-info/
+
+# Env + logs
+.env
+.env.*
+*.log
+
+# Model artifacts
+*.pt
+*.bin
+*.safetensors
+*.onnx
+*.ckpt
+*.pth
+*.partial
+egtts_model/
+saudi_tts_model/
+models/
+xtts_voice_samples/
+xtts_suad_medical_samples/
+
+# Notebooks
+*.ipynb
+
+# OS/IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# VCS
+.git/

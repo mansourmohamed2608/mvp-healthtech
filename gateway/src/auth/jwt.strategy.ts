@@ -6,7 +6,10 @@ import { AuthService, JwtPayload } from './auth.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private readonly authService: AuthService, configService: ConfigService) {
+  constructor(
+    private readonly authService: AuthService,
+    configService: ConfigService,
+  ) {
     const secret = configService.get<string>('JWT_SECRET');
     if (!secret) throw new Error('JWT_SECRET not set');
 
@@ -24,7 +27,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
 
     const user = await this.authService.validateJwtPayload(payload);
-    
+
     if (!user) {
       throw new UnauthorizedException('User not found');
     }

@@ -1,6 +1,14 @@
 import { LoggerService } from '@nestjs/common';
 
-const SENSITIVE_KEYS = ['transcript', 'text', 'soap', 'payload', 'audio', 'body', 'message'];
+const SENSITIVE_KEYS = [
+  'transcript',
+  'text',
+  'soap',
+  'payload',
+  'audio',
+  'body',
+  'message',
+];
 
 function redact(value: any): any {
   if (value === null || value === undefined) return value;

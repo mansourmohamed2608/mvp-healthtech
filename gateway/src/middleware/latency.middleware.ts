@@ -6,18 +6,20 @@ import { Histogram, Counter, register } from 'prom-client';
 @Injectable()
 export class LatencyMiddleware implements NestMiddleware {
   private readonly logger = new Logger(LatencyMiddleware.name);
-  
+
   // Prometheus metrics
   private readonly requestDuration: Histogram<string>;
   private readonly slowRequests: Counter<string>;
-  
+
   // Target: <20ms gateway overhead
   private readonly SLOW_REQUEST_THRESHOLD = 20; // ms
 
   constructor() {
     // Try to get existing metrics or create new ones
     try {
-      this.requestDuration = register.getSingleMetric('gateway_request_duration_ms') as Histogram<string>;
+      this.requestDuration = register.getSingleMetric(
+        'gateway_request_duration_ms',
+      ) as Histogram<string>;
       if (!this.requestDuration) {
         throw new Error('Metric not found');
       }
@@ -31,7 +33,9 @@ export class LatencyMiddleware implements NestMiddleware {
     }
 
     try {
-      this.slowRequests = register.getSingleMetric('gateway_slow_requests_total') as Counter<string>;
+      this.slowRequests = register.getSingleMetric(
+        'gateway_slow_requests_total',
+      ) as Counter<string>;
       if (!this.slowRequests) {
         throw new Error('Metric not found');
       }
@@ -74,16 +78,13 @@ export class LatencyMiddleware implements NestMiddleware {
       const status = res.statusCode.toString();
 
       // Record metrics
-      this.requestDuration.observe(
-        { method, route, status },
-        durationMs
-      );
+      this.requestDuration.observe({ method, route, status }, durationMs);
 
       // Log slow requests
       if (durationMs > this.SLOW_REQUEST_THRESHOLD) {
         this.slowRequests.inc({ method, route });
         this.logger.warn(
-          `Slow request: ${method} ${path} took ${durationMs.toFixed(2)}ms (target: <${this.SLOW_REQUEST_THRESHOLD}ms)`
+          `Slow request: ${method} ${path} took ${durationMs.toFixed(2)}ms (target: <${this.SLOW_REQUEST_THRESHOLD}ms)`,
         );
       }
     });

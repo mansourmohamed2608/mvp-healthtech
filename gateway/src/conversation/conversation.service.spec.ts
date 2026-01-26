@@ -12,13 +12,19 @@ jest.mock('redis', () => ({
 
 describe('ConversationService', () => {
   const llmMock: Partial<LlmService> = {
-    orchestrate: jest.fn().mockResolvedValue({ reply: 'assistant reply', intent: 'general' }),
+    orchestrate: jest
+      .fn()
+      .mockResolvedValue({ reply: 'assistant reply', intent: 'general' }),
   };
   const ttsMock: Partial<TtsService> = {
-    synthesize: jest.fn().mockResolvedValue({ audioBase64: 'YmFzZTY0', format: 'mulaw' }),
+    synthesize: jest
+      .fn()
+      .mockResolvedValue({ audioBase64: 'YmFzZTY0', format: 'mulaw' }),
   };
   const asrMock: Partial<AsrService> = {
-    transcribe: jest.fn().mockResolvedValue({ text: 'user said hello', segments: [] }),
+    transcribe: jest
+      .fn()
+      .mockResolvedValue({ text: 'user said hello', segments: [] }),
     stream: jest.fn(),
   };
 
@@ -27,7 +33,11 @@ describe('ConversationService', () => {
   });
 
   it('runs ASR -> /chat -> TTS and returns base64 audio', async () => {
-    const svc = new ConversationService(llmMock as LlmService, ttsMock as TtsService, asrMock as AsrService);
+    const svc = new ConversationService(
+      llmMock as LlmService,
+      ttsMock as TtsService,
+      asrMock as AsrService,
+    );
     // Force in-memory mode
     (svc as any).redisAvailable = false;
 

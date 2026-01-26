@@ -11,10 +11,12 @@ import {
   Query,
   BadRequestException,
   Req,
+  ForbiddenException,
 } from '@nestjs/common';
 import axios from 'axios';
 import { InternalHttpClient } from '../http/internal-http-client.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard, getTenantId } from '../auth/tenant.guard';
 import { Roles } from '../auth/roles.decorator';
 import { Pool } from 'pg';
 import { MetricsController } from '../metrics/metrics.controller';
@@ -23,6 +25,7 @@ import type { Request } from 'express';
 import { AuditService } from '../audit/audit.service';
 import { safeLog } from '../utils/safe-logger';
 import { AsrService } from '../asr/asr.service';
+import { randomUUID } from 'crypto';
 
 class CreateSoapDto {
   transcript!: string;
@@ -71,7 +74,7 @@ class PatientDocumentDto {
   summarize?: boolean;
 }
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('soap')
 export class SoapController {
   private readonly logger = new Logger(SoapController.name);
@@ -163,7 +166,9 @@ export class SoapController {
         sessionId: payload.sessionId,
       });
       const actor = (req as any).user?.sub || 'unknown';
+      const tenantId = getTenantId(req);
       await this.auditService.log({
+        tenantId,
         actorId: actor,
         action: 'SOAP_NOTE_CREATED',
         resourceType: 'soap_note',
@@ -225,7 +230,7 @@ export class SoapController {
         'SELECT * FROM soap_jobs WHERE job_id = $1',
         [id],
       );
-     if ((res.rowCount ?? 0) > 0) {
+      if ((res.rowCount ?? 0) > 0) {
         const row = res.rows[0];
         return {
           id,
@@ -326,9 +331,13 @@ export class SoapController {
     @Body() dto: PatientDocumentDto,
     @Req() req?: Request,
   ) {
-    const response = await this.soapClient.post(`/patients/${id}/documents`, dto, {
-      headers: { 'x-correlation-id': (req as any)?.correlationId },
-    });
+    const response = await this.soapClient.post(
+      `/patients/${id}/documents`,
+      dto,
+      {
+        headers: { 'x-correlation-id': (req as any)?.correlationId },
+      },
+    );
     return camelResponse(response.data);
   }
 
@@ -375,7 +384,9 @@ export class SoapController {
     const start = process.hrtime();
     try {
       if (!dto.fieldPath || (!dto.audio && !dto.transcript)) {
-        throw new BadRequestException('fieldPath and audio/transcript required');
+        throw new BadRequestException(
+          'fieldPath and audio/transcript required',
+        );
       }
       let transcript = dto.transcript?.trim() || '';
       if (dto.audio) {
@@ -388,6 +399,7 @@ export class SoapController {
             language: dto.language || 'ar',
             enableDiarization: false,
             diarizeFirst: false,
+            enableAlignment: false,
           },
           (req as any)?.correlationId,
         );
@@ -409,7 +421,9 @@ export class SoapController {
         },
         { headers: { 'x-correlation-id': (req as any)?.correlationId } },
       );
+      const tenantId = getTenantId(req as Request);
       await this.auditService.log({
+        tenantId,
         actorId: actor,
         action: 'SOAP_NOTE_FIELD_UPDATED',
         resourceType: 'soap_note',
@@ -443,7 +457,13 @@ export class SoapController {
   ) {
     const start = process.hrtime();
     try {
-      if (!dto.soapText && !dto.subjective && !dto.objective && !dto.assessment && !dto.plan) {
+      if (
+        !dto.soapText &&
+        !dto.subjective &&
+        !dto.objective &&
+        !dto.assessment &&
+        !dto.plan
+      ) {
         throw new BadRequestException('No section updates provided');
       }
       const actor = (req as any)?.user?.sub || 'unknown';
@@ -459,7 +479,9 @@ export class SoapController {
         },
         { headers: { 'x-correlation-id': (req as any)?.correlationId } },
       );
+      const tenantId = getTenantId(req as Request);
       await this.auditService.log({
+        tenantId,
         actorId: actor,
         action: 'SOAP_NOTE_SECTIONS_UPDATED',
         resourceType: 'soap_note',
@@ -486,6 +508,7 @@ export class SoapController {
   async approveNote(@Param('id') id: string, @Req() req?: Request) {
     this.logger.log(`Approve SOAP note ${id}`);
     const start = process.hrtime();
+    const tenantId = getTenantId(req as Request);
     const response = await this.soapClient.patch(
       `/notes/${id}/approve`,
       {},
@@ -496,14 +519,69 @@ export class SoapController {
     const notePatientId = note.patientId ?? note.patient_id ?? '';
     const noteClinicianId = note.clinicianId ?? note.clinician_id ?? '';
     const noteEncounterId = note.encounterId ?? note.encounter_id ?? '';
-    // Trigger FHIR write after approval
+    const actor = (req as any)?.user?.sub || 'unknown';
+    
+    // Enqueue FHIR write to outbox for reliable delivery (PR-8)
+    const useOutbox = process.env.FHIR_OUTBOX_ENABLED === 'true' || process.env.FHIR_OUTBOX_ENABLED === '1';
+    if (useOutbox && this.pool) {
+      try {
+        const idempotencyKey = randomUUID();
+        const payload = {
+          soapNote: note,
+          patientId: notePatientId,
+          practitionerId: noteClinicianId,
+          encounterId: noteEncounterId,
+          sessionId: noteSessionId || `${note.id || id}`,
+        };
+        
+        // Transaction: update soap_note fhir_status + insert outbox
+        await this.pool.query('BEGIN');
+        await this.pool.query(
+          `UPDATE soap_notes 
+           SET fhir_status = 'pending', fhir_idempotency_key = $1, updated_at = NOW()
+           WHERE id = $2 AND tenant_id = $3`,
+          [idempotencyKey, note.id || id, tenantId],
+        );
+        await this.pool.query(
+          `INSERT INTO fhir_outbox (tenant_id, soap_note_id, idempotency_key, payload, status, next_retry_at)
+           VALUES ($1, $2, $3, $4, 'pending', NOW())`,
+          [tenantId, note.id || id, idempotencyKey, JSON.stringify(payload)],
+        );
+        await this.pool.query('COMMIT');
+        
+        await this.auditService.log({
+          tenantId,
+          actorId: actor,
+          action: 'SOAP_NOTE_APPROVED',
+          resourceType: 'soap_note',
+          resourceId: note.id,
+          metadata: {
+            sessionId: noteSessionId,
+            patientId: notePatientId,
+            clinicianId: noteClinicianId,
+            fhirOutboxEnqueued: true,
+          },
+        });
+        this.soapLatency.observe(
+          { endpoint: 'approve', status: 'ok' },
+          this.durationSeconds(start),
+        );
+        return { ...note, fhirStatus: 'pending' };
+      } catch (outboxErr) {
+        await this.pool.query('ROLLBACK').catch(() => {});
+        this.logger.error(`Outbox enqueue failed for note ${id}: ${outboxErr}`);
+        throw outboxErr;
+      }
+    }
+    
+    // Legacy direct FHIR write (when outbox disabled)
     try {
       const idempotencyKey = `${note.id || id}:${noteEncounterId || 'none'}`;
       const fhirAuthHeader = process.env.FHIR_BEARER_TOKEN
         ? { Authorization: `Bearer ${process.env.FHIR_BEARER_TOKEN}` }
         : {};
-      const actor = (req as any)?.user?.sub || 'unknown';
       await this.auditService.log({
+        tenantId,
         actorId: actor,
         action: 'SOAP_NOTE_APPROVED',
         resourceType: 'soap_note',
@@ -515,6 +593,7 @@ export class SoapController {
         },
       });
       await this.auditService.log({
+        tenantId,
         actorId: actor,
         action: 'FHIR_WRITE_ATTEMPTED',
         resourceType: 'soap_note',
@@ -543,6 +622,7 @@ export class SoapController {
         },
       );
       await this.auditService.log({
+        tenantId,
         actorId: actor,
         action: 'FHIR_WRITE_SUCCEEDED',
         resourceType: 'soap_note',
@@ -560,8 +640,8 @@ export class SoapController {
         this.durationSeconds(start),
       );
     } catch (fhirErr) {
-      const actor = (req as any)?.user?.sub || 'unknown';
       await this.auditService.log({
+        tenantId,
         actorId: actor,
         action: 'FHIR_WRITE_FAILED',
         resourceType: 'soap_note',
@@ -587,6 +667,7 @@ export class SoapController {
   async rejectNote(@Param('id') id: string, @Req() req?: Request) {
     this.logger.log(`Reject SOAP note ${id}`);
     const start = process.hrtime();
+    const tenantId = getTenantId(req as Request);
     const response = await axios.patch(
       `${this.soapServiceUrl}/notes/${id}/reject`,
       {},
@@ -599,6 +680,7 @@ export class SoapController {
     const note = camelResponse(response.data);
     const actor = (req as any)?.user?.sub || 'unknown';
     await this.auditService.log({
+      tenantId,
       actorId: actor,
       action: 'SOAP_NOTE_REJECTED',
       resourceType: 'soap_note',

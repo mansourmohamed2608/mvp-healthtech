@@ -43,8 +43,8 @@ const VoiceAgent = () => {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   const resolveVoiceId = (pref: string) => {
-    if (pref === 'egypt') return 'ar-EG-SalmaNeural';
-    if (pref === 'saudi') return 'ar-SA-HamedNeural';
+    if (pref === 'egypt') return 'egtts';
+    if (pref === 'saudi') return 'saudi-tts';
     return undefined;
   };
 
@@ -444,8 +444,8 @@ const VoiceAgent = () => {
                   className="w-full px-4 py-3 bg-white/70 dark:bg-slate-900/60 border border-white/20 rounded-xl text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent"
                 >
                   <option value="auto">{language === 'ar' ? 'تلقائي حسب اللهجة' : 'Auto by dialect'}</option>
-                  <option value="egypt">{language === 'ar' ? 'مصري (Salma)' : 'Egyptian (Salma)'}</option>
-                  <option value="saudi">{language === 'ar' ? 'سعودي (Hamed)' : 'Saudi (Hamed)'}</option>
+                  <option value="egypt">{language === 'ar' ? 'مصري (EGTTS)' : 'Egyptian (EGTTS)'}</option>
+                  <option value="saudi">{language === 'ar' ? 'سعودي (AhmedEladl)' : 'Saudi (AhmedEladl)'}</option>
                 </select>
               </div>
             </div>

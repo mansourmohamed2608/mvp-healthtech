@@ -21,7 +21,7 @@ export class TwilioService {
     signature: string,
   ): boolean {
     const authToken = process.env.TWILIO_AUTH_TOKEN || '';
-    
+
     if (!authToken) {
       this.logger.warn('TWILIO_AUTH_TOKEN not configured');
       // In development, allow requests without validation
@@ -33,17 +33,12 @@ export class TwilioService {
 
     try {
       // Use Twilio's official validation method
-      const isValid = twilio.validateRequest(
-        authToken,
-        signature,
-        url,
-        params,
-      );
-      
+      const isValid = twilio.validateRequest(authToken, signature, url, params);
+
       if (!isValid) {
         this.logger.warn(`Invalid Twilio signature for URL: ${url}`);
       }
-      
+
       return isValid;
     } catch (error) {
       this.logger.error('Twilio signature validation error', error);
@@ -53,10 +48,11 @@ export class TwilioService {
 
   /**
    * Generate TwiML to start a media stream
+   * Auth credentials (sig, ts) are passed via Custom Parameters, NOT query string
    */
   generateStreamTwiML(streamUrl: string, callSid: string): string {
     const response = new twilio.twiml.VoiceResponse();
-    
+
     // Say a greeting
     response.say(
       {
@@ -66,13 +62,14 @@ export class TwilioService {
       'مرحبا بك في النظام الصحي',
     );
 
-    // Start media streaming (append HMAC signature for WS auth)
+    // Start media streaming — pass HMAC auth via Custom Parameters (NOT query string)
     const start = response.start();
-    const signedStreamUrl = this.signStreamUrl(streamUrl, callSid);
-    start.stream({ url: signedStreamUrl }).parameter({
-      name: 'callSid',
-      value: callSid,
-    });
+    const { sig, ts } = this.generateStreamAuth(callSid);
+    start
+      .stream({ url: streamUrl })
+      .parameter({ name: 'callSid', value: callSid })
+      .parameter({ name: 'sig', value: sig })
+      .parameter({ name: 'ts', value: ts.toString() });
 
     // Pause to keep the stream open (10 minutes = 600 seconds)
     response.pause({ length: 600 });
@@ -80,22 +77,22 @@ export class TwilioService {
     return response.toString();
   }
 
-  private signStreamUrl(streamUrl: string, callSid: string): string {
-    const secret = process.env.TWILIO_AUTH_TOKEN || process.env.WS_SHARED_SECRET || '';
-    if (!secret) {
-      return streamUrl;
-    }
+  /**
+   * Generate HMAC signature and timestamp for WebSocket auth
+   * These are passed as Custom Parameters, validated from 'start' message
+   */
+  private generateStreamAuth(callSid: string): { sig: string; ts: number } {
+    const secret =
+      process.env.TWILIO_AUTH_TOKEN || process.env.WS_SHARED_SECRET || '';
     const ts = Math.floor(Date.now() / 1000);
-    const sig = createHmac('sha256', secret).update(`${callSid}:${ts}`).digest('hex');
-    try {
-      const url = new URL(streamUrl);
-      url.searchParams.set('sig', sig);
-      url.searchParams.set('ts', ts.toString());
-      return url.toString();
-    } catch (_err) {
-      const joiner = streamUrl.includes('?') ? '&' : '?';
-      return `${streamUrl}${joiner}sig=${sig}&ts=${ts}`;
+    if (!secret) {
+      this.logger.warn('No secret configured for stream auth');
+      return { sig: '', ts };
     }
+    const sig = createHmac('sha256', secret)
+      .update(`${callSid}:${ts}`)
+      .digest('hex');
+    return { sig, ts };
   }
 
   /**
@@ -103,7 +100,7 @@ export class TwilioService {
    */
   generateHangupTwiML(message?: string): string {
     const response = new twilio.twiml.VoiceResponse();
-    
+
     if (message) {
       response.say(
         {
@@ -113,7 +110,7 @@ export class TwilioService {
         message,
       );
     }
-    
+
     response.hangup();
     return response.toString();
   }
@@ -148,9 +145,11 @@ export class TwilioService {
       if (!apiKey) missing.push('TWILIO_API_KEY');
       if (!apiSecret) missing.push('TWILIO_API_SECRET');
       if (!twimlAppSid) missing.push('TWILIO_TWIML_APP_SID');
-      
+
       this.logger.error(`Missing Twilio credentials: ${missing.join(', ')}`);
-      throw new Error(`Missing Twilio environment variables: ${missing.join(', ')}`);
+      throw new Error(
+        `Missing Twilio environment variables: ${missing.join(', ')}`,
+      );
     }
 
     // Create an access token

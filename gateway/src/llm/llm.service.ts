@@ -22,6 +22,7 @@ export interface OrchestratePayload {
   history?: ChatMessage[];
   slots?: Record<string, any>;
   dialect?: string;
+  tenantId?: string;
 }
 
 export interface OrchestrateResponse extends LlmResponse {
@@ -32,7 +33,8 @@ export interface OrchestrateResponse extends LlmResponse {
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
   private readonly internalSecret = (() => {
-    if (!process.env.INTERNAL_SECRET) throw new Error('INTERNAL_SECRET not set');
+    if (!process.env.INTERNAL_SECRET)
+      throw new Error('INTERNAL_SECRET not set');
     return process.env.INTERNAL_SECRET;
   })();
   private readonly serviceUrl = process.env.LLM_SERVICE_URL || '';
@@ -42,7 +44,10 @@ export class LlmService {
 
   async infer(message: string, sessionId: string): Promise<LlmResponse> {
     const corr = uuidv4();
-    const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'llm' });
+    const client = this.http.getClient({
+      baseUrl: this.serviceUrl,
+      serviceName: 'llm',
+    });
     const { data } = await client.post<LlmResponse>(
       `/infer`,
       { message, sessionId },
@@ -51,14 +56,20 @@ export class LlmService {
     return data;
   }
 
-  async chat(payload: { message: string; history?: ChatMessage[]; sessionId: string; intent?: string }): Promise<LlmResponse> {
+  async chat(payload: {
+    message: string;
+    history?: ChatMessage[];
+    sessionId: string;
+    intent?: string;
+  }): Promise<LlmResponse> {
     const corr = uuidv4();
-    const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'llm' });
-    const { data } = await client.post<LlmResponse>(
-      `/chat`,
-      payload,
-      { headers: { 'x-correlation-id': corr } },
-    );
+    const client = this.http.getClient({
+      baseUrl: this.serviceUrl,
+      serviceName: 'llm',
+    });
+    const { data } = await client.post<LlmResponse>(`/chat`, payload, {
+      headers: { 'x-correlation-id': corr },
+    });
     return data;
   }
 

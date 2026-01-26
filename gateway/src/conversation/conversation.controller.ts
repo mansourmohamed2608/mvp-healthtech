@@ -1,9 +1,18 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard } from '../auth/tenant.guard';
 import { Roles } from '../auth/roles.decorator';
 import { ConversationService } from './conversation.service';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Roles('clinician')
 @Controller('conversation')
 export class ConversationController {
@@ -15,28 +24,41 @@ export class ConversationController {
     @Query('limit') limit?: string,
   ) {
     const parsed = Number(limit || 50);
-    const messages = await this.conversationService.getHistory(sessionId, Number.isFinite(parsed) ? parsed : 50);
+    const messages = await this.conversationService.getHistory(
+      sessionId,
+      Number.isFinite(parsed) ? parsed : 50,
+    );
     return { messages };
   }
 
   @Post(':sessionId/preferences')
   async updatePreferences(
     @Param('sessionId') sessionId: string,
-    @Body() body: { dialect?: string; voice?: string },
+    @Body() body: { dialect?: string; voice?: string; tenantId?: string },
   ) {
     const state = await this.conversationService.getState(sessionId);
-    const context = (state?.context || {}) as Record<string, any>;
+    const context = state?.context || {};
     const preferences = {
       ...(context.preferences || {}),
       ...(body.dialect !== undefined ? { dialect: body.dialect } : {}),
     } as Record<string, any>;
-    const voiceRaw = typeof body.voice === 'string' ? body.voice.trim() : body.voice;
+    const voiceRaw =
+      typeof body.voice === 'string' ? body.voice.trim() : body.voice;
     if (voiceRaw === undefined) {
       // keep existing
     } else if (!voiceRaw || voiceRaw.toLowerCase() === 'auto') {
       delete preferences.voice;
     } else {
       preferences.voice = voiceRaw;
+    }
+    const tenantRaw =
+      typeof body.tenantId === 'string' ? body.tenantId.trim() : body.tenantId;
+    if (tenantRaw === undefined) {
+      // keep existing
+    } else if (!tenantRaw || tenantRaw.toLowerCase() === 'default') {
+      delete preferences.tenantId;
+    } else {
+      preferences.tenantId = tenantRaw;
     }
     await this.conversationService.updateContext(sessionId, {
       ...context,

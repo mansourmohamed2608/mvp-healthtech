@@ -32,3 +32,10 @@ sentencepiece~=0.2
 # pytest~=8.3
 # black~=24.8
 # ruff~=0.6
+
+# ---- OpenTelemetry (optional tracing) ----
+opentelemetry-api~=1.25
+opentelemetry-sdk~=1.25
+opentelemetry-exporter-otlp-proto-http~=1.25
+opentelemetry-instrumentation-fastapi~=0.46b0
+opentelemetry-instrumentation-httpx~=0.46b0

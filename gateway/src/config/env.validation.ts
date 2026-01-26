@@ -14,10 +14,15 @@ export function validateEnv() {
   ];
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length) {
-    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+    throw new Error(
+      `Missing required environment variables: ${missing.join(', ')}`,
+    );
   }
 
-  if ((process.env.SOAP_ASYNC_ENABLED || '').toLowerCase() === 'true' && !process.env.SOAP_QUEUE_URL) {
+  if (
+    (process.env.SOAP_ASYNC_ENABLED || '').toLowerCase() === 'true' &&
+    !process.env.SOAP_QUEUE_URL
+  ) {
     throw new Error('SOAP_ASYNC_ENABLED is true but SOAP_QUEUE_URL is not set');
   }
 }

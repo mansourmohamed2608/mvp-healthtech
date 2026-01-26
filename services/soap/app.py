@@ -9,6 +9,7 @@ import json
 import logging
 import base64
 import io
+import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -17,6 +18,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
 
 from llm_client import LlmClient
 from soap_pipeline import (
@@ -44,12 +47,6 @@ except Exception:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("soap")
-# Optional OTEL
-try:
-    from otel_setup import init_otel
-    init_otel("soap")
-except Exception:
-    logger.debug("OTEL init skipped for SOAP")
 
 def safe_print(*args, **_kwargs):
     logger.debug("suppressed print", extra={"fields": len(args)})
@@ -68,11 +65,33 @@ def log_safe(level: int, msg: str, request: Request | None = None, session_id: s
     logger.log(level, msg, extra=extra)
 
 app = FastAPI(title="SOAP Generator Service", version="1.1.0")
+
+# CORS: configurable via env, default to localhost only
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[o.strip() for o in CORS_ALLOWED_ORIGINS],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "x-internal-secret", "x-correlation-id", "x-tenant-id"],
+)
+
+# Optional OTEL
+try:
+    from otel_setup import init_otel
+    init_otel("soap", app=app)
+except Exception:
+    logger.debug("OTEL init skipped for SOAP")
+
+soap_requests_total = Counter(
+    "soap_requests_total",
+    "Total SOAP service requests",
+    ["endpoint", "status"],
+)
+soap_latency_seconds = Histogram(
+    "soap_latency_seconds",
+    "SOAP service request latency",
+    ["endpoint", "status"],
+    buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10],
 )
 
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
@@ -87,11 +106,29 @@ _require_env(["DATABASE_URL"])
 
 @app.middleware("http")
 async def internal_auth(request: Request, call_next):
-    if request.url.path.startswith("/health") or request.url.path.startswith("/ready"):
+    if (
+        request.url.path.startswith("/health")
+        or request.url.path.startswith("/ready")
+        or request.url.path.startswith("/metrics")
+    ):
         return await call_next(request)
-    if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
+    # Use constant-time comparison to prevent timing attacks
+    import hmac
+    provided_secret = request.headers.get("x-internal-secret") or ""
+    if not INTERNAL_SECRET or not hmac.compare_digest(provided_secret, INTERNAL_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return await call_next(request)
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    if request.url.path.startswith("/metrics"):
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    start = time.time()
+    response = await call_next(request)
+    status = "ok" if response.status_code < 400 else "error"
+    soap_requests_total.labels(endpoint=request.url.path, status=status).inc()
+    soap_latency_seconds.labels(endpoint=request.url.path, status=status).observe(time.time() - start)
+    return response
 
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://localhost:5001")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/healthtech")

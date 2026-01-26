@@ -6,22 +6,21 @@ Writes SOAP notes to EHR using FHIR R4 API
 """
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 import httpx
 import os
+import time
 from datetime import datetime
 import json
 import logging
+from html import escape
+import re
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fhir")
-# Optional OTEL
-try:
-    from otel_setup import init_otel
-    init_otel("fhir")
-except Exception:
-    logger.debug("OTEL init skipped for FHIR")
 
 
 def log_safe(level: int, msg: str, request: Request | None = None, session_id: str | None = None, **kwargs):
@@ -35,11 +34,33 @@ def log_safe(level: int, msg: str, request: Request | None = None, session_id: s
     logger.log(level, msg, extra=extra)
 
 app = FastAPI(title="FHIR Writeback Service", version="1.0.0")
+
+# CORS: configurable via env, default to localhost only
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[o.strip() for o in CORS_ALLOWED_ORIGINS],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "x-internal-secret", "x-correlation-id", "Idempotency-Key"],
+)
+
+# Optional OTEL
+try:
+    from otel_setup import init_otel
+    init_otel("fhir", app=app)
+except Exception:
+    logger.debug("OTEL init skipped for FHIR")
+
+fhir_requests_total = Counter(
+    "fhir_requests_total",
+    "Total FHIR service requests",
+    ["endpoint", "status"],
+)
+fhir_latency_seconds = Histogram(
+    "fhir_latency_seconds",
+    "FHIR service request latency",
+    ["endpoint", "status"],
+    buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10],
 )
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET")
 if not INTERNAL_SECRET:
@@ -51,11 +72,29 @@ if not FHIR_BASE_URL:
 
 @app.middleware("http")
 async def internal_auth(request: Request, call_next):
-    if request.url.path.startswith("/health") or request.url.path.startswith("/ready"):
+    if (
+        request.url.path.startswith("/health")
+        or request.url.path.startswith("/ready")
+        or request.url.path.startswith("/metrics")
+    ):
         return await call_next(request)
-    if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
+    # Use constant-time comparison to prevent timing attacks
+    import hmac
+    provided_secret = request.headers.get("x-internal-secret") or ""
+    if not INTERNAL_SECRET or not hmac.compare_digest(provided_secret, INTERNAL_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return await call_next(request)
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    if request.url.path.startswith("/metrics"):
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    start = time.time()
+    response = await call_next(request)
+    status = "ok" if response.status_code < 400 else "error"
+    fhir_requests_total.labels(endpoint=request.url.path, status=status).inc()
+    fhir_latency_seconds.labels(endpoint=request.url.path, status=status).observe(time.time() - start)
+    return response
 
 FHIR_CLIENT_ID = os.getenv("FHIR_CLIENT_ID", "")
 FHIR_CLIENT_SECRET = os.getenv("FHIR_CLIENT_SECRET", "")
@@ -68,8 +107,12 @@ class SOAPNote(BaseModel):
     objective: str
     assessment: str
     plan: str
-    icd_codes: Optional[list[str]] = None
-    cpt_codes: Optional[list[str]] = None
+    icd_codes: Optional[list[str]] = Field(default=None, alias="icdCodes")
+    cpt_codes: Optional[list[str]] = Field(default=None, alias="cptCodes")
+    soap_json: Optional[Dict[str, Any]] = Field(default=None, alias="soapJson")
+
+    class Config:
+        allow_population_by_field_name = True
 
 class FHIRWriteRequest(BaseModel):
     soapNote: SOAPNote
@@ -82,6 +125,8 @@ class FHIRWriteResponse(BaseModel):
     success: bool
     documentReferenceId: Optional[str] = None
     encounterId: Optional[str] = None
+    compositionId: Optional[str] = None
+    observationIds: Optional[list[str]] = None
     error: Optional[str] = None
 
 @app.get("/health")
@@ -149,13 +194,6 @@ async def write_soap_to_fhir(
             req.encounterId
         )
         
-        document_reference = build_document_reference(
-            req.soapNote,
-            req.patientId,
-            req.practitionerId,
-            encounter_resource.get("id")
-        )
-        
         # Write to FHIR server
         headers = {}
         if access_token:
@@ -183,8 +221,41 @@ async def write_soap_to_fhir(
                 )
                 raise HTTPException(status_code=502, detail="Failed to create Encounter")
             
-            encounter_id = encounter_response.json().get("id")
-            
+            encounter_id = encounter_response.json().get("id") or req.encounterId
+
+            observation_ids: list[str] = []
+            observation_resources = build_observation_resources(
+                req.soapNote,
+                req.patientId,
+                req.practitionerId,
+                encounter_id,
+            )
+            for obs in observation_resources:
+                obs_response = await client.post(
+                    f"{FHIR_BASE_URL}/Observation",
+                    json=obs,
+                    headers=headers,
+                )
+                if obs_response.status_code not in [200, 201]:
+                    log_safe(
+                        logging.ERROR,
+                        "Failed to create Observation",
+                        request=None,
+                        session_id=req.sessionId,
+                        status=obs_response.status_code,
+                    )
+                    raise HTTPException(status_code=502, detail="Failed to create Observation")
+                obs_id = obs_response.json().get("id")
+                if obs_id:
+                    observation_ids.append(obs_id)
+
+            document_reference = build_document_reference(
+                req.soapNote,
+                req.patientId,
+                req.practitionerId,
+                encounter_id,
+            )
+
             # Create DocumentReference
             doc_response = await client.post(
                 f"{FHIR_BASE_URL}/DocumentReference",
@@ -203,13 +274,48 @@ async def write_soap_to_fhir(
                 raise HTTPException(status_code=502, detail="Failed to create DocumentReference")
             
             doc_id = doc_response.json().get("id")
+
+            composition_id = None
+            composition_resource = build_composition_resource(
+                req.soapNote,
+                req.patientId,
+                req.practitionerId,
+                encounter_id,
+                doc_id,
+                observation_ids,
+            )
+            comp_response = await client.post(
+                f"{FHIR_BASE_URL}/Composition",
+                json=composition_resource,
+                headers=headers,
+            )
+            if comp_response.status_code not in [200, 201]:
+                log_safe(
+                    logging.ERROR,
+                    "Failed to create Composition",
+                    request=None,
+                    session_id=req.sessionId,
+                    status=comp_response.status_code,
+                )
+                raise HTTPException(status_code=502, detail="Failed to create Composition")
+            composition_id = comp_response.json().get("id")
         
-        logger.info("FHIR write ok", extra={"docId": doc_id, "encounterId": encounter_id, "sessionId": req.sessionId})
+        logger.info(
+            "FHIR write ok",
+            extra={
+                "docId": doc_id,
+                "encounterId": encounter_id,
+                "compositionId": composition_id,
+                "sessionId": req.sessionId,
+            },
+        )
         
         return FHIRWriteResponse(
             success=True,
             documentReferenceId=doc_id,
-            encounterId=encounter_id
+            encounterId=encounter_id,
+            compositionId=composition_id,
+            observationIds=observation_ids or None,
         )
         
     except httpx.TimeoutException:
@@ -286,7 +392,7 @@ def build_document_reference(
     soap_note: SOAPNote,
     patient_id: str,
     practitioner_id: str,
-    encounter_id: str
+    encounter_id: Optional[str]
 ) -> Dict[str, Any]:
     """Build FHIR R4 DocumentReference with SOAP note"""
     
@@ -347,13 +453,7 @@ PLAN:
                 "reference": f"Practitioner/{practitioner_id}"
             }
         ],
-        "context": {
-            "encounter": [
-                {
-                    "reference": f"Encounter/{encounter_id}"
-                }
-            ]
-        },
+        "context": {},
         "content": [
             {
                 "attachment": {
@@ -364,6 +464,8 @@ PLAN:
             }
         ]
     }
+    if encounter_id:
+        document["context"]["encounter"] = [{"reference": f"Encounter/{encounter_id}"}]
     
     return document
 
@@ -374,3 +476,143 @@ if __name__ == "__main__":
 def generate_idempotency_key(req: FHIRWriteRequest) -> str:
     # Deterministic idempotency key: note/session/practitioner/patient
     return f"note:{req.sessionId}:{req.patientId}:{req.practitionerId}"
+
+def _normalize_key(key: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", key.lower())
+
+def _get_nested_ci(data: Any, path: list[str]) -> Any:
+    cur = data
+    for part in path:
+        if not isinstance(cur, dict):
+            return None
+        target = _normalize_key(part)
+        match_key = None
+        for key in cur.keys():
+            if _normalize_key(key) == target:
+                match_key = key
+                break
+        if match_key is None:
+            return None
+        cur = cur[match_key]
+    return cur
+
+def _to_xhtml(text: str) -> str:
+    safe = escape(text or "")
+    return f'<div xmlns="http://www.w3.org/1999/xhtml">{safe}</div>'
+
+def _extract_vitals(soap_json: Dict[str, Any] | None) -> Dict[str, str]:
+    if not isinstance(soap_json, dict):
+        return {}
+    vitals_block = _get_nested_ci(
+        soap_json,
+        ["Objective", "Clinical Examination Findings", "Vital Signs"],
+    )
+    if not isinstance(vitals_block, dict):
+        return {}
+    vitals: Dict[str, str] = {}
+    for key, value in vitals_block.items():
+        if not isinstance(value, str) or not value.strip():
+            continue
+        norm = _normalize_key(key)
+        if norm in {"bp", "hr", "temp", "rr", "spo2"}:
+            vitals[norm] = value.strip()
+    return vitals
+
+def build_observation_resources(
+    soap_note: SOAPNote,
+    patient_id: str,
+    practitioner_id: str,
+    encounter_id: Optional[str],
+) -> list[Dict[str, Any]]:
+    vitals = _extract_vitals(soap_note.soap_json)
+    if not vitals:
+        return []
+    now = datetime.utcnow().isoformat() + "Z"
+    loinc = {
+        "bp": ("85354-9", "Blood pressure panel"),
+        "hr": ("8867-4", "Heart rate"),
+        "temp": ("8310-5", "Body temperature"),
+        "rr": ("9279-1", "Respiratory rate"),
+        "spo2": ("59408-5", "Oxygen saturation in Arterial blood by Pulse oximetry"),
+    }
+    observations: list[Dict[str, Any]] = []
+    for key, value in vitals.items():
+        code, display = loinc[key]
+        obs: Dict[str, Any] = {
+            "resourceType": "Observation",
+            "status": "final",
+            "code": {
+                "coding": [
+                    {
+                        "system": "http://loinc.org",
+                        "code": code,
+                        "display": display,
+                    }
+                ]
+            },
+            "subject": {"reference": f"Patient/{patient_id}"},
+            "effectiveDateTime": now,
+            "valueString": value,
+        }
+        if encounter_id:
+            obs["encounter"] = {"reference": f"Encounter/{encounter_id}"}
+        if practitioner_id:
+            obs["performer"] = [{"reference": f"Practitioner/{practitioner_id}"}]
+        observations.append(obs)
+    return observations
+
+def build_composition_resource(
+    soap_note: SOAPNote,
+    patient_id: str,
+    practitioner_id: str,
+    encounter_id: Optional[str],
+    document_reference_id: Optional[str],
+    observation_ids: list[str],
+) -> Dict[str, Any]:
+    now = datetime.utcnow().isoformat() + "Z"
+    sections = []
+    for title, content in (
+        ("Subjective", soap_note.subjective or "Not mentioned."),
+        ("Objective", soap_note.objective or "Not mentioned."),
+        ("Assessment", soap_note.assessment or "Not mentioned."),
+        ("Plan", soap_note.plan or "Not mentioned."),
+    ):
+        section: Dict[str, Any] = {
+            "title": title,
+            "text": {"status": "generated", "div": _to_xhtml(content)},
+        }
+        if title == "Objective" and observation_ids:
+            section["entry"] = [
+                {"reference": f"Observation/{obs_id}"}
+                for obs_id in observation_ids
+            ]
+        sections.append(section)
+    if document_reference_id:
+        sections.append(
+            {
+                "title": "Full Note",
+                "text": {"status": "generated", "div": _to_xhtml("See attached document.")},
+                "entry": [{"reference": f"DocumentReference/{document_reference_id}"}],
+            }
+        )
+    composition: Dict[str, Any] = {
+        "resourceType": "Composition",
+        "status": "final",
+        "type": {
+            "coding": [
+                {
+                    "system": "http://loinc.org",
+                    "code": "11506-3",
+                    "display": "Progress note",
+                }
+            ]
+        },
+        "subject": {"reference": f"Patient/{patient_id}"},
+        "date": now,
+        "author": [{"reference": f"Practitioner/{practitioner_id}"}],
+        "title": "SOAP Clinical Note",
+        "section": sections,
+    }
+    if encounter_id:
+        composition["encounter"] = {"reference": f"Encounter/{encounter_id}"}
+    return composition

@@ -92,6 +92,8 @@ import { join } from 'path';
 })
 export class AppModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(CorrelationMiddleware).forRoutes({ path: '*', method: RequestMethod.ALL });
+    consumer
+      .apply(CorrelationMiddleware)
+      .forRoutes({ path: '*', method: RequestMethod.ALL });
   }
 }

@@ -18,7 +18,9 @@ import { AuditService } from './audit/audit.service';
 import { InternalHttpClient } from './http/internal-http-client.service';
 
 jest.mock('./auth/jwt.guard', () => ({
-  JwtAuthGuard: jest.fn().mockImplementation(() => ({ canActivate: () => true })),
+  JwtAuthGuard: jest
+    .fn()
+    .mockImplementation(() => ({ canActivate: () => true })),
 }));
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -32,14 +34,48 @@ const signJwt = () => {
 describe('Gateway contract (mocked downstream)', () => {
   let app: INestApplication;
   beforeAll(async () => {
-    process.env.INTERNAL_SECRET = process.env.INTERNAL_SECRET || 'test-internal';
-    const jwtService = new JwtService({ secret: process.env.JWT_SECRET || 'test-secret' });
+    process.env.INTERNAL_SECRET =
+      process.env.INTERNAL_SECRET || 'test-internal';
+    const jwtService = new JwtService({
+      secret: process.env.JWT_SECRET || 'test-secret',
+    });
     const moduleFixture: TestingModule = await Test.createTestingModule({
-      controllers: [AsrController, LlmController, TtsController, SoapController, FhirController],
+      controllers: [
+        AsrController,
+        LlmController,
+        TtsController,
+        SoapController,
+        FhirController,
+      ],
       providers: [
-        { provide: AsrService, useValue: { transcribe: jest.fn().mockResolvedValue({ text: 'hello', segments: [], rtf: 0.1 }) } },
-        { provide: LlmService, useValue: { chat: jest.fn().mockResolvedValue({ reply: 'hi', intent: 'general', totalLatencyMs: 10 }) } },
-        { provide: TtsService, useValue: { synthesize: jest.fn().mockResolvedValue({ audioBase64: 'YmFzZTY0', format: 'mulaw', sampleRate: 8000 }) } },
+        {
+          provide: AsrService,
+          useValue: {
+            transcribe: jest
+              .fn()
+              .mockResolvedValue({ text: 'hello', segments: [], rtf: 0.1 }),
+          },
+        },
+        {
+          provide: LlmService,
+          useValue: {
+            chat: jest.fn().mockResolvedValue({
+              reply: 'hi',
+              intent: 'general',
+              totalLatencyMs: 10,
+            }),
+          },
+        },
+        {
+          provide: TtsService,
+          useValue: {
+            synthesize: jest.fn().mockResolvedValue({
+              audioBase64: 'YmFzZTY0',
+              format: 'mulaw',
+              sampleRate: 8000,
+            }),
+          },
+        },
         { provide: JwtService, useValue: jwtService },
         { provide: WsJwtGuard, useValue: { canActivate: () => true } },
         { provide: JwtAuthGuard, useValue: { canActivate: () => true } },
@@ -65,7 +101,9 @@ describe('Gateway contract (mocked downstream)', () => {
   const auth = () => ({ Authorization: `Bearer ${signJwt()}` });
 
   it('/asr/transcribe returns camelCase', async () => {
-    mockedAxios.post.mockResolvedValueOnce({ data: { text: 'hello', segments: [], rtf: 0.1 } });
+    mockedAxios.post.mockResolvedValueOnce({
+      data: { text: 'hello', segments: [], rtf: 0.1 },
+    });
     const res = await request(app.getHttpServer())
       .post('/asr/transcribe')
       .set(auth())
@@ -81,7 +119,9 @@ describe('Gateway contract (mocked downstream)', () => {
   });
 
   it('/llm/chat returns reply', async () => {
-    mockedAxios.post.mockResolvedValueOnce({ data: { reply: 'hi', intent: 'general', totalLatencyMs: 10 } });
+    mockedAxios.post.mockResolvedValueOnce({
+      data: { reply: 'hi', intent: 'general', totalLatencyMs: 10 },
+    });
     const res = await request(app.getHttpServer())
       .post('/llm/chat')
       .set(auth())
@@ -98,15 +138,43 @@ describe('Gateway contract (mocked downstream)', () => {
 
   it('/soap/generate and approve', async () => {
     mockedAxios.post
-      .mockResolvedValueOnce({ data: { id: 'n1', status: 'pending', session_id: 's1', patient_id: 'p1', clinician_id: 'c1' } }) // SOAP generate
-      .mockResolvedValueOnce({ data: { documentReferenceId: 'doc1', encounterId: 'enc1', success: true } }); // FHIR write
-    mockedAxios.patch?.mockResolvedValueOnce({ data: { id: 'n1', status: 'approved', session_id: 's1', patient_id: 'p1', clinician_id: 'c1', encounter_id: 'enc1' } });
+      .mockResolvedValueOnce({
+        data: {
+          id: 'n1',
+          status: 'pending',
+          session_id: 's1',
+          patient_id: 'p1',
+          clinician_id: 'c1',
+        },
+      }) // SOAP generate
+      .mockResolvedValueOnce({
+        data: {
+          documentReferenceId: 'doc1',
+          encounterId: 'enc1',
+          success: true,
+        },
+      }); // FHIR write
+    mockedAxios.patch?.mockResolvedValueOnce({
+      data: {
+        id: 'n1',
+        status: 'approved',
+        session_id: 's1',
+        patient_id: 'p1',
+        clinician_id: 'c1',
+        encounter_id: 'enc1',
+      },
+    });
     mockedAxios.get.mockResolvedValueOnce({ data: { notes: [] } });
 
     const gen = await request(app.getHttpServer())
       .post('/soap/generate')
       .set(auth())
-      .send({ transcript: 't', sessionId: 's1', patientId: 'p1', practitionerId: 'c1' })
+      .send({
+        transcript: 't',
+        sessionId: 's1',
+        patientId: 'p1',
+        practitionerId: 'c1',
+      })
       .expect((r) => {
         if (![200, 201].includes(r.status)) {
           throw new Error(`Unexpected status ${r.status}`);
@@ -125,9 +193,15 @@ describe('Gateway contract (mocked downstream)', () => {
       });
     expect(approve.body.status).toBe('approved');
     // Verify FHIR was called with idempotency header
-    const fhirCall = mockedAxios.post.mock.calls.find(([url]) => `${url}`.includes('/write'));
+    const fhirCall = mockedAxios.post.mock.calls.find(([url]) =>
+      `${url}`.includes('/write'),
+    );
     expect(fhirCall?.[2]?.headers?.['Idempotency-Key']).toBeDefined();
-    expect(fhirCall?.[1]).toMatchObject({ patientId: 'p1', practitionerId: 'c1', sessionId: 's1' });
+    expect(fhirCall?.[1]).toMatchObject({
+      patientId: 'p1',
+      practitionerId: 'c1',
+      sessionId: 's1',
+    });
   });
 
   it('/soap/notes/:id/field updates field', async () => {
@@ -148,7 +222,11 @@ describe('Gateway contract (mocked downstream)', () => {
     const res = await request(app.getHttpServer())
       .patch('/soap/notes/n1/field')
       .set(auth())
-      .send({ fieldPath: 'Subjective.Chief Complaint', audio: 'YmFzZTY0', mode: 'append' })
+      .send({
+        fieldPath: 'Subjective.Chief Complaint',
+        audio: 'YmFzZTY0',
+        mode: 'append',
+      })
       .expect((r) => {
         if (![200, 201].includes(r.status)) {
           throw new Error(`Unexpected status ${r.status}`);

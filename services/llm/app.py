@@ -19,14 +19,22 @@ from rules import SOAPValidator, normalize_medical_abbreviations
 from speaker_rules import SpeakerIdentifier
 
 app = FastAPI(title="LLM Service")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# CORS: configurable via env, default to localhost only
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in CORS_ALLOWED_ORIGINS],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "x-internal-secret", "x-correlation-id", "x-tenant-id"],
+)
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("llm")
 # Optional OTEL (safe no-op if deps/env missing)
 try:
     from otel_setup import init_otel
-    init_otel("llm")
+    init_otel("llm", app=app)
 except Exception:
     logger.debug("OTEL init skipped for LLM")
 if not INTERNAL_SECRET:
@@ -73,7 +81,10 @@ def log_safe(level: int, msg: str, request: Request | None = None, session_id: s
 async def internal_auth(request: Request, call_next):
     if request.url.path.startswith("/health") or request.url.path.startswith("/ready") or request.url.path.startswith("/metrics"):
         return await call_next(request)
-    if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
+    # Use constant-time comparison to prevent timing attacks
+    provided_secret = request.headers.get("x-internal-secret") or ""
+    import hmac
+    if not INTERNAL_SECRET or not hmac.compare_digest(provided_secret, INTERNAL_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return await call_next(request)
 
@@ -181,15 +192,18 @@ class GenerateResponse(BaseModel):
 class RagFaqRequest(BaseModel):
     question: str
     answer: str
+    tenantId: Optional[str] = None
 
 class RagNoteRequest(BaseModel):
     title: Optional[str] = None
     text: str
     metadata: Optional[dict] = None
+    tenantId: Optional[str] = None
 
 class RagQueryRequest(BaseModel):
     query: str
     limit: int = 3
+    tenantId: Optional[str] = None
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_NAME = "Henrychur/MMed-Llama-3-8B"  # English base + Arabic post-processing = 70%+ accuracy
@@ -340,14 +354,14 @@ async def metrics():
 async def add_rag_faq(req: RagFaqRequest):
     if not req.question or not req.answer:
         raise HTTPException(status_code=400, detail="question and answer required")
-    rag_store.add_faq(req.question.strip(), req.answer.strip())
+    rag_store.add_faq(req.question.strip(), req.answer.strip(), tenant_id=req.tenantId)
     return {"ok": True}
 
 @app.post("/rag/note")
 async def add_rag_note(req: RagNoteRequest):
     if not req.text:
         raise HTTPException(status_code=400, detail="text required")
-    rag_store.add_note(req.text.strip(), title=req.title, metadata=req.metadata)
+    rag_store.add_note(req.text.strip(), title=req.title, metadata=req.metadata, tenant_id=req.tenantId)
     return {"ok": True}
 
 @app.post("/rag/query")
@@ -355,18 +369,19 @@ async def query_rag(req: RagQueryRequest):
     if not req.query:
         raise HTTPException(status_code=400, detail="query required")
     limit = max(1, min(req.limit or 3, 6))
-    notes = rag_store.get_relevant_notes(req.query, limit=limit)
-    faqs = rag_store.get_relevant_faqs(req.query, limit=limit)
-    protocols = rag_store.clinic_protocols
+    notes = rag_store.get_relevant_notes(req.query, limit=limit, tenant_id=req.tenantId)
+    faqs = rag_store.get_relevant_faqs(req.query, limit=limit, tenant_id=req.tenantId)
+    protocols = rag_store.get_protocols(req.tenantId)
     return {
         "notes": notes,
         "faqs": faqs,
         "protocols": protocols,
+        "tenantId": req.tenantId or "default",
     }
 
 @app.get("/rag/notes")
-async def list_rag_notes():
-    return {"notes": rag_store.list_notes()}
+async def list_rag_notes(tenantId: Optional[str] = None):
+    return {"notes": rag_store.list_notes(tenant_id=tenantId), "tenantId": tenantId or "default"}
 
 @app.post("/generate", response_model=GenerateResponse)
 async def generate(req: GenerateRequest, request: Request):

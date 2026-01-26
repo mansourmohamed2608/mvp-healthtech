@@ -51,14 +51,6 @@ from starlette.responses import Response
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("asr")
 
-# Optional OTEL
-try:
-    from otel_setup import init_otel
-    init_otel("asr")
-except Exception:
-    logger.debug("OTEL init skipped for ASR")
-
-
 def safe_print(*args, **_kwargs):
     # Avoid leaking PHI via stdout; count fields instead.
     logger.debug("suppressed print", extra={"fields": len(args)})
@@ -163,6 +155,7 @@ COMPUTE_TYPE = pick_compute_type()
 HF_TOKEN = os.getenv("HF_TOKEN", None)
 ENABLE_VAD = os.getenv("ENABLE_VAD", "true").lower() == "true"
 ENABLE_DIARIZATION = os.getenv("ENABLE_DIARIZATION", "true").lower() == "true"
+ENABLE_ALIGNMENT = os.getenv("ENABLE_ALIGNMENT", "false").lower() == "true"
 
 # diarization strategy
 DIARIZE_FIRST = os.getenv("DIARIZE_FIRST", "false").lower() == "true"
@@ -683,7 +676,22 @@ def identify_speaker_roles(segments: List[Dict[str, Any]]) -> List[Dict[str, Any
 # FastAPI app
 # ---------------------------
 app = FastAPI(title="ASR Service (WhisperX)")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# CORS: configurable via env, default to localhost only
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in CORS_ALLOWED_ORIGINS],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "x-internal-secret", "x-correlation-id"],
+)
+
+# Optional OTEL
+try:
+    from otel_setup import init_otel
+    init_otel("asr", app=app)
+except Exception:
+    logger.debug("OTEL init skipped for ASR")
 
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
 
@@ -692,7 +700,10 @@ async def internal_auth(request: Request, call_next):
     # Allow health/ready/metrics without auth
     if request.url.path.startswith("/health") or request.url.path.startswith("/ready") or request.url.path.startswith("/metrics"):
         return await call_next(request)
-    if not INTERNAL_SECRET or request.headers.get("x-internal-secret") != INTERNAL_SECRET:
+    # Use constant-time comparison to prevent timing attacks
+    import hmac
+    provided_secret = request.headers.get("x-internal-secret") or ""
+    if not INTERNAL_SECRET or not hmac.compare_digest(provided_secret, INTERNAL_SECRET):
         raise HTTPException(status_code=403, detail="Unauthorized")
     return await call_next(request)
 
@@ -787,6 +798,7 @@ class TranscriptionRequest(BaseModel):
     dialect: Optional[str] = "egypt"
     language: Optional[str] = "ar"
     enable_diarization: Optional[bool] = True
+    enable_alignment: Optional[bool] = False
     min_speakers: Optional[int] = None
     max_speakers: Optional[int] = None
     diarize_first: Optional[bool] = None
@@ -957,19 +969,24 @@ async def load_models():
     )
     logger.info("Base WhisperX model loaded")
 
-    try:
-        if not os.getenv("HUGGINGFACE_HUB_TOKEN") and HF_TOKEN:
-            os.environ["HUGGINGFACE_HUB_TOKEN"] = HF_TOKEN
-        align_model_a, align_metadata = whisperx.load_align_model(
-            language_code="ar",
-            device=DEVICE,
-            model_name=ALIGNMENT_MODELS["ar"],
-        )
-        logger.info("Alignment model cached", extra={"language": "ar"})
-    except Exception as e:
+    if ENABLE_ALIGNMENT:
+        try:
+            if not os.getenv("HUGGINGFACE_HUB_TOKEN") and HF_TOKEN:
+                os.environ["HUGGINGFACE_HUB_TOKEN"] = HF_TOKEN
+            align_model_a, align_metadata = whisperx.load_align_model(
+                language_code="ar",
+                device=DEVICE,
+                model_name=ALIGNMENT_MODELS["ar"],
+            )
+            logger.info("Alignment model cached", extra={"language": "ar"})
+        except Exception as e:
+            align_model_a = None
+            align_metadata = None
+            logger.warning("Could not cache Arabic aligner", extra={"error": str(e)})
+    else:
         align_model_a = None
         align_metadata = None
-        logger.warning("Could not cache Arabic aligner", extra={"error": str(e)})
+        logger.info("Alignment disabled; skipping align model load")
 
     diar_loaded = False
     if ENABLE_DIARIZATION:
@@ -1043,6 +1060,8 @@ async def transcribe_audio(request: TranscriptionRequest):
         batch_sz = 1 if DEVICE in ("cpu", "mps") else 16
         use_diarize_first = (request.diarize_first if request.diarize_first is not None else DIARIZE_FIRST) \
                             and (request.enable_diarization and diarize_model is not None)
+        use_alignment = request.enable_alignment if request.enable_alignment is not None else ENABLE_ALIGNMENT
+        use_alignment = bool(use_alignment) and ENABLE_ALIGNMENT
 
         detected_lang = request.language or "ar"
 
@@ -1082,7 +1101,7 @@ async def transcribe_audio(request: TranscriptionRequest):
             transcribe_time = time.time() - t_start
             logger.debug("Per-speaker transcription done", extra={"durationSec": round(transcribe_time, 2)})
 
-            if align_model_a is not None and segments:
+            if use_alignment and align_model_a is not None and segments:
                 logger.debug("Running global alignment")
                 segments = align_segments(segments, audio, detected_lang)
                 logger.debug("Alignment complete")
@@ -1136,7 +1155,7 @@ async def transcribe_audio(request: TranscriptionRequest):
             t1 = time.time() - t0
             logger.debug("Transcription done", extra={"durationSec": round(t1, 2)})
 
-            if align_model_a is not None and result.get("segments"):
+            if use_alignment and align_model_a is not None and result.get("segments"):
                 logger.debug("Word-level alignment")
                 result["segments"] = align_segments(result["segments"], audio, detected_lang)
                 logger.debug("Alignment complete")
@@ -1150,16 +1169,17 @@ async def transcribe_audio(request: TranscriptionRequest):
                     min_speakers=request.min_speakers,
                     max_speakers=request.max_speakers,
                 )
-                diarize_df = DataFrame(
-                    diarize_annotation.itertracks(yield_label=True),
-                    columns=["segment", "label", "speaker"],
-                )
-                diarize_df["start"] = diarize_df["segment"].apply(lambda x: x.start)
-                diarize_df["end"] = diarize_df["segment"].apply(lambda x: x.end)
-                with_spk = whisperx.assign_word_speakers(diarize_df, result)
-                if isinstance(with_spk, dict) and "segments" in with_spk:
-                    result["segments"] = with_spk["segments"]
-                speakers_list = sorted(list({s.get("speaker") for s in result["segments"] if s.get("speaker")})) or None
+                if use_alignment:
+                    diarize_df = DataFrame(
+                        diarize_annotation.itertracks(yield_label=True),
+                        columns=["segment", "label", "speaker"],
+                    )
+                    diarize_df["start"] = diarize_df["segment"].apply(lambda x: x.start)
+                    diarize_df["end"] = diarize_df["segment"].apply(lambda x: x.end)
+                    with_spk = whisperx.assign_word_speakers(diarize_df, result)
+                    if isinstance(with_spk, dict) and "segments" in with_spk:
+                        result["segments"] = with_spk["segments"]
+                    speakers_list = sorted(list({s.get("speaker") for s in result["segments"] if s.get("speaker")})) or None
 
             segments = result.get("segments", [])
             segments = identify_speaker_roles(segments)

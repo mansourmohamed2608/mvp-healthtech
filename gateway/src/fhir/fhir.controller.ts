@@ -1,24 +1,38 @@
 // gateway/src/fhir/fhir.controller.ts
-import { Controller, Post, Get, Body, Param, Query, Logger, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Param,
+  Query,
+  Logger,
+  UseGuards,
+} from '@nestjs/common';
 import axios from 'axios';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard } from '../auth/tenant.guard';
 import { Roles } from '../auth/roles.decorator';
 import { MetricsController } from '../metrics/metrics.controller';
 import { wrapError, camelResponse } from '../utils/http-utils';
 import { Req } from '@nestjs/common';
 import { Request } from 'express';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Roles('clinician')
 @Controller('fhir')
 export class FhirController {
   private readonly logger = new Logger(FhirController.name);
-  private readonly fhirServiceUrl = process.env.FHIR_SERVICE_URL || 'http://localhost:5004';
+  private readonly fhirServiceUrl =
+    process.env.FHIR_SERVICE_URL || 'http://localhost:5004';
   private readonly headers = (() => {
-    if (!process.env.INTERNAL_SECRET) throw new Error('INTERNAL_SECRET not set');
+    if (!process.env.INTERNAL_SECRET)
+      throw new Error('INTERNAL_SECRET not set');
     return {
       'x-internal-secret': process.env.INTERNAL_SECRET,
-      ...(process.env.FHIR_BEARER_TOKEN ? { Authorization: `Bearer ${process.env.FHIR_BEARER_TOKEN}` } : {}),
+      ...(process.env.FHIR_BEARER_TOKEN
+        ? { Authorization: `Bearer ${process.env.FHIR_BEARER_TOKEN}` }
+        : {}),
     };
   })();
   private readonly fhirLatency = MetricsController.getFhirLatency();
@@ -38,11 +52,17 @@ export class FhirController {
         data,
         { headers: this.headers },
       );
-      this.fhirLatency.observe({ endpoint: resourceType, status: 'ok' }, this.durationSeconds(start));
+      this.fhirLatency.observe(
+        { endpoint: resourceType, status: 'ok' },
+        this.durationSeconds(start),
+      );
       return camelResponse(response.data);
     } catch (error) {
       this.fhirErrors.inc({ endpoint: resourceType });
-      this.fhirLatency.observe({ endpoint: resourceType, status: 'error' }, this.durationSeconds(start));
+      this.fhirLatency.observe(
+        { endpoint: resourceType, status: 'error' },
+        this.durationSeconds(start),
+      );
       this.logger.error(`FHIR create ${resourceType} error:`, error);
       wrapError(error);
     }

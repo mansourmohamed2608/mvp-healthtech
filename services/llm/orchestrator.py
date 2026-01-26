@@ -55,6 +55,7 @@ class OrchestrateRequest(BaseModel):
     context: dict = {}
     slots: dict = {}
     dialect: str | None = None
+    tenantId: str | None = None
 
 class OrchestrateResponse(BaseModel):
     intent: str
@@ -129,6 +130,7 @@ async def orchestrate(req: OrchestrateRequest):
                         "history": req.history or [],
                         "slots": slots,
                         "dialect": dialect,
+                        "tenantId": req.tenantId,
                     },
                     headers={"x-internal-secret": INTERNAL_SECRET} if INTERNAL_SECRET else {},
                     timeout=30.0,

@@ -2,8 +2,9 @@
 import { Controller, Post, Body, Logger, UseGuards, Req } from '@nestjs/common';
 import { LlmService, LlmResponse } from './llm.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard } from '../auth/tenant.guard';
 import { wrapError, camelResponse } from '../utils/http-utils';
-import type  { Request } from 'express';
+import type { Request } from 'express';
 import { MetricsController } from '../metrics/metrics.controller';
 
 class InferDto {
@@ -19,6 +20,7 @@ class OrchestrateDto {
   transcript: string;
   sessionId: string;
   context?: Record<string, any>;
+  tenantId?: string;
 }
 
 class ChatDto {
@@ -28,7 +30,7 @@ class ChatDto {
   intent?: string;
 }
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('llm')
 export class LlmController {
   private readonly logger = new Logger(LlmController.name);
@@ -37,15 +39,24 @@ export class LlmController {
   constructor(private readonly llmService: LlmService) {}
 
   @Post('infer')
-  async infer(@Body() dto: InferDto, @Req() req: Request): Promise<LlmResponse> {
+  async infer(
+    @Body() dto: InferDto,
+    @Req() req: Request,
+  ): Promise<LlmResponse> {
     this.logger.log(`LLM infer request: sessionId=${dto.sessionId}`);
     const start = process.hrtime();
     try {
       const result = await this.llmService.infer(dto.message, dto.sessionId);
-      this.llmLatency.observe({ endpoint: 'infer', status: 'ok' }, this.durationSeconds(start));
+      this.llmLatency.observe(
+        { endpoint: 'infer', status: 'ok' },
+        this.durationSeconds(start),
+      );
       return camelResponse(result);
     } catch (error) {
-      this.llmLatency.observe({ endpoint: 'infer', status: 'error' }, this.durationSeconds(start));
+      this.llmLatency.observe(
+        { endpoint: 'infer', status: 'error' },
+        this.durationSeconds(start),
+      );
       wrapError(error, req);
     }
   }
@@ -60,10 +71,16 @@ export class LlmController {
         `Generate a SOAP note from this transcript: ${dto.transcript}`,
         `soap-${Date.now()}`,
       );
-      this.llmLatency.observe({ endpoint: 'soap', status: 'ok' }, this.durationSeconds(start));
+      this.llmLatency.observe(
+        { endpoint: 'soap', status: 'ok' },
+        this.durationSeconds(start),
+      );
       return { soap: result };
     } catch (error) {
-      this.llmLatency.observe({ endpoint: 'soap', status: 'error' }, this.durationSeconds(start));
+      this.llmLatency.observe(
+        { endpoint: 'soap', status: 'error' },
+        this.durationSeconds(start),
+      );
       wrapError(error);
     }
   }
@@ -79,10 +96,16 @@ export class LlmController {
         sessionId: dto.sessionId,
         intent: dto.intent,
       });
-      this.llmLatency.observe({ endpoint: 'chat', status: 'ok' }, this.durationSeconds(start));
+      this.llmLatency.observe(
+        { endpoint: 'chat', status: 'ok' },
+        this.durationSeconds(start),
+      );
       return camelResponse(result);
     } catch (error) {
-      this.llmLatency.observe({ endpoint: 'chat', status: 'error' }, this.durationSeconds(start));
+      this.llmLatency.observe(
+        { endpoint: 'chat', status: 'error' },
+        this.durationSeconds(start),
+      );
       wrapError(error, req);
     }
   }
@@ -91,12 +114,15 @@ export class LlmController {
   async orchestrate(@Body() dto: OrchestrateDto) {
     this.logger.log(`Orchestrate request: sessionId=${dto.sessionId}`);
     try {
-      const orchestratorUrl = process.env.ORCHESTRATOR_URL || 'http://localhost:5006';
+      const orchestratorUrl =
+        process.env.ORCHESTRATOR_URL || 'http://localhost:5006';
       const response = await fetch(`${orchestratorUrl}/orchestrate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(process.env.INTERNAL_SECRET ? { 'x-internal-secret': process.env.INTERNAL_SECRET } : {}),
+          ...(process.env.INTERNAL_SECRET
+            ? { 'x-internal-secret': process.env.INTERNAL_SECRET }
+            : {}),
         },
         body: JSON.stringify(dto),
       });
@@ -106,7 +132,9 @@ export class LlmController {
       }
 
       const result = await response.json();
-      this.logger.log(`Orchestration result: intent=${result.intent}, confidence=${result.confidence}, routing=${result.routing}`);
+      this.logger.log(
+        `Orchestration result: intent=${result.intent}, confidence=${result.confidence}, routing=${result.routing}`,
+      );
       return result;
     } catch (error) {
       wrapError(error);

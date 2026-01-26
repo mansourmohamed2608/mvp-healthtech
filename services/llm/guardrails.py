@@ -7,6 +7,8 @@ for medical conversations.
 
 from typing import Dict, Optional, List, Any
 import re
+import os
+import os
 from datetime import datetime
 import logging
 
@@ -241,8 +243,19 @@ class MedicalGuardrails:
 
         except Exception as e:
             logger.error(f"Rate limit check failed: {e}")
-            # On error, allow request (fail open)
-            return {"allowed": True, "remaining": max_requests, "reset_at": None}
+            # Fail-closed in production (configurable via env)
+            fail_open = os.getenv("GUARDRAILS_FAIL_OPEN", "false").lower() == "true"
+            if fail_open:
+                logger.warning("Rate limit check failed, but GUARDRAILS_FAIL_OPEN=true - allowing request")
+                return {"allowed": True, "remaining": max_requests, "reset_at": None}
+            else:
+                logger.warning("Rate limit check failed - blocking request (fail-closed)")
+                return {
+                    "allowed": False,
+                    "remaining": 0,
+                    "reset_at": None,
+                    "message": "خطأ في النظام. يرجى المحاولة لاحقاً."
+                }
 
     def validate_request(
         self,

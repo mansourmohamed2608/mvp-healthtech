@@ -63,7 +63,9 @@ export class CodecNegotiatorService {
       packetLoss: conditions?.packetLoss ?? 1, // Default 1%
     };
 
-    this.logger.log(`Selecting codec for conditions: ${JSON.stringify(network)}`);
+    this.logger.log(
+      `Selecting codec for conditions: ${JSON.stringify(network)}`,
+    );
 
     const preferences: CodecPreference[] = [];
 
@@ -97,7 +99,9 @@ export class CodecNegotiatorService {
       });
     }
 
-    this.logger.log(`Codec preferences: ${preferences.map(p => `${p.codec}(${p.priority})`).join(', ')}`);
+    this.logger.log(
+      `Codec preferences: ${preferences.map((p) => `${p.codec}(${p.priority})`).join(', ')}`,
+    );
     return preferences;
   }
 
@@ -109,7 +113,7 @@ export class CodecNegotiatorService {
     // 1. Good bandwidth (> 20 kbps available)
     // 2. Acceptable latency (< 100ms)
     // 3. Low packet loss (< 5%)
-    
+
     const hasGoodBandwidth = network.bandwidth > 20;
     const hasAcceptableLatency = network.latency < 100;
     const hasLowPacketLoss = network.packetLoss < 5;
@@ -127,7 +131,7 @@ export class CodecNegotiatorService {
     const availableBandwidth = bandwidth * 0.7;
 
     // Adjust for packet loss (use lower bitrate if high loss)
-    const lossAdjustment = Math.max(0.5, 1 - (packetLoss / 20));
+    const lossAdjustment = Math.max(0.5, 1 - packetLoss / 20);
     const targetBitrate = availableBandwidth * lossAdjustment;
 
     // Clamp to valid range for speech
@@ -177,7 +181,7 @@ export class CodecNegotiatorService {
     const preferences = this.selectCodec(conditions);
     return preferences
       .sort((a, b) => a.priority - b.priority)
-      .map(p => this.toTwilioCodec(p.codec));
+      .map((p) => this.toTwilioCodec(p.codec));
   }
 
   /**
@@ -207,18 +211,21 @@ export class CodecNegotiatorService {
   /**
    * Monitor and log codec performance
    */
-  logCodecMetrics(codec: Codec, metrics: {
-    actualBitrate?: number;
-    jitter?: number;
-    packetLoss?: number;
-    roundTripTime?: number;
-  }): void {
+  logCodecMetrics(
+    codec: Codec,
+    metrics: {
+      actualBitrate?: number;
+      jitter?: number;
+      packetLoss?: number;
+      roundTripTime?: number;
+    },
+  ): void {
     this.logger.log(
       `Codec: ${codec} | ` +
-      `Bitrate: ${metrics.actualBitrate || 'N/A'} kbps | ` +
-      `Jitter: ${metrics.jitter || 'N/A'} ms | ` +
-      `Loss: ${metrics.packetLoss || 'N/A'}% | ` +
-      `RTT: ${metrics.roundTripTime || 'N/A'} ms`
+        `Bitrate: ${metrics.actualBitrate || 'N/A'} kbps | ` +
+        `Jitter: ${metrics.jitter || 'N/A'} ms | ` +
+        `Loss: ${metrics.packetLoss || 'N/A'}% | ` +
+        `RTT: ${metrics.roundTripTime || 'N/A'} ms`,
     );
   }
 
@@ -231,7 +238,7 @@ export class CodecNegotiatorService {
       packetLoss: number;
       bandwidth: number;
       latency: number;
-    }
+    },
   ): { shouldChange: boolean; recommendedCodec?: Codec; reason?: string } {
     // If using Opus and experiencing high packet loss
     if (currentCodec === Codec.OPUS && metrics.packetLoss > 5) {
@@ -252,7 +259,8 @@ export class CodecNegotiatorService {
       return {
         shouldChange: true,
         recommendedCodec: Codec.OPUS,
-        reason: 'Network conditions improved, switching to Opus for better quality',
+        reason:
+          'Network conditions improved, switching to Opus for better quality',
       };
     }
 

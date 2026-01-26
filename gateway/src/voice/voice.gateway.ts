@@ -17,20 +17,23 @@ import { MetricsController } from '../metrics/metrics.controller';
 import { safeLog } from '../utils/safe-logger';
 import { AsrService } from '../asr/asr.service';
 
+interface TwilioStartPayload {
+  streamSid: string;
+  accountSid: string;
+  callSid: string;
+  tracks: string[];
+  mediaFormat: {
+    encoding: string;
+    sampleRate: number;
+    channels: number;
+  };
+  customParameters?: Record<string, string>;
+}
+
 interface TwilioMediaMessage {
   event: 'connected' | 'start' | 'media' | 'stop' | 'mark';
   streamSid?: string;
-  start?: {
-    streamSid: string;
-    accountSid: string;
-    callSid: string;
-    tracks: string[];
-    mediaFormat: {
-      encoding: string;
-      sampleRate: number;
-      channels: number;
-    };
-  };
+  start?: TwilioStartPayload;
   media?: {
     track: string;
     chunk: string;
@@ -46,7 +49,7 @@ interface TwilioMediaMessage {
   };
 }
 
-// WS auth: JWT + HMAC(sig, ts, callSid) derived from TWILIO_AUTH_TOKEN/WS_SHARED_SECRET.
+// WS auth: JWT for browser clients, HMAC via Custom Parameters for Twilio streams
 @UseGuards(WsJwtGuard)
 @WebSocketGateway({
   path: '/twilio/ws',
@@ -72,34 +75,39 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {}
 
   handleConnection(client: WebSocket, request: any) {
-    const callSid = this.extractCallSidFromUrl(request.url);
-    safeLog(this.logger, 'log', 'WebSocket connected', { callSid: callSid || 'unknown' });
-    // Attach user claims from guard
-    const user = (client as any).user || {};
-    const isTwilio = (client as any).twilio === true || user.sub === 'twilio';
+    const urlCallSid = this.extractCallSidFromUrl(request.url);
+    safeLog(this.logger, 'log', 'WebSocket connected (pending auth)', {
+      callSid: urlCallSid || 'unknown',
+    });
 
-    // Require authenticated WS
-    if ((!user || !user.sub) && !isTwilio) {
-      this.logger.warn('Unauthorized WS connection attempt');
+    // For Twilio streams, auth is validated on 'start' message, not connection
+    // Mark client as pending - will be validated when 'start' event arrives
+    const user = (client as any).user || {};
+    const pendingTwilioAuth = (client as any).pendingTwilioAuth;
+
+    if (pendingTwilioAuth) {
+      // Twilio stream - auth will be validated on 'start' message
+      safeLog(
+        this.logger,
+        'log',
+        'Twilio stream connection pending auth validation',
+        { callSid: urlCallSid },
+      );
+      return;
+    }
+
+    // Non-Twilio client (browser) - require JWT auth
+    if (!user || !user.sub) {
+      this.logger.warn('Unauthorized non-Twilio WS connection attempt');
       client.close();
       return;
     }
 
-    if (callSid) {
-      const userId = user.sub || `twilio:${callSid}`;
-      this.activeStreams.set(callSid, client);
-      this.audioBuffers.set(callSid, []);
-      this.streamUsers.set(callSid, user);
-      // persist session
-      this.sessionService.create({
-        userId,
-        callSid,
-        metadata: {
-          clinicianId: isTwilio ? null : user.sub,
-          patientId: user.patientId || null,
-          mode: 'voice_agent_va',
-        },
-      }).catch((e) => this.logger.warn(`Session persist failed for ${callSid}: ${e}`));
+    // JWT-authenticated browser client
+    if (urlCallSid) {
+      this.activeStreams.set(urlCallSid, client);
+      this.audioBuffers.set(urlCallSid, []);
+      this.streamUsers.set(urlCallSid, user);
       this.activeGauge.inc();
     }
   }
@@ -136,7 +144,9 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       switch (message.event) {
         case 'connected':
-          safeLog(this.logger, 'log', 'Twilio Media Stream connected', { callSid });
+          safeLog(this.logger, 'log', 'Twilio Media Stream connected', {
+            callSid,
+          });
           break;
 
         case 'start':
@@ -156,11 +166,17 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
           this.logger.debug(`Mark: ${message.mark?.name}`);
           break;
 
-        default:
-          this.logger.warn(`Unknown event type: ${message.event}`);
+        default: {
+          // exhaustive check - this should never happen
+          const exhaustiveCheck: never = message.event;
+          this.logger.warn(`Unknown event type: ${String(exhaustiveCheck)}`);
+        }
       }
     } catch (error) {
-      safeLog(this.logger, 'error', 'Error handling WebSocket message', { callSid, error: (error as any)?.message });
+      safeLog(this.logger, 'error', 'Error handling WebSocket message', {
+        callSid,
+        error: error?.message,
+      });
     }
   }
 
@@ -168,19 +184,60 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     message: TwilioMediaMessage,
     client: WebSocket,
   ) {
-    const { callSid, streamSid, mediaFormat } = message.start!;
-    
-    safeLog(this.logger, 'log', 'Stream started', { streamSid, callSid, mediaFormat });
+    const { callSid, streamSid, mediaFormat, customParameters } =
+      message.start!;
+
+    // Validate auth from Custom Parameters (NOT query string)
+    const authResult = WsJwtGuard.validateTwilioStreamAuth(customParameters);
+    if (!authResult.valid) {
+      this.logger.warn(`Twilio stream auth failed: ${authResult.reason}`, {
+        callSid,
+      });
+      client.close(4001, `Auth failed: ${authResult.reason}`);
+      return;
+    }
+
+    safeLog(this.logger, 'log', 'Stream started (auth validated)', {
+      streamSid,
+      callSid,
+      mediaFormat,
+    });
 
     // Initialize audio buffer for this call
     this.audioBuffers.set(callSid, []);
     this.activeStreams.set(callSid, client);
 
+    // Set up user context
+    const user = { sub: `twilio:${callSid}`, roles: ['twilio'] };
+    this.streamUsers.set(callSid, user);
+    (client as any).user = user;
+    (client as any).callSid = callSid;
+    (client as any).twilio = true;
+
+    // Persist session
+    this.sessionService
+      .create({
+        userId: user.sub,
+        callSid,
+        metadata: {
+          clinicianId: null,
+          patientId: null,
+          mode: 'voice_agent_va',
+        },
+      })
+      .catch((e) =>
+        this.logger.warn(`Session persist failed for ${callSid}: ${e}`),
+      );
+
+    this.activeGauge.inc();
+
     // Send acknowledgment
-    client.send(JSON.stringify({
-      event: 'connected',
-      protocol: 'Call',
-    }));
+    client.send(
+      JSON.stringify({
+        event: 'connected',
+        protocol: 'Call',
+      }),
+    );
   }
 
   private async handleMediaChunk(
@@ -198,7 +255,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Decode base64 audio payload (mulaw format from Twilio)
     const audioChunk = Buffer.from(payload, 'base64');
-    
+
     // Add to buffer
     const buffer = this.audioBuffers.get(callSid) || [];
     buffer.push(audioChunk);
@@ -206,11 +263,12 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Process audio every ~300ms (approximately 2400-4800 bytes for mulaw at 8kHz)
     const totalBytes = buffer.reduce((sum, chunk) => sum + chunk.length, 0);
-    
-    if (totalBytes >= 2400) { // ~300ms of audio
+
+    if (totalBytes >= 2400) {
+      // ~300ms of audio
       // Combine all chunks
       const combinedAudio = Buffer.concat(buffer);
-      
+
       // Clear buffer
       this.audioBuffers.set(callSid, []);
 
@@ -228,7 +286,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client: WebSocket,
   ) {
     const { callSid } = message.stop!;
-    
+
     safeLog(this.logger, 'log', 'Stream stopped', { callSid });
 
     // Process any remaining audio
@@ -245,16 +303,27 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.rateLimit.delete(callSid);
   }
 
-  private async processAudioChunk(callSid: string, audioData: Buffer, isFinal: boolean) {
+  private async processAudioChunk(
+    callSid: string,
+    audioData: Buffer,
+    isFinal: boolean,
+  ) {
     const user = this.streamUsers.get(callSid);
     try {
       // Convert mulaw to base64 for ASR service
       const base64Audio = audioData.toString('base64');
 
-      const streamResp = await this.asrService.stream(base64Audio, callSid, isFinal);
+      const streamResp = await this.asrService.stream(
+        base64Audio,
+        callSid,
+        isFinal,
+      );
 
       if (streamResp.partial) {
-        this.server.emit('partial_transcript', { callSid, text: streamResp.partial });
+        this.server.emit('partial_transcript', {
+          callSid,
+          text: streamResp.partial,
+        });
       }
 
       // If final or stream stop, run full pipeline
@@ -268,8 +337,14 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
 
         if (result.transcript) {
-          safeLog(this.logger, 'log', 'Transcript received', { callSid, length: result.transcript.length });
-          this.server.emit('final_transcript', { callSid, text: result.transcript });
+          safeLog(this.logger, 'log', 'Transcript received', {
+            callSid,
+            length: result.transcript.length,
+          });
+          this.server.emit('final_transcript', {
+            callSid,
+            text: result.transcript,
+          });
         }
 
         if (result.audioResponse) {
@@ -277,14 +352,20 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
       }
     } catch (error) {
-      safeLog(this.logger, 'error', 'Error processing audio chunk', { callSid, error: (error as any)?.message });
-      this.server.emit('transcript_error', { callSid, message: 'ASR unavailable' });
+      safeLog(this.logger, 'error', 'Error processing audio chunk', {
+        callSid,
+        error: error?.message,
+      });
+      this.server.emit('transcript_error', {
+        callSid,
+        message: 'ASR unavailable',
+      });
     }
   }
 
   private async sendAudioToClient(callSid: string, audioData: string) {
     const client = this.activeStreams.get(callSid);
-    
+
     if (!client || client.readyState !== WebSocket.OPEN) {
       this.logger.warn(`Cannot send audio to ${callSid}: client not connected`);
       return;

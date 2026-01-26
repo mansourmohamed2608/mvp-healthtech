@@ -1,0 +1,119 @@
+# infra/k8s/fhir-outbox-worker.yaml
+# PR-8: K8s CronJob for FHIR outbox processing
+# Runs every minute to process pending FHIR writes with retry logic
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fhir-outbox-worker
+  namespace: healthtech
+  labels:
+    app: fhir-outbox-worker
+    component: fhir
+spec:
+  schedule: "*/1 * * * *"  # Every minute
+  concurrencyPolicy: Forbid  # Prevent overlapping runs
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 55  # Must complete before next run
+      template:
+        metadata:
+          labels:
+            app: fhir-outbox-worker
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: outbox-worker
+              image: healthtech/fhir-service:latest
+              imagePullPolicy: Always
+              command: ["python", "outbox_worker.py"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: healthtech-secrets
+                      key: DATABASE_URL
+                - name: FHIR_BASE_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: healthtech-config
+                      key: FHIR_BASE_URL
+                - name: FHIR_SERVICE_URL
+                  value: "http://fhir-service:5004"
+                - name: INTERNAL_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: healthtech-secrets
+                      key: INTERNAL_SECRET
+                - name: FHIR_BEARER_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: healthtech-secrets
+                      key: FHIR_BEARER_TOKEN
+                      optional: true
+                - name: OUTBOX_BATCH_SIZE
+                  value: "50"
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "128Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "256Mi"
+---
+# FHIR Reconciliation Job - runs daily to catch any missed writes
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fhir-reconciliation
+  namespace: healthtech
+  labels:
+    app: fhir-reconciliation
+    component: fhir
+spec:
+  schedule: "0 3 * * *"  # Daily at 3 AM UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600  # 1 hour max
+      template:
+        metadata:
+          labels:
+            app: fhir-reconciliation
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: reconciliation
+              image: healthtech/fhir-service:latest
+              imagePullPolicy: Always
+              command: ["python", "-c", "from outbox_worker import reconcile; reconcile()"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: healthtech-secrets
+                      key: DATABASE_URL
+                - name: FHIR_BASE_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: healthtech-config
+                      key: FHIR_BASE_URL
+                - name: FHIR_SERVICE_URL
+                  value: "http://fhir-service:5004"
+                - name: INTERNAL_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: healthtech-secrets
+                      key: INTERNAL_SECRET
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"

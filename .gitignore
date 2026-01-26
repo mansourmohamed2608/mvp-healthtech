@@ -10,6 +10,7 @@ build/
 coverage/
 .next/
 out/
+frontend-vite/node_modules/
 
 # keep lockfile!
 !pnpm-lock.yaml
@@ -45,7 +46,9 @@ Thumbs.db
 **/venv/
 **/env/
 **/.ruff_cache/
-
+.venv/
+__pycache__/
+*.pyc
 # --- Docker ---
 **/.docker/
 **/docker-data/
@@ -105,3 +108,7 @@ services/**/kaggle_upload/
 **/dist/
 **/build/
 coverage/
+
+# TTS model files
+services/tts/egtts_model/*.partial
+services/tts/egtts_model/*.pth

@@ -155,6 +155,18 @@ CREATE TABLE IF NOT EXISTS appointments (
 );
 CREATE INDEX IF NOT EXISTS idx_appt_doctor_time ON appointments(doctor_id, start_datetime);
 
+CREATE TABLE IF NOT EXISTS conversation_messages (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  session_id text NOT NULL,
+  role text NOT NULL,
+  content text NOT NULL,
+  message_ts bigint NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_conv_messages_session ON conversation_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_conv_messages_session_ts ON conversation_messages(session_id, message_ts);
+
 -- Seed example doctor and schedule
 INSERT INTO doctors (id, name, specialty, clinic_name)
 SELECT '00000000-0000-0000-0000-000000000001', 'دكتور علي', 'جلدية', 'علاجك'

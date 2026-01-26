@@ -12,7 +12,7 @@ interface AudioProcessingOptions {
 @Injectable()
 export class AudioProcessorService {
   private readonly logger = new Logger(AudioProcessorService.name);
-  
+
   // Default processing options for medical audio
   private readonly defaultOptions: AudioProcessingOptions = {
     targetVolume: -16, // Target -16 dB for speech
@@ -36,12 +36,18 @@ export class AudioProcessorService {
 
       // Step 1: Normalize volume
       if (opts.normalizeVolume) {
-        processedBuffer = this.normalizeVolume(processedBuffer, opts.targetVolume!);
+        processedBuffer = this.normalizeVolume(
+          processedBuffer,
+          opts.targetVolume!,
+        );
       }
 
       // Step 2: Remove silence
       if (opts.removeSilence) {
-        processedBuffer = this.removeSilence(processedBuffer, opts.silenceThreshold!);
+        processedBuffer = this.removeSilence(
+          processedBuffer,
+          opts.silenceThreshold!,
+        );
       }
 
       // Step 3: Apply noise reduction (basic high-pass filter)
@@ -49,7 +55,9 @@ export class AudioProcessorService {
         processedBuffer = this.applyNoiseReduction(processedBuffer);
       }
 
-      this.logger.debug(`Audio processed: ${audioBuffer.length} -> ${processedBuffer.length} bytes`);
+      this.logger.debug(
+        `Audio processed: ${audioBuffer.length} -> ${processedBuffer.length} bytes`,
+      );
       return processedBuffer;
     } catch (error) {
       this.logger.error('Error processing audio', error);
@@ -63,8 +71,12 @@ export class AudioProcessorService {
    * Assumes 16-bit PCM audio
    */
   private normalizeVolume(buffer: Buffer, targetDb: number): Buffer {
-    const samples = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.length / 2);
-    
+    const samples = new Int16Array(
+      buffer.buffer,
+      buffer.byteOffset,
+      buffer.length / 2,
+    );
+
     // Calculate RMS (Root Mean Square) of the audio
     let sumSquares = 0;
     for (let i = 0; i < samples.length; i++) {
@@ -72,14 +84,14 @@ export class AudioProcessorService {
       sumSquares += normalized * normalized;
     }
     const rms = Math.sqrt(sumSquares / samples.length);
-    
+
     if (rms === 0) {
       return buffer; // Silence, no normalization needed
     }
 
     // Calculate current dB level
     const currentDb = 20 * Math.log10(rms);
-    
+
     // Calculate gain needed to reach target
     const gainDb = targetDb - currentDb;
     const gainLinear = Math.pow(10, gainDb / 20);
@@ -92,7 +104,10 @@ export class AudioProcessorService {
     for (let i = 0; i < samples.length; i++) {
       const amplified = samples[i] * actualGain;
       // Soft clipping to prevent harsh distortion
-      outputSamples[i] = Math.max(-32768, Math.min(32767, Math.round(amplified)));
+      outputSamples[i] = Math.max(
+        -32768,
+        Math.min(32767, Math.round(amplified)),
+      );
     }
 
     return Buffer.from(outputSamples.buffer);
@@ -103,13 +118,17 @@ export class AudioProcessorService {
    * Keeps only segments above the silence threshold
    */
   private removeSilence(buffer: Buffer, threshold: number): Buffer {
-    const samples = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.length / 2);
+    const samples = new Int16Array(
+      buffer.buffer,
+      buffer.byteOffset,
+      buffer.length / 2,
+    );
     const chunkSize = 160; // 10ms at 16kHz
     const keptChunks: Int16Array[] = [];
 
     for (let i = 0; i < samples.length; i += chunkSize) {
       const chunk = samples.slice(i, Math.min(i + chunkSize, samples.length));
-      
+
       // Calculate chunk energy
       let sumSquares = 0;
       for (let j = 0; j < chunk.length; j++) {
@@ -129,7 +148,10 @@ export class AudioProcessorService {
       return buffer; // All silence, return original
     }
 
-    const totalLength = keptChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const totalLength = keptChunks.reduce(
+      (sum, chunk) => sum + chunk.length,
+      0,
+    );
     const result = new Int16Array(totalLength);
     let offset = 0;
     for (const chunk of keptChunks) {
@@ -145,12 +167,16 @@ export class AudioProcessorService {
    * Removes low-frequency noise below 80 Hz
    */
   private applyNoiseReduction(buffer: Buffer): Buffer {
-    const samples = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.length / 2);
-    
+    const samples = new Int16Array(
+      buffer.buffer,
+      buffer.byteOffset,
+      buffer.length / 2,
+    );
+
     // Simple first-order high-pass filter
     // y[n] = alpha * (y[n-1] + x[n] - x[n-1])
     // alpha = RC / (RC + dt), where fc = 1/(2*pi*RC)
-    
+
     const sampleRate = 16000; // Assume 16kHz
     const cutoffFreq = 80; // Hz
     const rc = 1 / (2 * Math.PI * cutoffFreq);
@@ -164,9 +190,12 @@ export class AudioProcessorService {
     for (let i = 0; i < samples.length; i++) {
       const input = samples[i] / 32768; // Normalize
       const output = alpha * (prevOutput + input - prevInput);
-      
-      filtered[i] = Math.max(-32768, Math.min(32767, Math.round(output * 32768)));
-      
+
+      filtered[i] = Math.max(
+        -32768,
+        Math.min(32767, Math.round(output * 32768)),
+      );
+
       prevInput = input;
       prevOutput = output;
     }
@@ -180,7 +209,7 @@ export class AudioProcessorService {
    */
   mulawToPcm(mulawBuffer: Buffer): Buffer {
     const pcmSamples = new Int16Array(mulawBuffer.length);
-    
+
     for (let i = 0; i < mulawBuffer.length; i++) {
       pcmSamples[i] = this.mulawDecode(mulawBuffer[i]);
     }
@@ -193,7 +222,11 @@ export class AudioProcessorService {
    * Convert back to mulaw for Twilio
    */
   pcmToMulaw(pcmBuffer: Buffer): Buffer {
-    const samples = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.length / 2);
+    const samples = new Int16Array(
+      pcmBuffer.buffer,
+      pcmBuffer.byteOffset,
+      pcmBuffer.length / 2,
+    );
     const mulawBuffer = Buffer.alloc(samples.length);
 
     for (let i = 0; i < samples.length; i++) {
@@ -211,10 +244,10 @@ export class AudioProcessorService {
     const sign = mulaw & 0x80;
     const exponent = (mulaw >> 4) & 0x07;
     const mantissa = mulaw & 0x0f;
-    
+
     let sample = ((mantissa << 3) + 0x84) << exponent;
     if (sign !== 0) sample = -sample;
-    
+
     return sample;
   }
 
@@ -224,18 +257,18 @@ export class AudioProcessorService {
   private mulawEncode(pcm: number): number {
     const sign = pcm < 0 ? 0x80 : 0x00;
     let magnitude = Math.abs(pcm);
-    
+
     magnitude += 0x84;
     if (magnitude > 0x7fff) magnitude = 0x7fff;
-    
+
     let exponent = 7;
     for (let exp = 0; exp < 8; exp++) {
-      if (magnitude <= (0xff << exp)) {
+      if (magnitude <= 0xff << exp) {
         exponent = exp;
         break;
       }
     }
-    
+
     const mantissa = (magnitude >> (exponent + 3)) & 0x0f;
     return ~(sign | (exponent << 4) | mantissa);
   }
@@ -250,7 +283,11 @@ export class AudioProcessorService {
     silenceRatio: number; // 0-1
     clippingRatio: number; // 0-1
   }> {
-    const samples = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.length / 2);
+    const samples = new Int16Array(
+      buffer.buffer,
+      buffer.byteOffset,
+      buffer.length / 2,
+    );
     const sampleRate = 16000; // Assume 16kHz
 
     let sumSquares = 0;
@@ -263,14 +300,15 @@ export class AudioProcessorService {
       const normalized = Math.abs(samples[i]) / 32768;
       sumSquares += normalized * normalized;
       peakAmplitude = Math.max(peakAmplitude, normalized);
-      
+
       if (normalized < silenceThreshold) silentSamples++;
       if (Math.abs(samples[i]) >= 32767) clippedSamples++;
     }
 
     const rms = Math.sqrt(sumSquares / samples.length);
     const avgDb = rms > 0 ? 20 * Math.log10(rms) : -Infinity;
-    const peakDb = peakAmplitude > 0 ? 20 * Math.log10(peakAmplitude) : -Infinity;
+    const peakDb =
+      peakAmplitude > 0 ? 20 * Math.log10(peakAmplitude) : -Infinity;
 
     return {
       duration: samples.length / sampleRate,

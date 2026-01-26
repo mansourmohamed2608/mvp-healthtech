@@ -6,6 +6,7 @@
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { createClient, RedisClientType } from 'redis';
+import { Pool } from 'pg';
 import { LlmService } from '../llm/llm.service';
 import { TtsService } from '../tts/tts.service';
 import { AsrService } from '../asr/asr.service';
@@ -34,6 +35,9 @@ export class ConversationService {
   private readonly inMemoryStore = new Map<string, Message[]>();
   private readonly inMemoryContext = new Map<string, Record<string, any>>();
   private readonly inflight = new Map<string, number>();
+  private readonly pool: Pool | null;
+  private readonly persistTranscripts =
+    (process.env.VA_TRANSCRIPT_PERSIST || '1').toString().trim() !== '0';
   private readonly asrMetric = MetricsController.getAsrLatency();
   private readonly llmMetric = MetricsController.getLlmLatency();
   private readonly ttsMetric = MetricsController.getTtsLatency();
@@ -44,10 +48,9 @@ export class ConversationService {
   private redisAvailable = false;
   private readonly llmEnabled =
     (process.env.VOICE_AGENT_LLM_ENABLED || '1').toString().trim() !== '0';
-  private readonly cannedReply =
-    'مرحبا، هذا مجرد اختبار للصوت في النظام.';
-  private readonly voiceEgypt = process.env.TTS_VOICE_EGYPT || 'ar-EG-SalmaNeural';
-  private readonly voiceSaudi = process.env.TTS_VOICE_SAUDI || 'ar-SA-HamedNeural';
+  private readonly cannedReply = 'مرحبا، هذا مجرد اختبار للصوت في النظام.';
+  private readonly voiceEgypt = process.env.TTS_VOICE_EGYPT || 'egtts';
+  private readonly voiceSaudi = process.env.TTS_VOICE_SAUDI || 'saudi-tts';
 
   constructor(
     private readonly llmService: LlmService,
@@ -55,6 +58,8 @@ export class ConversationService {
     private readonly asrService: AsrService,
     private readonly vaBookingService: VaBookingService,
   ) {
+    const dbUrl = process.env.DATABASE_URL;
+    this.pool = dbUrl ? new Pool({ connectionString: dbUrl }) : null;
     // Try to connect to Redis, but don't block if it fails
     try {
       this.client = createClient({
@@ -77,11 +82,15 @@ export class ConversationService {
 
       // Connect without blocking
       this.client.connect().catch((err) => {
-        this.logger.warn('⚠️  Redis connection failed, using in-memory storage');
+        this.logger.warn(
+          '⚠️  Redis connection failed, using in-memory storage',
+        );
         this.redisAvailable = false;
       });
     } catch (error) {
-      this.logger.warn('⚠️  Redis initialization failed, using in-memory storage');
+      this.logger.warn(
+        '⚠️  Redis initialization failed, using in-memory storage',
+      );
       this.redisAvailable = false;
     }
   }
@@ -145,6 +154,7 @@ export class ConversationService {
         messages.splice(0, messages.length - this.MAX_MESSAGES);
       }
       this.inMemoryStore.set(sessionId, messages);
+      await this.persistMessage(sessionId, message);
       this.logger.debug(`Appended ${role} message to ${sessionId} (in-memory)`);
       return;
     }
@@ -163,6 +173,7 @@ export class ConversationService {
       // Reset TTL
       await this.client.expire(key, this.CONVERSATION_TTL);
 
+      await this.persistMessage(sessionId, message);
       this.logger.debug(`Appended ${role} message to ${sessionId}`);
     } catch (error) {
       this.logger.warn('Redis error, falling back to in-memory');
@@ -173,6 +184,7 @@ export class ConversationService {
         messages.splice(0, messages.length - this.MAX_MESSAGES);
       }
       this.inMemoryStore.set(sessionId, messages);
+      await this.persistMessage(sessionId, message);
     }
   }
 
@@ -183,18 +195,33 @@ export class ConversationService {
     // Use in-memory storage if Redis unavailable
     if (!this.redisAvailable || !this.client) {
       const messages = this.inMemoryStore.get(sessionId) || [];
-      return messages.slice(-limit);
+      const recent = messages.slice(-limit);
+      if (recent.length > 0) {
+        return recent;
+      }
+      const persisted = await this.loadPersistedMessages(sessionId, limit);
+      return persisted.length ? persisted : recent;
     }
 
     // Use Redis if available
     try {
       const key = `conv:${sessionId}`;
       const items = await this.client.lRange(key, -limit, -1);
-      return items.map((x) => JSON.parse(x) as Message);
+      const parsed = items.map((x) => JSON.parse(x) as Message);
+      if (parsed.length > 0) {
+        return parsed;
+      }
+      const persisted = await this.loadPersistedMessages(sessionId, limit);
+      return persisted.length ? persisted : parsed;
     } catch (error) {
       this.logger.warn('Redis error, falling back to in-memory');
       const messages = this.inMemoryStore.get(sessionId) || [];
-      return messages.slice(-limit);
+      const recent = messages.slice(-limit);
+      if (recent.length > 0) {
+        return recent;
+      }
+      const persisted = await this.loadPersistedMessages(sessionId, limit);
+      return persisted.length ? persisted : recent;
     }
   }
 
@@ -225,7 +252,8 @@ export class ConversationService {
         sessionId,
         messages,
         context,
-        lastActivity: messages.length > 0 ? messages[messages.length - 1].timestamp : 0,
+        lastActivity:
+          messages.length > 0 ? messages[messages.length - 1].timestamp : 0,
       };
     } catch (error) {
       this.logger.error(`Failed to get state for ${sessionId}:`, error);
@@ -236,7 +264,10 @@ export class ConversationService {
   /**
    * Update conversation context (e.g., intent, entities)
    */
-  async updateContext(sessionId: string, context: Record<string, any>): Promise<void> {
+  async updateContext(
+    sessionId: string,
+    context: Record<string, any>,
+  ): Promise<void> {
     if (!this.redisAvailable || !this.client) {
       this.inMemoryContext.set(sessionId, context || {});
       this.logger.debug(`Context updated (in-memory mode)`);
@@ -272,7 +303,19 @@ export class ConversationService {
       await this.client.del([key, contextKey]);
       this.logger.log(`Cleared conversation for ${sessionId}`);
     } catch (error) {
-      this.logger.error(`Failed to clear conversation for ${sessionId}:`, error);
+      this.logger.error(
+        `Failed to clear conversation for ${sessionId}:`,
+        error,
+      );
+    }
+  }
+
+  async onModuleDestroy() {
+    if (this.client) {
+      await this.client.quit();
+    }
+    if (this.pool) {
+      await this.pool.end();
     }
   }
 
@@ -345,23 +388,45 @@ export class ConversationService {
     this.inflight.set(input.callSid, current + 1);
     try {
       const existingState = await this.getState(input.callSid);
-      const existingContext = (existingState?.context || {}) as Record<string, any>;
-      const preferences = (existingContext.preferences || {}) as Record<string, any>;
+      const existingContext = existingState?.context || {};
+      const preferences = (existingContext.preferences || {}) as Record<
+        string,
+        any
+      >;
+      const preferredTenant =
+        typeof preferences.tenantId === 'string'
+          ? preferences.tenantId.trim()
+          : '';
+      const tenantId =
+        preferredTenant ||
+        process.env.DEFAULT_TENANT_ID ||
+        process.env.VA_TENANT_ID ||
+        'default';
       const preferredDialect = this.normalizeDialect(preferences.dialect);
+      const voiceDialect = this.voiceToDialect(preferences.voice);
       const storedDialect = this.normalizeDialect(existingContext.dialect);
       const hintDialect =
         preferredDialect && preferredDialect !== 'auto'
           ? preferredDialect
-          : storedDialect || 'egypt';
+          : voiceDialect || storedDialect || 'egypt';
 
       const asrStart = process.hrtime();
       // 1. Transcribe audio using ASR service (with timeout/error handling)
       const { text: transcript } = await this.asrService.transcribe(
         input.audio,
         input.callSid,
-        { identifySpeakers: true, dialect: hintDialect },
+        {
+          identifySpeakers: false,
+          dialect: hintDialect,
+          enableDiarization: false,
+          diarizeFirst: false,
+          enableAlignment: false,
+        },
       );
-      this.asrMetric.observe({ endpoint: 'transcribe', status: 'ok' }, this.durationSeconds(asrStart));
+      this.asrMetric.observe(
+        { endpoint: 'transcribe', status: 'ok' },
+        this.durationSeconds(asrStart),
+      );
 
       if (!transcript || transcript.trim() === '') {
         // No speech detected, return empty
@@ -374,7 +439,9 @@ export class ConversationService {
       }
 
       // Avoid logging PHI; only log lengths
-      this.logger.log(`Transcribed (${input.callSid}): ${transcript.length} chars`);
+      this.logger.log(
+        `Transcribed (${input.callSid}): ${transcript.length} chars`,
+      );
 
       // Save user message to conversation
       await this.appendMessage(input.callSid, 'user', transcript);
@@ -383,13 +450,16 @@ export class ConversationService {
       const resolvedDialect =
         preferredDialect && preferredDialect !== 'auto'
           ? preferredDialect
-          : detectedDialect || storedDialect || 'egypt';
+          : voiceDialect || detectedDialect || storedDialect || 'egypt';
 
       if (resolvedDialect !== storedDialect || preferredDialect) {
         await this.updateContext(input.callSid, {
           ...existingContext,
           dialect: resolvedDialect,
-          preferences: { ...preferences, dialect: preferredDialect || preferences.dialect || 'auto' },
+          preferences: {
+            ...preferences,
+            dialect: preferredDialect || preferences.dialect || 'auto',
+          },
         });
       }
 
@@ -406,13 +476,16 @@ export class ConversationService {
           mode: 'voice_agent_va',
           slots,
           dialect: resolvedDialect,
+          tenantId,
         };
         try {
           const llmResult = await this.llmService.orchestrate(chatPayload);
           response = llmResult.reply || this.cannedReply;
           if (llmResult.slots) {
             await this.updateSlots(input.callSid, llmResult.slots);
-            const bookingReady = this.bookingReady(llmResult.slots as SlotState);
+            const bookingReady = this.bookingReady(
+              llmResult.slots as SlotState,
+            );
             if (bookingReady) {
               const booking = await this.vaBookingService.tryBook(
                 llmResult.slots as SlotState,
@@ -420,27 +493,43 @@ export class ConversationService {
               );
               if (booking.success) {
                 response += `\nتم حجز موعد مع ${booking.doctorName} بتاريخ ${booking.start?.slice(0, 10)} في ${booking.start?.slice(11, 16)}. سنقوم بالتأكيد من مركز علاجك.`;
-                await this.updateSlots(input.callSid, { ...(llmResult.slots as any), booked: true });
+                await this.updateSlots(input.callSid, {
+                  ...(llmResult.slots as any),
+                  booked: true,
+                });
               } else if (booking.alternatives && booking.alternatives.length) {
                 const opts = booking.alternatives
-                  .map((o) => `${o.start.slice(0, 10)} الساعة ${o.start.slice(11, 16)}`)
+                  .map(
+                    (o) =>
+                      `${o.start.slice(0, 10)} الساعة ${o.start.slice(11, 16)}`,
+                  )
                   .join('، ');
                 response += `\n${booking.message || 'الموعد غير متاح'}، أقدر أقترح: ${opts}. أيهم يناسبك؟`;
               }
             }
           }
-          this.llmMetric.observe({ endpoint: 'chat', status: 'ok' }, this.durationSeconds(llmStart));
-          this.logger.log(`LLM response (${input.callSid}) length=${response?.length ?? 0}`);
+          this.llmMetric.observe(
+            { endpoint: 'chat', status: 'ok' },
+            this.durationSeconds(llmStart),
+          );
+          this.logger.log(
+            `LLM response (${input.callSid}) length=${response?.length ?? 0}`,
+          );
         } catch (error) {
-          this.llmMetric.observe({ endpoint: 'chat', status: 'error' }, this.durationSeconds(llmStart));
+          this.llmMetric.observe(
+            { endpoint: 'chat', status: 'error' },
+            this.durationSeconds(llmStart),
+          );
           safeLog(this.logger, 'warn', 'LLM unavailable, using canned reply', {
             callSid: input.callSid,
-            error: (error as any)?.message,
+            error: error?.message,
           });
           response = this.cannedReply;
         }
       } else {
-        this.logger.debug(`LLM disabled, using canned reply for ${input.callSid}`);
+        this.logger.debug(
+          `LLM disabled, using canned reply for ${input.callSid}`,
+        );
       }
 
       // Save assistant message to conversation
@@ -449,10 +538,17 @@ export class ConversationService {
       // 3. Synthesize voice response using TTS
       const ttsStart = process.hrtime();
       const voice = this.selectVoice(resolvedDialect, preferences.voice);
-      const ttsResult = await this.ttsService.synthesize(response, input.callSid, voice);
+      const ttsResult = await this.ttsService.synthesize(
+        response,
+        input.callSid,
+        voice,
+      );
       // TTS returns base64 mulaw (8k) when available; Twilio media streams expect mulaw payloads.
       const audioResponse = ttsResult.audioBase64;
-      this.ttsMetric.observe({ endpoint: 'synthesize', status: 'ok' }, this.durationSeconds(ttsStart));
+      this.ttsMetric.observe(
+        { endpoint: 'synthesize', status: 'ok' },
+        this.durationSeconds(ttsStart),
+      );
 
       return {
         transcript,
@@ -486,6 +582,66 @@ export class ConversationService {
     return normalized;
   }
 
+  private async persistMessage(
+    sessionId: string,
+    message: Message,
+  ): Promise<void> {
+    if (!this.pool || !this.persistTranscripts) return;
+    try {
+      await this.pool.query(
+        `INSERT INTO conversation_messages (session_id, role, content, message_ts, metadata)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          sessionId,
+          message.role,
+          message.content,
+          message.timestamp,
+          message.metadata || {},
+        ],
+      );
+    } catch (error) {
+      this.logger.warn(`Transcript persist failed for ${sessionId}`);
+    }
+  }
+
+  private async loadPersistedMessages(
+    sessionId: string,
+    limit: number,
+  ): Promise<Message[]> {
+    if (!this.pool || !this.persistTranscripts) return [];
+    try {
+      const result = await this.pool.query(
+        `SELECT role, content, message_ts, metadata
+         FROM conversation_messages
+         WHERE session_id = $1
+         ORDER BY message_ts DESC
+         LIMIT $2`,
+        [sessionId, limit],
+      );
+      return result.rows
+        .map((row) => ({
+          role: row.role,
+          content: row.content,
+          timestamp: Number(row.message_ts) || Date.now(),
+          metadata: row.metadata || undefined,
+        }))
+        .reverse();
+    } catch (error) {
+      this.logger.warn(`Transcript load failed for ${sessionId}`);
+      return [];
+    }
+  }
+
+  private voiceToDialect(voice?: string): string | null {
+    if (!voice) return null;
+    const normalized = voice.toString().trim().toLowerCase();
+    if (!normalized || normalized === 'auto') return null;
+    if (normalized.includes('saudi')) return 'saudi';
+    if (normalized.includes('egtts') || normalized.includes('egypt'))
+      return 'egypt';
+    return null;
+  }
+
   private detectDialect(text: string): string | null {
     if (!text) return null;
     const lowered = text.toLowerCase();
@@ -498,40 +654,58 @@ export class ConversationService {
       'مش',
       'ليه',
       'أيوه',
+      'ايوه',
       'لسه',
       'دلوقتي',
       'بتاع',
       'كده',
       'حاجة',
+      'عاوزة',
+      'مفيش',
+      'فين',
+      'عايزين',
     ];
     const saudiMarkers = [
       'ايش',
       'إيش',
       'وش',
       'وشلون',
+      'وش الاسم',
       'ليش',
       'ابغى',
       'أبغى',
+      'يبغى',
+      'تبي',
+      'تبغى',
       'ودي',
       'الحين',
       'مره',
       'ترى',
       'حيل',
+      'ياخي',
+      'دام',
     ];
-    const egyptScore = egyptianMarkers.reduce(
-      (score, marker) => (lowered.includes(marker) ? score + 1 : score),
-      0,
-    );
-    const saudiScore = saudiMarkers.reduce(
-      (score, marker) => (lowered.includes(marker) ? score + 1 : score),
-      0,
-    );
+    const egyptPhone = /\b01\d{9}\b/;
+    const saudiPhone = /\b05\d{8}\b/;
+    const egyptScore =
+      egyptianMarkers.reduce(
+        (score, marker) => (lowered.includes(marker) ? score + 1 : score),
+        0,
+      ) + (egyptPhone.test(lowered) ? 3 : 0);
+    const saudiScore =
+      saudiMarkers.reduce(
+        (score, marker) => (lowered.includes(marker) ? score + 1 : score),
+        0,
+      ) + (saudiPhone.test(lowered) ? 3 : 0);
     if (egyptScore === 0 && saudiScore === 0) return null;
     if (egyptScore === saudiScore) return null;
     return egyptScore > saudiScore ? 'egypt' : 'saudi';
   }
 
-  private selectVoice(dialect: string, preferredVoice?: string): string | undefined {
+  private selectVoice(
+    dialect: string,
+    preferredVoice?: string,
+  ): string | undefined {
     if (preferredVoice) return preferredVoice;
     if (dialect === 'saudi') return this.voiceSaudi;
     return this.voiceEgypt;

@@ -1,5 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, APP_GUARD, CanActivate, ExecutionContext } from '@nestjs/common';
+import {
+  INestApplication,
+  APP_GUARD,
+  CanActivate,
+  ExecutionContext,
+} from '@nestjs/common';
 import request from 'supertest';
 import { AsrController } from './asr/asr.controller';
 import { LlmController } from './llm/llm.controller';
@@ -23,9 +28,30 @@ describe('Gateway smoke tests (mocked services)', () => {
     const moduleBuilder = Test.createTestingModule({
       controllers: [AsrController, LlmController, TtsController],
       providers: [
-        { provide: AsrService, useValue: { transcribe: jest.fn().mockResolvedValue({ text: 'hello world' }), stream: jest.fn() } },
-        { provide: LlmService, useValue: { infer: jest.fn(), chat: jest.fn().mockResolvedValue({ reply: 'chat reply', intent: 'general' }) } },
-        { provide: TtsService, useValue: { synthesize: jest.fn().mockResolvedValue({ audioBase64: 'YmFzZTY0', format: 'mulaw' }) } },
+        {
+          provide: AsrService,
+          useValue: {
+            transcribe: jest.fn().mockResolvedValue({ text: 'hello world' }),
+            stream: jest.fn(),
+          },
+        },
+        {
+          provide: LlmService,
+          useValue: {
+            infer: jest.fn(),
+            chat: jest
+              .fn()
+              .mockResolvedValue({ reply: 'chat reply', intent: 'general' }),
+          },
+        },
+        {
+          provide: TtsService,
+          useValue: {
+            synthesize: jest
+              .fn()
+              .mockResolvedValue({ audioBase64: 'YmFzZTY0', format: 'mulaw' }),
+          },
+        },
       ],
     })
       .overrideGuard(JwtAuthGuard)

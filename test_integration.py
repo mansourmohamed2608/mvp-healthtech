@@ -3,6 +3,7 @@
 End-to-End Integration Test
 Tests the complete flow: Audio → ASR → LLM → SOAP → FHIR
 """
+import os
 import requests
 import base64
 import json
@@ -97,24 +98,29 @@ def test_clinical_notes_flow():
         return False
     
     # Step 4: Create FHIR resource
-    print("\n🏥 Step 4: Creating FHIR Encounter...")
+    print("\n🏥 Step 4: Writing FHIR resources...")
     time.sleep(1)
     try:
+        internal_secret = os.getenv("INTERNAL_SECRET", "")
+        headers = {"Content-Type": "application/json"}
+        if internal_secret:
+            headers["x-internal-secret"] = internal_secret
         fhir_response = requests.post(
-            "http://localhost:5004/create-encounter",
+            "http://localhost:5004/write",
             json={
-                "patient_id": "test-patient-001",
-                "encounter_id": "test-enc-001",
-                "soap_note": soap_note,
-                "practitioner_id": "dr-test",
-                "date": "2025-10-28T12:00:00Z"
-            }
+                "soapNote": soap_note,
+                "patientId": "test-patient-001",
+                "encounterId": "test-enc-001",
+                "practitionerId": "dr-test",
+                "sessionId": "session-test-001",
+            },
+            headers=headers,
         )
         if fhir_response.status_code in [200, 201]:
             fhir_resource = fhir_response.json()
-            print(f"✅ FHIR Resource Created: {fhir_resource.get('id', 'N/A')}")
-            print(f"   Resource Type: {fhir_resource.get('resourceType', 'N/A')}")
-            print(f"   Status: {fhir_resource.get('status', 'N/A')}")
+            print(f"✅ FHIR write OK: {fhir_resource.get('documentReferenceId', 'N/A')}")
+            print(f"   Encounter: {fhir_resource.get('encounterId', 'N/A')}")
+            print(f"   Composition: {fhir_resource.get('compositionId', 'N/A')}")
         else:
             print(f"❌ FHIR failed: {fhir_response.text}")
             return False

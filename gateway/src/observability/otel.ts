@@ -6,7 +6,12 @@ import { Logger } from '@nestjs/common';
  * and continue without tracing.
  */
 export async function initOtel() {
-  const enabled = (process.env.OTEL_ENABLED || process.env.ENABLE_OTEL || '').toLowerCase() === 'true' || process.env.OTEL_ENABLED === '1';
+  const enabled =
+    (
+      process.env.OTEL_ENABLED ||
+      process.env.ENABLE_OTEL ||
+      ''
+    ).toLowerCase() === 'true' || process.env.OTEL_ENABLED === '1';
   if (!enabled) {
     return;
   }
@@ -14,14 +19,34 @@ export async function initOtel() {
   const logger = new Logger('OTEL');
   try {
     // Dynamic import to avoid hard dependency at runtime
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { NodeSDK } = require('@opentelemetry/sdk-node');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
+
+    const {
+      getNodeAutoInstrumentations,
+    } = require('@opentelemetry/auto-instrumentations-node');
+
+    const {
+      OTLPTraceExporter,
+    } = require('@opentelemetry/exporter-trace-otlp-http');
+
+    const { Resource } = require('@opentelemetry/resources');
+
+    const {
+      SemanticResourceAttributes,
+    } = require('@opentelemetry/semantic-conventions');
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    const exporter = endpoint
+      ? new OTLPTraceExporter({ url: endpoint })
+      : new OTLPTraceExporter();
+    const resource = new Resource({
+      [SemanticResourceAttributes.SERVICE_NAME]:
+        process.env.OTEL_SERVICE_NAME || 'gateway',
+    });
     const sdk = new NodeSDK({
-      serviceName: 'gateway',
+      resource,
       instrumentations: [getNodeAutoInstrumentations()],
-      otlpExporter: undefined,
+      traceExporter: exporter,
     });
     await sdk.start();
     logger.log('OpenTelemetry initialized (gateway)');

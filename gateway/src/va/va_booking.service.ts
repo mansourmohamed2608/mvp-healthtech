@@ -46,7 +46,8 @@ export class VaBookingService {
 
   async tryBook(slots: SlotState, sessionId: string): Promise<BookingResult> {
     if (!this.pool) return { success: false, message: 'DB not configured' };
-    if (!this.ready(slots)) return { success: false, message: 'Slots incomplete' };
+    if (!this.ready(slots))
+      return { success: false, message: 'Slots incomplete' };
 
     const client = await this.pool.connect();
     try {
@@ -67,7 +68,10 @@ export class VaBookingService {
         doctorRow = rows[0];
       }
       if (!doctorRow) {
-        return { success: false, message: 'لا يوجد طبيب متاح لهذا التخصص الآن' };
+        return {
+          success: false,
+          message: 'لا يوجد طبيب متاح لهذا التخصص الآن',
+        };
       }
       const doctorId = doctorRow.id as string;
 
@@ -164,7 +168,9 @@ export class VaBookingService {
           hour = parseInt(digits[0], 10);
         }
       }
-      const d = new Date(`${isoDate}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`);
+      const d = new Date(
+        `${isoDate}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`,
+      );
       return isNaN(d.getTime()) ? null : d;
     } catch {
       return null;
@@ -185,7 +191,10 @@ export class VaBookingService {
     return null;
   }
 
-  private suggestAlternatives(start: Date, schedules: any[]): { start: string; end: string }[] {
+  private suggestAlternatives(
+    start: Date,
+    schedules: any[],
+  ): { start: string; end: string }[] {
     const suggestions: { start: string; end: string }[] = [];
     for (const s of schedules) {
       const [sh, sm] = (s.start_time as string).split(':').map(Number);
@@ -197,7 +206,10 @@ export class VaBookingService {
         candStart.setUTCHours(Math.floor(t / 60), t % 60, 0, 0);
         const candEnd = new Date(candStart.getTime() + 30 * 60 * 1000);
         if (candStart > start && suggestions.length < 3) {
-          suggestions.push({ start: candStart.toISOString(), end: candEnd.toISOString() });
+          suggestions.push({
+            start: candStart.toISOString(),
+            end: candEnd.toISOString(),
+          });
         }
       }
       if (suggestions.length >= 3) break;

@@ -6,7 +6,9 @@ import { SessionService } from '../session/session.service';
 describe('VoiceGateway minimal contract', () => {
   it('extractCallSidFromUrl parses sid', () => {
     const gateway = new VoiceGateway({} as any, {} as any);
-    const sid = (gateway as any).extractCallSidFromUrl('/twilio/ws/CA1234?token=abc');
+    const sid = (gateway as any).extractCallSidFromUrl(
+      '/twilio/ws/CA1234?token=abc',
+    );
     expect(sid).toBe('CA1234');
   });
 });

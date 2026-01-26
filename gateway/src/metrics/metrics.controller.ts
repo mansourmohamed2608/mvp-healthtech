@@ -3,9 +3,11 @@
  * Metrics Controller - Prometheus metrics export
  * Week 3 Day 19 (Oct 13, 2025)
  * Enhanced with custom metrics for ASR/LLM/TTS latency
+ * NOTE: Metrics are global aggregates, not PHI, but TenantGuard added for defense-in-depth
  */
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard } from '../auth/tenant.guard';
 import {
   Registry,
   collectDefaultMetrics,
@@ -78,6 +80,14 @@ const fhirLatency = new Histogram({
   registers: [registry],
 });
 
+const pipelineLatency = new Histogram({
+  name: 'va_pipeline_latency_seconds',
+  help: 'End-to-end voice agent pipeline latency in seconds',
+  labelNames: ['status'],
+  buckets: [0.5, 1, 2, 3, 5, 8, 13, 21],
+  registers: [registry],
+});
+
 const soapErrors = new Counter({
   name: 'soap_errors_total',
   help: 'Total SOAP errors',
@@ -92,7 +102,7 @@ const fhirErrors = new Counter({
   registers: [registry],
 });
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('metrics')
 export class MetricsController {
   @Get()
@@ -131,6 +141,10 @@ export class MetricsController {
 
   static getFhirLatency() {
     return fhirLatency;
+  }
+
+  static getPipelineLatency() {
+    return pipelineLatency;
   }
 
   static getSoapErrors() {

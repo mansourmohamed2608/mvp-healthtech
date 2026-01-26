@@ -9,7 +9,7 @@ const buildContext = (url: string): ExecutionContext =>
       getClient: () => ({ url }),
       getData: () => ({}),
     }),
-  } as unknown as ExecutionContext);
+  }) as unknown as ExecutionContext;
 
 describe('WsJwtGuard (HMAC + JWT)', () => {
   const jwtSecret = 'test-jwt';
@@ -30,7 +30,9 @@ describe('WsJwtGuard (HMAC + JWT)', () => {
 
   it('allows valid token + sig within window', () => {
     const ts = Math.floor(Date.now() / 1000);
-    const sig = createHmac('sha256', wsSecret).update(`${callSid}:${ts}`).digest('hex');
+    const sig = createHmac('sha256', wsSecret)
+      .update(`${callSid}:${ts}`)
+      .digest('hex');
     const token = jwtService.sign({ sub: 'user1' });
     const ctx = buildContext(makeUrl(sig, ts, token));
     expect(guard.canActivate(ctx)).toBe(true);
@@ -45,7 +47,9 @@ describe('WsJwtGuard (HMAC + JWT)', () => {
 
   it('rejects expired timestamp', () => {
     const ts = Math.floor(Date.now() / 1000) - 10000; // beyond 5 minute window
-    const sig = createHmac('sha256', wsSecret).update(`${callSid}:${ts}`).digest('hex');
+    const sig = createHmac('sha256', wsSecret)
+      .update(`${callSid}:${ts}`)
+      .digest('hex');
     const token = jwtService.sign({ sub: 'user1' });
     const ctx = buildContext(makeUrl(sig, ts, token));
     expect(guard.canActivate(ctx)).toBe(false);

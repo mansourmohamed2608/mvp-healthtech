@@ -19,8 +19,9 @@ import {
   CreateSessionResponseDto,
 } from './dto/session-response.dto';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard } from '../auth/tenant.guard';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('sessions')
 export class SessionController {
   constructor(private readonly sessionService: SessionService) {}
@@ -55,8 +56,8 @@ export class SessionController {
     return { isActive };
   }
 
-  // Protected endpoint example - requires JWT
-  @UseGuards(JwtAuthGuard)
+  // Protected endpoint example - requires JWT and tenant isolation
+  @UseGuards(JwtAuthGuard, TenantGuard)
   @Post('authenticated')
   @HttpCode(HttpStatus.CREATED)
   async createAuthenticated(

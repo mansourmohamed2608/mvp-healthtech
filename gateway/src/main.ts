@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import morgan from 'morgan';
+import helmet from 'helmet';
 import { LatencyMiddleware } from './middleware/latency.middleware';
 import { initOtel } from './observability/otel';
 import { validateEnv } from './config/env.validation';
@@ -12,30 +13,66 @@ async function bootstrap() {
   await initOtel();
   const app = await NestFactory.create(AppModule);
 
-  // Enable CORS for frontend
+  // Security headers via Helmet
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'"],
+          imgSrc: ["'self'", 'data:', 'https:'],
+          connectSrc: ["'self'", 'wss:', 'https:'],
+          frameSrc: ["'none'"],
+          objectSrc: ["'none'"],
+        },
+      },
+      hsts: {
+        maxAge: 31536000, // 1 year
+        includeSubDomains: true,
+        preload: true,
+      },
+      frameguard: { action: 'deny' },
+      noSniff: true,
+      xssFilter: true,
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    }),
+  );
+
+  // Enable CORS for frontend — restrict in production
+  const corsOrigins = process.env.CORS_ALLOWED_ORIGINS
+    ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+    : [
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://localhost:3001',
+      ];
+
   app.enableCors({
-    origin: [
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'http://localhost:3001',
-    ],
+    origin: corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'x-tenant-id',
+      'x-correlation-id',
+    ],
   });
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  
+
   // Add latency measurement middleware (Week 1 requirement: <20ms gateway overhead)
   app.use(new LatencyMiddleware().use.bind(new LatencyMiddleware()));
-  
+
   // Throttler guard is configured in app.module.ts
   const logger = new Logger('Bootstrap');
   const port = process.env.PORT || 3001;
   app.use(morgan('combined'));
   await app.listen(port);
   logger.log(`Gateway listening on port ${port}`);
-  logger.log(`CORS enabled for localhost:3000, localhost:5173, localhost:3001`);
+  logger.log(`CORS enabled for: ${corsOrigins.join(', ')}`);
+  logger.log(`Helmet security headers enabled`);
   logger.log(`Latency monitoring enabled (target: <20ms gateway overhead)`);
 }
 bootstrap();

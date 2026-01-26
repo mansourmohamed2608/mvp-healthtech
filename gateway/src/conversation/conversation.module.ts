@@ -9,7 +9,13 @@ import { VaModule } from '../va/va.module';
 
 @Module({
   imports: [VaModule],
-  providers: [ConversationService, LlmService, TtsService, AsrService, InternalHttpClient],
+  providers: [
+    ConversationService,
+    LlmService,
+    TtsService,
+    AsrService,
+    InternalHttpClient,
+  ],
   exports: [ConversationService],
 })
 export class ConversationModule {}

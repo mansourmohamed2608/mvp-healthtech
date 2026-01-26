@@ -5,8 +5,127 @@ on:
   pull_request:
 
 jobs:
+  # ========================================
+  # LINT JOBS (changed files only, strict)
+  # ========================================
+  lint-gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Get changed TS files
+        id: changed-ts
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            gateway/src/**/*.ts
+            gateway/test/**/*.ts
+      - name: Skip lint (no TS changes)
+        if: steps.changed-ts.outputs.any_changed != 'true'
+        run: echo "No TypeScript files changed in gateway, skipping lint"
+      - uses: actions/setup-node@v4
+        if: steps.changed-ts.outputs.any_changed == 'true'
+        with:
+          node-version: 20
+      - name: Install gateway deps
+        if: steps.changed-ts.outputs.any_changed == 'true'
+        working-directory: gateway
+        run: npm ci --prefer-offline --no-audit
+      - name: ESLint (changed files only, zero tolerance)
+        if: steps.changed-ts.outputs.any_changed == 'true'
+        working-directory: gateway
+        run: |
+          # Strip gateway/ prefix from file paths since we're in gateway/
+          FILES=$(echo "${{ steps.changed-ts.outputs.all_changed_files }}" | tr ' ' '\n' | sed 's|^gateway/||' | tr '\n' ' ')
+          echo "Linting files: $FILES"
+          npx eslint $FILES --max-warnings=0
+
+  lint-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Get changed Python files
+        id: changed-py
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            services/**/*.py
+      - name: Skip lint (no Python changes)
+        if: steps.changed-py.outputs.any_changed != 'true'
+        run: echo "No Python files changed in services, skipping lint"
+      - uses: actions/setup-python@v5
+        if: steps.changed-py.outputs.any_changed == 'true'
+        with:
+          python-version: '3.11'
+      - name: Install ruff
+        if: steps.changed-py.outputs.any_changed == 'true'
+        run: pip install ruff
+      - name: Ruff lint (changed files only, strict)
+        if: steps.changed-py.outputs.any_changed == 'true'
+        run: |
+          echo "Linting files: ${{ steps.changed-py.outputs.all_changed_files }}"
+          ruff check ${{ steps.changed-py.outputs.all_changed_files }} --output-format=github
+
+  # ========================================
+  # SECURITY SCAN JOBS
+  # ========================================
+  security-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  security-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: npm audit (gateway)
+        run: |
+          cd gateway
+          npm audit --audit-level=high || true
+
+  security-pip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: pip-audit (requirements)
+        run: |
+          pip-audit -r requirements-dev.txt --ignore-vuln GHSA-1234 || true
+
+  security-trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy FS scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+
+  # ========================================
+  # TEST JOBS
+  # ========================================
   test:
     runs-on: ubuntu-latest
+    needs: [lint-gateway, lint-python]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

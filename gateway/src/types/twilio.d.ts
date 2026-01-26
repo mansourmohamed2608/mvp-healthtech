@@ -10,7 +10,10 @@ declare module 'twilio' {
   export namespace twiml {
     export class VoiceResponse {
       constructor();
-      say(message: string, options?: { voice?: string; language?: string }): this;
+      say(
+        message: string,
+        options?: { voice?: string; language?: string },
+      ): this;
       play(url: string, options?: { loop?: number }): this;
       pause(options?: { length?: number }): this;
       dial(number: string, options?: any): this;

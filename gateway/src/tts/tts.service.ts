@@ -25,9 +25,11 @@ interface SynthesizeResponse {
 @Injectable()
 export class TtsService {
   private readonly logger = new Logger(TtsService.name);
-  private readonly serviceUrl = process.env.TTS_SERVICE_URL || 'http://localhost:5002';
+  private readonly serviceUrl =
+    process.env.TTS_SERVICE_URL || 'http://localhost:5002';
   private readonly internalSecret = (() => {
-    if (!process.env.INTERNAL_SECRET) throw new Error('INTERNAL_SECRET not set');
+    if (!process.env.INTERNAL_SECRET)
+      throw new Error('INTERNAL_SECRET not set');
     return process.env.INTERNAL_SECRET;
   })();
   constructor(private readonly http: InternalHttpClient) {}
@@ -43,7 +45,10 @@ export class TtsService {
   ): Promise<{ audioBase64: string; format?: string }> {
     try {
       const corr = uuidv4();
-      const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'tts' });
+      const client = this.http.getClient({
+        baseUrl: this.serviceUrl,
+        serviceName: 'tts',
+      });
       const response = await client.post(
         `/synthesize`,
         {
@@ -57,7 +62,10 @@ export class TtsService {
       );
 
       this.logger.log(`Synthesized ${text.length} chars`);
-      return { audioBase64: response.data.audio, format: response.data.format || 'mulaw' };
+      return {
+        audioBase64: response.data.audio,
+        format: response.data.format || 'mulaw',
+      };
     } catch (error) {
       this.logger.error(`TTS synthesis failed: ${error}`);
       throw error;
@@ -68,9 +76,16 @@ export class TtsService {
    * Synthesize and stream audio chunks
    * For real-time playback
    */
-  async synthesizeStream(text: string, sessionId?: string, voice?: string): Promise<Buffer> {
+  async synthesizeStream(
+    text: string,
+    sessionId?: string,
+    voice?: string,
+  ): Promise<Buffer> {
     try {
-      const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'tts' });
+      const client = this.http.getClient({
+        baseUrl: this.serviceUrl,
+        serviceName: 'tts',
+      });
       const response = await client.post(
         `/synthesize/stream`,
         {
@@ -97,12 +112,15 @@ export class TtsService {
    */
   async getVoices(): Promise<any> {
     try {
-      const client = this.http.getClient({ baseUrl: this.serviceUrl, serviceName: 'tts' });
+      const client = this.http.getClient({
+        baseUrl: this.serviceUrl,
+        serviceName: 'tts',
+      });
       const response = await client.get(`/voices`);
       return response.data;
     } catch (error) {
       this.logger.error(`Failed to fetch voices: ${error}`);
-      return { voices: ['ar-EG-SalmaNeural'] }; // Fallback
+      return { voices: ['egtts', 'saudi-tts', 'ar-EG-SalmaNeural'] }; // Fallback
     }
   }
 }

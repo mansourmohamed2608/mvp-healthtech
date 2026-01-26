@@ -1,0 +1,91 @@
+# infra/k8s/fhir-outbox-deployment.yaml
+# PR-8 PATCH: Continuous Deployment for FHIR outbox processing
+# Replaces CronJob for latency-sensitive writes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fhir-outbox-worker
+  namespace: healthtech
+  labels:
+    app: fhir-outbox-worker
+    component: fhir
+spec:
+  replicas: 1  # Single replica with FOR UPDATE SKIP LOCKED
+  selector:
+    matchLabels:
+      app: fhir-outbox-worker
+  template:
+    metadata:
+      labels:
+        app: fhir-outbox-worker
+    spec:
+      containers:
+        - name: outbox-worker
+          image: healthtech/fhir-service:latest
+          imagePullPolicy: Always
+          # Run in continuous loop mode
+          command: ["python", "-c", "
+import time
+import logging
+from outbox_worker import run_worker
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('outbox-loop')
+
+POLL_INTERVAL = int(__import__('os').getenv('OUTBOX_POLL_INTERVAL', '5'))
+
+while True:
+    try:
+        failures = run_worker()
+        if failures > 0:
+            logger.warning(f'{failures} items failed this run')
+    except Exception as e:
+        logger.exception(f'Worker error: {e}')
+    time.sleep(POLL_INTERVAL)
+"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: healthtech-secrets
+                  key: DATABASE_URL
+            - name: FHIR_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: healthtech-config
+                  key: FHIR_BASE_URL
+            - name: FHIR_SERVICE_URL
+              value: "http://fhir-service:5004"
+            - name: INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: healthtech-secrets
+                  key: INTERNAL_SECRET
+            - name: FHIR_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: healthtech-secrets
+                  key: FHIR_BEARER_TOKEN
+                  optional: true
+            - name: OUTBOX_BATCH_SIZE
+              value: "50"
+            - name: OUTBOX_POLL_INTERVAL
+              value: "5"  # Poll every 5 seconds
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import psycopg2; import os; psycopg2.connect(os.getenv('DATABASE_URL'))"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command: ["python", "-c", "import psycopg2; import os; psycopg2.connect(os.getenv('DATABASE_URL'))"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      restartPolicy: Always

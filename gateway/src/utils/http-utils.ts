@@ -7,7 +7,11 @@ export interface ErrorEnvelope {
   correlationId?: string;
 }
 
-export function wrapError(err: any, req?: Request, defaultStatus: number = HttpStatus.INTERNAL_SERVER_ERROR): never {
+export function wrapError(
+  err: any,
+  req?: Request,
+  defaultStatus: number = HttpStatus.INTERNAL_SERVER_ERROR,
+): never {
   const correlationId = (req as any)?.correlationId;
   const message = err?.message || 'Unexpected error';
   const code = err?.code || err?.response?.status || undefined;
@@ -27,4 +31,5 @@ export function toCamel<T extends Record<string, any>>(obj: T): any {
   return out;
 }
 
-export const camelResponse = <T extends Record<string, any>>(data: T) => toCamel(data);
+export const camelResponse = <T extends Record<string, any>>(data: T) =>
+  toCamel(data);

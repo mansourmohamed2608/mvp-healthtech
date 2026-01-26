@@ -562,7 +562,10 @@ class ApiClient {
     );
   }
 
-  async updateConversationPreferences(sessionId: string, prefs: { dialect?: string; voice?: string }) {
+  async updateConversationPreferences(
+    sessionId: string,
+    prefs: { dialect?: string; voice?: string; tenantId?: string },
+  ) {
     return this.request<{ ok: boolean; preferences: any }>(`/conversation/${sessionId}/preferences`, {
       method: 'POST',
       body: JSON.stringify(prefs),

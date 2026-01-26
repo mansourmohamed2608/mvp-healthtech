@@ -23,7 +23,7 @@ interface QueueMetrics {
 @Injectable()
 export class QueueService {
   private readonly logger = new Logger(QueueService.name);
-  
+
   // Queue configuration
   private readonly MAX_QUEUE_SIZE = 100;
   private readonly MAX_CONCURRENT = 10;
@@ -34,7 +34,7 @@ export class QueueService {
   private readonly queue: QueueItem<any>[] = [];
   private readonly processing = new Map<string, QueueItem<any>>();
   private readonly sessionCounts = new Map<string, number>();
-  
+
   // Metrics
   private completed = 0;
   private failed = 0;
@@ -58,7 +58,9 @@ export class QueueService {
     // Check per-session limit (back-pressure)
     const sessionCount = this.sessionCounts.get(sessionId) || 0;
     if (sessionCount >= this.MAX_PER_SESSION) {
-      throw new Error(`Too many concurrent requests for session ${sessionId}. Please slow down.`);
+      throw new Error(
+        `Too many concurrent requests for session ${sessionId}. Please slow down.`,
+      );
     }
 
     // Create queue item with promise
@@ -91,11 +93,13 @@ export class QueueService {
 
     // Add to queue (sorted by priority)
     this.insertByPriority(item);
-    
+
     // Increment session count
     this.sessionCounts.set(sessionId, sessionCount + 1);
 
-    this.logger.debug(`Enqueued item ${item.id} for session ${sessionId} (priority: ${priority})`);
+    this.logger.debug(
+      `Enqueued item ${item.id} for session ${sessionId} (priority: ${priority})`,
+    );
 
     // Try to process immediately
     this.processNext();
@@ -148,7 +152,7 @@ export class QueueService {
       // Success
       const processingTime = Date.now() - startTime;
       this.recordProcessingTime(processingTime);
-      
+
       clearTimeout((item as any).timeout);
       item.resolve(result);
       this.completed++;
@@ -176,7 +180,7 @@ export class QueueService {
    * Remove item from queue
    */
   private removeFromQueue(itemId: string): boolean {
-    const index = this.queue.findIndex(item => item.id === itemId);
+    const index = this.queue.findIndex((item) => item.id === itemId);
     if (index !== -1) {
       this.queue.splice(index, 1);
       return true;
@@ -198,13 +202,14 @@ export class QueueService {
    * Get queue metrics
    */
   getMetrics(): QueueMetrics {
-    const avgTime = this.processingTimes.length > 0
-      ? this.processingTimes.reduce((sum, t) => sum + t, 0) / this.processingTimes.length
-      : 0;
-    
-    const maxTime = this.processingTimes.length > 0
-      ? Math.max(...this.processingTimes)
-      : 0;
+    const avgTime =
+      this.processingTimes.length > 0
+        ? this.processingTimes.reduce((sum, t) => sum + t, 0) /
+          this.processingTimes.length
+        : 0;
+
+    const maxTime =
+      this.processingTimes.length > 0 ? Math.max(...this.processingTimes) : 0;
 
     return {
       size: this.queue.length,
@@ -225,10 +230,13 @@ export class QueueService {
     allowedConcurrency: number;
     availableSlots: number;
   } {
-    const queued = this.queue.filter(item => item.sessionId === sessionId).length;
-    const processing = Array.from(this.processing.values())
-      .filter(item => item.sessionId === sessionId).length;
-    
+    const queued = this.queue.filter(
+      (item) => item.sessionId === sessionId,
+    ).length;
+    const processing = Array.from(this.processing.values()).filter(
+      (item) => item.sessionId === sessionId,
+    ).length;
+
     return {
       queuedItems: queued,
       processingItems: processing,
@@ -265,7 +273,9 @@ export class QueueService {
    * Health check
    */
   isHealthy(): boolean {
-    return this.queue.length < this.MAX_QUEUE_SIZE * 0.9 && 
-           this.processing.size <= this.MAX_CONCURRENT;
+    return (
+      this.queue.length < this.MAX_QUEUE_SIZE * 0.9 &&
+      this.processing.size <= this.MAX_CONCURRENT
+    );
   }
 }

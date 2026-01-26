@@ -1,6 +1,7 @@
 // gateway/src/tts/tts.controller.ts
 import { Controller, Post, Body, Logger, UseGuards, Req } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard } from '../auth/tenant.guard';
 import { TtsService } from './tts.service';
 import { wrapError, camelResponse } from '../utils/http-utils';
 import { Request } from 'express';
@@ -11,7 +12,7 @@ class SynthesizeDto {
   voice?: string;
 }
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('tts')
 export class TtsController {
   private readonly logger = new Logger(TtsController.name);
@@ -25,13 +26,19 @@ export class TtsController {
     try {
       const result = await this.ttsService.synthesize(dto.text);
       // Normalize response shape for clients (base64 audio payload)
-      this.ttsLatency.observe({ endpoint: 'synthesize', status: 'ok' }, this.durationSeconds(start));
+      this.ttsLatency.observe(
+        { endpoint: 'synthesize', status: 'ok' },
+        this.durationSeconds(start),
+      );
       return {
         audio: result.audioBase64,
         format: result.format || 'mulaw',
       };
     } catch (error) {
-      this.ttsLatency.observe({ endpoint: 'synthesize', status: 'error' }, this.durationSeconds(start));
+      this.ttsLatency.observe(
+        { endpoint: 'synthesize', status: 'error' },
+        this.durationSeconds(start),
+      );
       wrapError(error, req);
     }
   }

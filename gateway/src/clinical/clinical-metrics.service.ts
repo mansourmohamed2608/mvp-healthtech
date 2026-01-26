@@ -53,28 +53,28 @@ export class ClinicalMetricsService {
     }
 
     const totalNotes = this.reviews.length;
-    const accepted = this.reviews.filter(r => r.accepted).length;
+    const accepted = this.reviews.filter((r) => r.accepted).length;
     const acceptanceRate = (accepted / totalNotes) * 100;
 
     const totalEditDistance = this.reviews.reduce(
       (sum, r) => sum + r.editDistance,
-      0
+      0,
     );
     const avgEditDistance = totalEditDistance / totalNotes;
 
     const totalReviewTime = this.reviews.reduce(
       (sum, r) => sum + r.timeToReview,
-      0
+      0,
     );
     const avgReviewTime = totalReviewTime / totalNotes;
 
     const lowEditCount = this.reviews.filter(
-      r => r.editDistance <= this.LOW_EDIT_THRESHOLD
+      (r) => r.editDistance <= this.LOW_EDIT_THRESHOLD,
     ).length;
     const lowEditDistanceRate = (lowEditCount / totalNotes) * 100;
 
     const fastReviewCount = this.reviews.filter(
-      r => r.timeToReview <= this.FAST_REVIEW_THRESHOLD
+      (r) => r.timeToReview <= this.FAST_REVIEW_THRESHOLD,
     ).length;
     const fastReviewRate = (fastReviewCount / totalNotes) * 100;
 
@@ -106,17 +106,20 @@ export class ClinicalMetricsService {
       nextDate.setDate(nextDate.getDate() + 1);
 
       const dayReviews = this.reviews.filter(
-        r => r.timestamp >= date && r.timestamp < nextDate
+        (r) => r.timestamp >= date && r.timestamp < nextDate,
       );
 
       if (dayReviews.length > 0) {
-        const accepted = dayReviews.filter(r => r.accepted).length;
-        const avgEdit = dayReviews.reduce((sum, r) => sum + r.editDistance, 0) / dayReviews.length;
+        const accepted = dayReviews.filter((r) => r.accepted).length;
+        const avgEdit =
+          dayReviews.reduce((sum, r) => sum + r.editDistance, 0) /
+          dayReviews.length;
 
         trends.push({
           date: date.toISOString().split('T')[0],
           count: dayReviews.length,
-          acceptanceRate: Math.round((accepted / dayReviews.length) * 1000) / 10,
+          acceptanceRate:
+            Math.round((accepted / dayReviews.length) * 1000) / 10,
           avgEditDistance: Math.round(avgEdit * 10) / 10,
         });
       } else {
@@ -148,13 +151,13 @@ export class ClinicalMetricsService {
       nextHour.setHours(nextHour.getHours() + 1);
 
       const hourReviews = this.reviews.filter(
-        r => r.timestamp >= hour && r.timestamp < nextHour
+        (r) => r.timestamp >= hour && r.timestamp < nextHour,
       );
 
       trends.push({
         hour: hour.toISOString(),
         count: hourReviews.length,
-        accepted: hourReviews.filter(r => r.accepted).length,
+        accepted: hourReviews.filter((r) => r.accepted).length,
       });
     }
 

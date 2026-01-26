@@ -18,12 +18,14 @@ import { TwilioService } from './twilio.service';
 import { SessionService } from '../session/session.service';
 import type { TwilioWebhookBody } from '../types/twilio';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+import { TenantGuard } from '../auth/tenant.guard';
 import { Roles } from '../auth/roles.decorator';
 
 const maskPhone = (input?: string) => {
   if (!input) return input;
   const digits = input.replace(/\D/g, '');
-  if (digits.length <= 4) return '*'.repeat(Math.max(0, digits.length - 2)) + digits.slice(-2);
+  if (digits.length <= 4)
+    return '*'.repeat(Math.max(0, digits.length - 2)) + digits.slice(-2);
   return `${'*'.repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}`;
 };
 
@@ -32,7 +34,9 @@ export class TwilioController {
   private readonly logger = new Logger(TwilioController.name);
   private readonly tokenRate = new Map<string, { count: number; ts: number }>();
   private readonly tokenWindowMs = 60_000;
-  private readonly tokenLimit = Number(process.env.TWILIO_TOKEN_RATE_LIMIT || 10);
+  private readonly tokenLimit = Number(
+    process.env.TWILIO_TOKEN_RATE_LIMIT || 10,
+  );
 
   constructor(
     private readonly twilioService: TwilioService,
@@ -51,7 +55,8 @@ export class TwilioController {
     @Req() req: Request,
     @Res() res: Response,
   ) {
-    const signature = headers['x-twilio-signature'] || headers['X-Twilio-Signature'];
+    const signature =
+      headers['x-twilio-signature'] || headers['X-Twilio-Signature'];
     const url = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
 
     // Validate Twilio signature
@@ -69,7 +74,9 @@ export class TwilioController {
     try {
       // Extract call metadata
       const metadata = this.twilioService.extractCallMetadata(body);
-      this.logger.log(`Call started: ${metadata.callSid} from ${maskPhone(metadata.from)}`);
+      this.logger.log(
+        `Call started: ${metadata.callSid} from ${maskPhone(metadata.from)}`,
+      );
 
       // Create session for this call
       await this.sessionService.create({
@@ -103,7 +110,7 @@ export class TwilioController {
    * Protected: requires authenticated user (clinician/internal).
    */
   @Post('token')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, TenantGuard)
   @Roles('clinician')
   @HttpCode(HttpStatus.OK)
   async getToken(@Req() req: any) {
@@ -132,7 +139,8 @@ export class TwilioController {
     @Headers() headers: Record<string, string>,
     @Body() body: TwilioWebhookBody,
   ) {
-    const signature = headers['x-twilio-signature'] || headers['X-Twilio-Signature'];
+    const signature =
+      headers['x-twilio-signature'] || headers['X-Twilio-Signature'];
     const metadata = this.twilioService.extractCallMetadata(body);
 
     this.logger.log(
@@ -140,12 +148,18 @@ export class TwilioController {
     );
 
     // Update session based on call status
-    if (metadata.callStatus === 'completed' || metadata.callStatus === 'failed') {
+    if (
+      metadata.callStatus === 'completed' ||
+      metadata.callStatus === 'failed'
+    ) {
       try {
         await this.sessionService.delete(metadata.callSid);
         this.logger.log(`Session cleaned up for call: ${metadata.callSid}`);
       } catch (error) {
-        this.logger.warn(`Failed to cleanup session: ${metadata.callSid}`, error);
+        this.logger.warn(
+          `Failed to cleanup session: ${metadata.callSid}`,
+          error,
+        );
       }
     }
 
@@ -167,7 +181,10 @@ export class TwilioController {
     try {
       await this.sessionService.delete(metadata.callSid);
     } catch (error) {
-      this.logger.warn(`Failed to cleanup session on stop: ${metadata.callSid}`, error);
+      this.logger.warn(
+        `Failed to cleanup session on stop: ${metadata.callSid}`,
+        error,
+      );
     }
 
     return { ok: true, event: 'stop' };

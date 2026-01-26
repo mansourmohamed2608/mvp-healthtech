@@ -9,24 +9,38 @@ export class OidcStrategy extends PassportStrategy(Strategy, 'oidc') {
   private readonly logger = new Logger(OidcStrategy.name);
 
   constructor(private configService: ConfigService) {
-    const clientID = configService.get<string>('OIDC_CLIENT_ID') || 'dummy-client-id';
-    const clientSecret = configService.get<string>('OIDC_CLIENT_SECRET') || 'dummy-secret';
+    const clientID =
+      configService.get<string>('OIDC_CLIENT_ID') || 'dummy-client-id';
+    const clientSecret =
+      configService.get<string>('OIDC_CLIENT_SECRET') || 'dummy-secret';
 
     const options: StrategyOptions = {
-      issuer: configService.get<string>('OIDC_ISSUER') || 'https://accounts.google.com',
-      authorizationURL: configService.get<string>('OIDC_AUTHORIZATION_URL') || 'https://accounts.google.com/o/oauth2/v2/auth',
-      tokenURL: configService.get<string>('OIDC_TOKEN_URL') || 'https://oauth2.googleapis.com/token',
-      userInfoURL: configService.get<string>('OIDC_USERINFO_URL') || 'https://openidconnect.googleapis.com/v1/userinfo',
+      issuer:
+        configService.get<string>('OIDC_ISSUER') ||
+        'https://accounts.google.com',
+      authorizationURL:
+        configService.get<string>('OIDC_AUTHORIZATION_URL') ||
+        'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenURL:
+        configService.get<string>('OIDC_TOKEN_URL') ||
+        'https://oauth2.googleapis.com/token',
+      userInfoURL:
+        configService.get<string>('OIDC_USERINFO_URL') ||
+        'https://openidconnect.googleapis.com/v1/userinfo',
       clientID,
       clientSecret,
-      callbackURL: configService.get<string>('OIDC_CALLBACK_URL') || 'http://localhost:3001/auth/oidc/callback',
+      callbackURL:
+        configService.get<string>('OIDC_CALLBACK_URL') ||
+        'http://localhost:3001/auth/oidc/callback',
       scope: ['openid', 'profile', 'email'],
     };
 
     super(options);
 
     if (clientID === 'dummy-client-id' || clientSecret === 'dummy-secret') {
-      this.logger.warn('⚠️  OIDC credentials not configured. OIDC authentication disabled (using dummy values).');
+      this.logger.warn(
+        '⚠️  OIDC credentials not configured. OIDC authentication disabled (using dummy values).',
+      );
     } else {
       this.logger.log('✅ OIDC Strategy initialized with valid credentials');
     }

@@ -40,7 +40,7 @@ export class SessionService {
     const redisHost = this.config.get<string>('REDIS_HOST') || 'localhost';
     const redisPort = this.config.get<string>('REDIS_PORT') || 6379;
     const redisUrl = `redis://${redisHost}:${redisPort}`;
-    
+
     try {
       this.redisClient = createClient({
         url: redisUrl,
@@ -52,7 +52,9 @@ export class SessionService {
       }) as RedisClientType;
 
       this.redisClient.on('error', (err) => {
-        this.logger.warn('⚠️  Redis not available for sessions, using in-memory storage');
+        this.logger.warn(
+          '⚠️  Redis not available for sessions, using in-memory storage',
+        );
         this.redisAvailable = false;
       });
 
@@ -63,11 +65,15 @@ export class SessionService {
 
       // Connect without blocking
       this.redisClient.connect().catch((error) => {
-        this.logger.warn('⚠️  Redis connection failed for sessions, using in-memory storage');
+        this.logger.warn(
+          '⚠️  Redis connection failed for sessions, using in-memory storage',
+        );
         this.redisAvailable = false;
       });
     } catch (error) {
-      this.logger.warn('⚠️  Redis initialization failed for sessions, using in-memory storage');
+      this.logger.warn(
+        '⚠️  Redis initialization failed for sessions, using in-memory storage',
+      );
       this.redisAvailable = false;
     }
   }
@@ -91,7 +97,9 @@ export class SessionService {
     if (!this.redisAvailable || !this.redisClient) {
       this.inMemoryStore.set(sessionId, session);
       this.logger.log(`Session created (in-memory): ${sessionId}`);
-      await this.persistToDb(session).catch((e) => this.logger.warn(`DB persist failed: ${e}`));
+      await this.persistToDb(session).catch((e) =>
+        this.logger.warn(`DB persist failed: ${e}`),
+      );
       return {
         sessionId,
         issuedAt: now.toISOString(),
@@ -108,7 +116,9 @@ export class SessionService {
       );
 
       this.logger.log(`Session created: ${sessionId}`);
-      await this.persistToDb(session).catch((e) => this.logger.warn(`DB persist failed: ${e}`));
+      await this.persistToDb(session).catch((e) =>
+        this.logger.warn(`DB persist failed: ${e}`),
+      );
 
       return {
         sessionId,
