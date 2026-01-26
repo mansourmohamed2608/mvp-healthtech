@@ -38,6 +38,7 @@ services:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/healthtech
       - ASR_SERVICE_URL=http://asr:5000
       - LLM_SERVICE_URL=http://llm:5001
+      - VA_LLM_URL=http://llm-va:5007
       - TTS_SERVICE_URL=http://tts:5002
       - SOAP_SERVICE_URL=http://soap:5003
       - FHIR_SERVICE_URL=http://fhir:5004
@@ -54,6 +55,8 @@ services:
       asr:
         condition: service_healthy
       llm:
+        condition: service_healthy
+      llm-va:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -138,6 +141,38 @@ services:
       timeout: 30s
       retries: 5
       start_period: 180s  # LLM takes longer to load
+
+  # ============ LLM-VA SERVICE (GPU) ============
+  # Qwen2.5-3B-Instruct for Voice Agent Arabic dialogue
+  llm-va:
+    build: ../services/llm-va
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 8G
+    environment:
+      - VA_MODEL=Qwen/Qwen2.5-3B-Instruct
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - RAG_SERVICE_URL=http://llm:5001
+      - VA_DEVICE=cuda
+      - VA_DTYPE=float16
+      - HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN}
+      - HF_HOME=/cache
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - huggingface_cache:/cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5007/health')\""]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 120s
 
   # ============ TTS SERVICE (CPU) ============
   # edge-tts - cloud-based, no GPU needed
