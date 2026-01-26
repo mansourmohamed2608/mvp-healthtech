@@ -11,7 +11,8 @@ librosa==0.10.2
 numpy==1.26.4
 pandas==2.2.2
 
-# Whisper and ML packages
+# Whisper and ML packages - pinned for compatibility
+faster-whisper==1.0.0
 whisperx==3.1.1
 pyannote.audio==3.1.1
 torch==2.3.1
