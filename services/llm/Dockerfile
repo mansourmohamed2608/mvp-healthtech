@@ -8,16 +8,18 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Create symlinks for python/pip
-RUN rm -f /usr/bin/python /usr/bin/pip && \
-    ln -s /usr/bin/python3.11 /usr/bin/python && \
-    python -m ensurepip --upgrade && \
-    python -m pip install --upgrade pip
+# Create virtual environment with python3.11
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3.11 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Upgrade pip in venv
+RUN pip install --no-cache-dir --upgrade pip
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 
-RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 
