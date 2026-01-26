@@ -154,7 +154,7 @@ services:
               count: 1
               capabilities: [gpu]
         limits:
-          memory: 8G
+          memory: 16G
     environment:
       - VA_MODEL=Qwen/Qwen2.5-3B-Instruct
       - INTERNAL_SECRET=${INTERNAL_SECRET}
