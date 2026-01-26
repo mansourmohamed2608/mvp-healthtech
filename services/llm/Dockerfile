@@ -1,11 +1,12 @@
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
-# Install Python and system dependencies
+# Install Python and system dependencies (curl needed for health checks)
 RUN apt-get update && apt-get install -y \
     python3.11 \
     python3.11-venv \
     python3-pip \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment with python3.11
