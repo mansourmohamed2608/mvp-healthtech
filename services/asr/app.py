@@ -964,8 +964,13 @@ async def load_models():
         "Loading WhisperX model",
         extra={"model": WHISPER_MODEL, "device": DEVICE, "computeType": COMPUTE_TYPE},
     )
-    # VAD model path - can be pre-downloaded to avoid broken S3 URL issue
+    # VAD model path - pre-downloaded by download_vad.py to avoid broken S3 URL
     vad_model_fp = os.getenv("VAD_MODEL_PATH", None)
+    # Also check file written by download_vad.py startup script
+    if not vad_model_fp and os.path.exists("/tmp/vad_model_path.txt"):
+        with open("/tmp/vad_model_path.txt") as f:
+            vad_model_fp = f.read().strip()
+        logger.info(f"Using VAD model from startup script: {vad_model_fp}")
     whisper_model = whisperx.load_model(
         WHISPER_MODEL, DEVICE, compute_type=COMPUTE_TYPE, language="ar",
         vad_model_fp=vad_model_fp
