@@ -12,15 +12,15 @@ numpy==1.26.4
 pandas==2.2.2
 
 # Whisper and ML packages - pinned for compatibility
-# whisperx 3.1.4 requires faster-whisper==1.0.1
-# faster-whisper 1.0.1 requires tokenizers<0.16,>=0.13 (will be installed automatically)
+# faster-whisper 1.0.1 requires tokenizers<0.16,>=0.13
+# So transformers must be <4.37 (which also uses tokenizers<0.16)
 faster-whisper==1.0.1
 whisperx==3.1.4
 pyannote.audio==3.1.1
 torch==2.3.1
 torchaudio==2.3.1
-transformers==4.44.2
-accelerate==0.34.2
+transformers==4.36.2
+accelerate==0.26.1
 
 # Evaluation
 jiwer==3.0.4
