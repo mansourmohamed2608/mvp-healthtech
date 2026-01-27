@@ -6,7 +6,22 @@ import { useAuthStore } from '@store/authStore';
 // Force all calls through the gateway to keep a single contract
 const envVars = (import.meta as any)?.env || {};
 const USE_DIRECT_SERVICES = false;
-const API_BASE_URL = envVars.VITE_API_URL || 'http://localhost:3000';
+
+// Dynamically determine API URL based on current host
+// In production, use same host with port 3000; in dev, use env var or localhost
+const getApiBaseUrl = (): string => {
+  const envUrl = envVars.VITE_API_URL;
+  if (envUrl && !envUrl.includes('localhost')) {
+    return envUrl;
+  }
+  // If running in browser, use current hostname with API port
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
+    return `http://${window.location.hostname}:3000`;
+  }
+  return envUrl || 'http://localhost:3000';
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 // Direct service URLs (when not using gateway)
 const SERVICE_URLS = {
