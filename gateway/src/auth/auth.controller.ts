@@ -63,10 +63,12 @@ export class AuthController {
       throw new UnauthorizedException('Invalid credentials (dev fallback)');
     }
 
-    const token = await this.authService.generateToken(
-      userId,
-      metadata as string,
-    );
+    // Dev auth users get clinician role to access all features in demo
+    const devMetadata = {
+      ...((metadata as Record<string, unknown>) || {}),
+      roles: ['user', 'clinician'],
+    };
+    const token = await this.authService.generateToken(userId, devMetadata);
     this.logger.log(`JWT token generated for user: ${userId} (DEV MODE)`);
     // For login events, use 'system' tenant since user is authenticating
     await this.auditService.log({
