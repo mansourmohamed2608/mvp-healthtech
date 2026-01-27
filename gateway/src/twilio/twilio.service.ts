@@ -65,11 +65,10 @@ export class TwilioService {
     // Start media streaming — pass HMAC auth via Custom Parameters (NOT query string)
     const start = response.start();
     const { sig, ts } = this.generateStreamAuth(callSid);
-    start
-      .stream({ url: streamUrl })
-      .parameter({ name: 'callSid', value: callSid })
-      .parameter({ name: 'sig', value: sig })
-      .parameter({ name: 'ts', value: ts.toString() });
+    const stream = start.stream({ url: streamUrl });
+    stream.parameter({ name: 'callSid', value: callSid });
+    stream.parameter({ name: 'sig', value: sig });
+    stream.parameter({ name: 'ts', value: ts.toString() });
 
     // Pause to keep the stream open (10 minutes = 600 seconds)
     response.pause({ length: 600 });

@@ -14,7 +14,7 @@ import { MetricsController } from '../metrics/metrics.controller';
 import { safeLog } from '../utils/safe-logger';
 import { VaBookingService, SlotState } from '../va/va_booking.service';
 
-interface Message {
+export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
@@ -720,13 +720,4 @@ export class ConversationService {
     return diff[0] + diff[1] / 1e9;
   }
 
-  /**
-   * Cleanup on service shutdown
-   */
-  async onModuleDestroy() {
-    if (this.client) {
-      await this.client.quit();
-      this.logger.log('Redis client disconnected');
-    }
-  }
 }

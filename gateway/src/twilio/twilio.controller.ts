@@ -11,8 +11,15 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
-  TooManyRequestsException,
+  HttpException,
 } from '@nestjs/common';
+
+// Custom TooManyRequestsException since NestJS doesn't export it
+class TooManyRequestsException extends HttpException {
+  constructor(message?: string) {
+    super(message || 'Too Many Requests', 429);
+  }
+}
 import type { Request, Response } from 'express';
 import { TwilioService } from './twilio.service';
 import { SessionService } from '../session/session.service';

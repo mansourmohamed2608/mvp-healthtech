@@ -3,7 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import morgan from 'morgan';
-import helmet from 'helmet';
+import helmet from '@fastify/helmet';
 import { LatencyMiddleware } from './middleware/latency.middleware';
 import { initOtel } from './observability/otel';
 import { validateEnv } from './config/env.validation';
