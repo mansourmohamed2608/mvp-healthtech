@@ -40,8 +40,11 @@ async function bootstrap() {
   );
 
   // Enable CORS for frontend — restrict in production
-  const corsOrigins = process.env.CORS_ALLOWED_ORIGINS
-    ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+  const corsEnv = process.env.CORS_ALLOWED_ORIGINS;
+  const corsOrigins = corsEnv
+    ? corsEnv === '*'
+      ? true // Allow all origins when * is specified
+      : corsEnv.split(',').map((o) => o.trim())
     : [
         'http://localhost:3000',
         'http://localhost:5173',
@@ -71,7 +74,7 @@ async function bootstrap() {
   app.use(morgan('combined'));
   await app.listen(port);
   logger.log(`Gateway listening on port ${port}`);
-  logger.log(`CORS enabled for: ${corsOrigins.join(', ')}`);
+  logger.log(`CORS enabled for: ${corsOrigins === true ? '*' : (corsOrigins as string[]).join(', ')}`);
   logger.log(`Helmet security headers enabled`);
   logger.log(`Latency monitoring enabled (target: <20ms gateway overhead)`);
 }
