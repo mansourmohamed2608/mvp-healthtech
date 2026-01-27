@@ -42,6 +42,7 @@ services:
       - TTS_SERVICE_URL=http://tts:5002
       - SOAP_SERVICE_URL=http://soap:5003
       - FHIR_SERVICE_URL=http://fhir:5004
+      - FHIR_BASE_URL=http://fhir:5004
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
