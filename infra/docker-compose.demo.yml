@@ -24,7 +24,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=development
+      - DEV_AUTH_USERS=demo@healthtech.com:demo123,dev:changeme
       - PORT=3000
       - JWT_SECRET=${JWT_SECRET}
       - INTERNAL_SECRET=${INTERNAL_SECRET}
