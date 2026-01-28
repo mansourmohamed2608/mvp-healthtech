@@ -92,8 +92,8 @@ export class TwilioController {
         metadata,
       });
 
-      // Generate WebSocket stream URL
-      const streamUrl = `${process.env.GATEWAY_PUBLIC_URL || 'wss://your-domain.ngrok.io'}/twilio/ws/${metadata.callSid}`;
+      // Generate WebSocket stream URL - path matches VoiceGateway path + callSid
+      const streamUrl = `${process.env.GATEWAY_PUBLIC_URL || 'wss://your-domain.ngrok.io'}/twilio/${metadata.callSid}`;
 
       // Return TwiML to start media streaming
       const twiml = this.twilioService.generateStreamTwiML(

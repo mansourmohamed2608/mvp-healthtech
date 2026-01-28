@@ -133,6 +133,19 @@ const VoiceAgent = () => {
         return;
       }
       try {
+        // Pre-check microphone access before initializing Twilio
+        try {
+          const testStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          testStream.getTracks().forEach(track => track.stop());
+        } catch (micErr: any) {
+          console.error('Microphone access failed:', micErr);
+          setError(language === 'ar' 
+            ? 'فشل الوصول إلى الميكروفون. يرجى التحقق من الإذن والجهاز.'
+            : 'Microphone access failed. Please check permissions and device.');
+          setDeviceReady(false);
+          return;
+        }
+
         const { token: twilioToken } = await api.getTwilioToken();
         if (!mounted) return;
 
@@ -197,7 +210,17 @@ const VoiceAgent = () => {
           To: '+1234567890', // Placeholder
         };
 
-      const outgoingCall = await device.connect({ params });
+      // Use permissive rtcConstraints to avoid AcquisitionFailedError (31402)
+      const outgoingCall = await device.connect({ 
+        params,
+        rtcConstraints: {
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }
+        }
+      });
       setCall(outgoingCall);
 
       outgoingCall.on('accept', () => {

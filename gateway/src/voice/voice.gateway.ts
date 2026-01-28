@@ -52,7 +52,8 @@ interface TwilioMediaMessage {
 // WS auth: JWT for browser clients, HMAC via Custom Parameters for Twilio streams
 @UseGuards(WsJwtGuard)
 @WebSocketGateway({
-  path: '/twilio/ws',
+  // Twilio connects to /twilio/{callSid} - we accept all WS connections
+  // and filter by path in handleConnection
   cors: {
     origin: '*',
   },
@@ -75,9 +76,19 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {}
 
   handleConnection(client: WebSocket, request: any) {
-    const urlCallSid = this.extractCallSidFromUrl(request.url);
+    const url = request?.url || '';
+    const urlCallSid = this.extractCallSidFromUrl(url);
+    
+    // Only accept connections to /twilio/* paths
+    if (!url.startsWith('/twilio/') && !url.startsWith('/twilio?')) {
+      this.logger.debug(`Rejecting non-Twilio WebSocket path: ${url}`);
+      client.close(1008, 'Invalid path');
+      return;
+    }
+    
     safeLog(this.logger, 'log', 'WebSocket connected (pending auth)', {
       callSid: urlCallSid || 'unknown',
+      url: url,
     });
 
     // For Twilio streams, auth is validated on 'start' message, not connection
@@ -389,8 +400,8 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   private extractCallSidFromUrl(url: string): string | null {
-    // Extract callSid from URL like /twilio/ws/CAxxxx
-    const match = url.match(/\/twilio\/ws\/([^?]+)/);
+    // Extract callSid from URL like /twilio/CAxxxx or /twilio/ws/CAxxxx
+    const match = url.match(/\/twilio(?:\/ws)?\/([^?]+)/);
     return match ? match[1] : null;
   }
 
