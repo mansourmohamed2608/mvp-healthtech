@@ -75,10 +75,7 @@ import { join } from 'path';
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
-    {
-      provide: APP_GUARD,
-      useClass: RolesGuard,
-    },
+    // RolesGuard is NOT global - added explicitly after JwtAuthGuard on protected routes
     JwtAuthGuard,
     AsrService,
     LlmService,

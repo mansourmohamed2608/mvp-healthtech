@@ -26,6 +26,7 @@ import { SessionService } from '../session/session.service';
 import type { TwilioWebhookBody } from '../types/twilio';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { TenantGuard } from '../auth/tenant.guard';
+import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 
 const maskPhone = (input?: string) => {
@@ -117,7 +118,7 @@ export class TwilioController {
    * Protected: requires authenticated user (clinician/internal).
    */
   @Post('token')
-  @UseGuards(JwtAuthGuard, TenantGuard)
+  @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
   @Roles('clinician')
   @HttpCode(HttpStatus.OK)
   async getToken(@Req() req: any) {
