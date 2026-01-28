@@ -8,15 +8,16 @@ const envVars = (import.meta as any)?.env || {};
 const USE_DIRECT_SERVICES = false;
 
 // Dynamically determine API URL based on current host
-// In production, use same host with port 3000; in dev, use env var or localhost
+// In production, use same origin (API is proxied via nginx)
 const getApiBaseUrl = (): string => {
   const envUrl = envVars.VITE_API_URL;
   if (envUrl && !envUrl.includes('localhost')) {
     return envUrl;
   }
-  // If running in browser, use current hostname with API port
+  // If running in browser on non-localhost, use same origin (nginx proxies /api/)
   if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
-    return `http://${window.location.hostname}:3000`;
+    // Use same protocol and host - nginx will proxy /api/ requests to gateway
+    return `${window.location.protocol}//${window.location.host}`;
   }
   return envUrl || 'http://localhost:3000';
 };
