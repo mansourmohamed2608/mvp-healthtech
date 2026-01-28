@@ -2,20 +2,20 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
-import { WsAdapter } from '@nestjs/platform-ws';
 import morgan from 'morgan';
 import helmet from 'helmet';
 import { LatencyMiddleware } from './middleware/latency.middleware';
 import { initOtel } from './observability/otel';
 import { validateEnv } from './config/env.validation';
+import { TwilioWsAdapter } from './adapters/twilio-ws.adapter';
 
 async function bootstrap() {
   validateEnv();
   await initOtel();
   const app = await NestFactory.create(AppModule);
 
-  // Use raw WebSocket adapter (required for Twilio Media Streams)
-  app.useWebSocketAdapter(new WsAdapter(app));
+  // Use custom WebSocket adapter that handles any path (required for /twilio/{callSid})
+  app.useWebSocketAdapter(new TwilioWsAdapter(app));
 
   // Security headers via Helmet
   app.use(

@@ -12,7 +12,9 @@ import {
   IconCheck,
   IconAlertCircle,
   IconLoader2,
-  IconSettings
+  IconSettings,
+  IconEar,
+  IconVolume
 } from '@tabler/icons-react';
 import { Device, Call } from '@twilio/voice-sdk';
 import api from '../utils/api';
@@ -22,6 +24,9 @@ interface Message {
   content: string;
   timestamp: Date;
 }
+
+// Voice Activity State
+type VoiceActivityState = 'idle' | 'listening' | 'processing' | 'speaking';
 
 const VoiceAgent = () => {
   const { language } = useThemeStore();
@@ -40,7 +45,9 @@ const VoiceAgent = () => {
   const [prefsStatus, setPrefsStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [prefsError, setPrefsError] = useState<string>('');
   const [introMessage, setIntroMessage] = useState<Message | null>(null);
+  const [voiceActivity, setVoiceActivity] = useState<VoiceActivityState>('idle');
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const lastMessageRef = useRef<Message | null>(null);
 
   const resolveVoiceId = (pref: string) => {
     if (pref === 'egypt') return 'egtts';
@@ -102,8 +109,37 @@ const VoiceAgent = () => {
         }));
         const merged = introMessage ? [introMessage, ...historyMessages] : historyMessages;
         setTranscript(merged);
+        
+        // Determine voice activity state based on last message
         const last = historyMessages[historyMessages.length - 1];
-        setIsThinking(!!last && last.role === 'user');
+        const isNewMessage = last && (!lastMessageRef.current || 
+          lastMessageRef.current.content !== last.content ||
+          lastMessageRef.current.role !== last.role);
+        
+        if (last) {
+          lastMessageRef.current = last;
+          if (last.role === 'user') {
+            // User just spoke, agent is processing
+            setVoiceActivity('processing');
+            setIsThinking(true);
+          } else if (last.role === 'assistant') {
+            // Agent just responded, now listening for user
+            if (isNewMessage) {
+              // Brief "speaking" state when new assistant message arrives
+              setVoiceActivity('speaking');
+              setTimeout(() => {
+                if (!cancelled) setVoiceActivity('listening');
+              }, 2000);
+            } else {
+              setVoiceActivity('listening');
+            }
+            setIsThinking(false);
+          }
+        } else {
+          // No messages yet, listening for user
+          setVoiceActivity('listening');
+          setIsThinking(false);
+        }
       } catch (err: any) {
         console.error('Failed to fetch transcript history:', err);
         setError((prev) => prev || `Transcript sync failed: ${err.message || 'unknown error'}`);
@@ -226,6 +262,7 @@ const VoiceAgent = () => {
       outgoingCall.on('accept', () => {
         console.log('✅ Call connected');
         setCallStatus('connected');
+        setVoiceActivity('listening'); // Start in listening mode
         const callParams = (outgoingCall as any)?.parameters || {};
         const sid =
           callParams.CallSid ||
@@ -249,6 +286,7 @@ const VoiceAgent = () => {
       outgoingCall.on('disconnect', () => {
         console.log('Call disconnected');
         setCallStatus('disconnected');
+        setVoiceActivity('idle');
         setCall(null);
         setCallSid('');
         setTimeout(() => setCallStatus('idle'), 2000);
@@ -257,6 +295,7 @@ const VoiceAgent = () => {
       outgoingCall.on('cancel', () => {
         console.log('Call cancelled');
         setCallStatus('idle');
+        setVoiceActivity('idle');
         setCall(null);
         setCallSid('');
       });
@@ -281,6 +320,8 @@ const VoiceAgent = () => {
       setCallStatus('idle');
       setCallSid('');
       setIntroMessage(null);
+      setVoiceActivity('idle');
+      lastMessageRef.current = null;
     }
   };
 
@@ -388,6 +429,113 @@ const VoiceAgent = () => {
             <div className="mb-6 text-xs text-slate-500 dark:text-slate-400">
               {language === 'ar' ? 'معرّف الجلسة:' : 'Session ID:'} {callSid}
             </div>
+          )}
+
+          {/* Voice Activity Indicator */}
+          {callStatus === 'connected' && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="mb-6 p-6 rounded-2xl bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
+            >
+              <div className="flex items-center justify-center gap-4">
+                {/* Listening State */}
+                {voiceActivity === 'listening' && (
+                  <>
+                    <motion.div
+                      animate={{ scale: [1, 1.2, 1] }}
+                      transition={{ repeat: Infinity, duration: 1.5 }}
+                      className="p-4 rounded-full bg-gradient-to-r from-green-500 to-emerald-500 shadow-lg shadow-green-500/40"
+                    >
+                      <IconEar size={32} className="text-white" />
+                    </motion.div>
+                    <div className="text-left">
+                      <p className="text-xl font-bold text-green-600 dark:text-green-400">
+                        {language === 'ar' ? 'أستمع إليك...' : 'Listening...'}
+                      </p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400">
+                        {language === 'ar' ? 'تحدث الآن وسأفهمك' : 'Speak now and I\'ll understand you'}
+                      </p>
+                    </div>
+                    {/* Audio wave animation */}
+                    <div className="flex items-center gap-1 ml-4">
+                      {[...Array(5)].map((_, i) => (
+                        <motion.div
+                          key={i}
+                          animate={{ height: ['8px', '24px', '8px'] }}
+                          transition={{ repeat: Infinity, duration: 0.8, delay: i * 0.15 }}
+                          className="w-2 bg-green-500 rounded-full"
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {/* Processing State */}
+                {voiceActivity === 'processing' && (
+                  <>
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ repeat: Infinity, duration: 1.5, ease: 'linear' }}
+                      className="p-4 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 shadow-lg shadow-amber-500/40"
+                    >
+                      <IconLoader2 size={32} className="text-white" />
+                    </motion.div>
+                    <div className="text-left">
+                      <p className="text-xl font-bold text-amber-600 dark:text-amber-400">
+                        {language === 'ar' ? 'جاري المعالجة...' : 'Processing...'}
+                      </p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400">
+                        {language === 'ar' ? 'أفكر في إجابتك' : 'Thinking about your response'}
+                      </p>
+                    </div>
+                    {/* Thinking dots animation */}
+                    <div className="flex items-center gap-2 ml-4">
+                      {[...Array(3)].map((_, i) => (
+                        <motion.div
+                          key={i}
+                          animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }}
+                          transition={{ repeat: Infinity, duration: 1, delay: i * 0.2 }}
+                          className="w-3 h-3 bg-amber-500 rounded-full"
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {/* Speaking State */}
+                {voiceActivity === 'speaking' && (
+                  <>
+                    <motion.div
+                      animate={{ scale: [1, 1.1, 1] }}
+                      transition={{ repeat: Infinity, duration: 0.5 }}
+                      className="p-4 rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 shadow-lg shadow-blue-500/40"
+                    >
+                      <IconVolume size={32} className="text-white" />
+                    </motion.div>
+                    <div className="text-left">
+                      <p className="text-xl font-bold text-blue-600 dark:text-blue-400">
+                        {language === 'ar' ? 'أتحدث إليك...' : 'Speaking...'}
+                      </p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400">
+                        {language === 'ar' ? 'أستمع لإجابتي' : 'Listen to my response'}
+                      </p>
+                    </div>
+                    {/* Speaking wave animation */}
+                    <div className="flex items-center gap-1 ml-4">
+                      {[...Array(5)].map((_, i) => (
+                        <motion.div
+                          key={i}
+                          animate={{ height: ['12px', '28px', '12px'] }}
+                          transition={{ repeat: Infinity, duration: 0.4, delay: i * 0.1 }}
+                          className="w-2 bg-blue-500 rounded-full"
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </motion.div>
           )}
 
           {/* Control Buttons */}
