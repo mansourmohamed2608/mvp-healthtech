@@ -41,7 +41,7 @@ export class TwilioWsAdapter extends AbstractWsAdapter {
   }
 
   bindClientConnect(server: WebSocket.Server, callback: Function) {
-    server.on('connection', callback);
+    server.on('connection', callback as any);
   }
 
   bindClientDisconnect(client: WebSocket, callback: Function) {

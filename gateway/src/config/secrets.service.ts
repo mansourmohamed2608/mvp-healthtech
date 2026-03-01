@@ -2,6 +2,12 @@
  * Secrets Service for loading secrets from various providers
  * Supports: Environment variables, AWS Secrets Manager, Azure Key Vault, HashiCorp Vault
  */
+
+// Ambient declarations for optional cloud SDK dependencies (not installed by default)
+declare module '@aws-sdk/client-secrets-manager';
+declare module '@azure/keyvault-secrets';
+declare module '@azure/identity';
+
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
@@ -95,7 +101,6 @@ class AwsSecretsProvider implements SecretProvider {
 
   private async getClient() {
     if (!this.client) {
-      // @ts-ignore - optional dependency, only needed when SECRETS_PROVIDER=aws
       const { SecretsManagerClient, GetSecretValueCommand } = await import(
         '@aws-sdk/client-secrets-manager'
       );
@@ -138,7 +143,6 @@ class AzureKeyVaultProvider implements SecretProvider {
 
   private async getClient() {
     if (!this.client) {
-      // @ts-ignore - optional dependency, only needed when SECRETS_PROVIDER=azure
       const { SecretClient } = await import('@azure/keyvault-secrets');
       // @ts-ignore
       const { DefaultAzureCredential } = await import('@azure/identity');
