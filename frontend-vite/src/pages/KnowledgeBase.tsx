@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { 
   IconBrain,
   IconPlus,
-  IconTrash,
   IconSearch,
   IconLoader2,
   IconCheck,
@@ -19,11 +18,6 @@ interface RagNote {
   title?: string;
   text: string;
   metadata?: Record<string, any>;
-}
-
-interface RagFaq {
-  question: string;
-  answer: string;
 }
 
 export default function KnowledgeBase() {
