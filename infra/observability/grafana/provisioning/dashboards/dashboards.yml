@@ -5,5 +5,18 @@ providers:
     type: file
     disableDeletion: false
     editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
     options:
       path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
+
+  - name: healthtech-dashboards
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/custom-dashboards
+      foldersFromFilesStructure: false

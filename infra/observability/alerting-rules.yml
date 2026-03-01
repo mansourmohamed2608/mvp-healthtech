@@ -1,0 +1,211 @@
+# HealthTech Platform Alerting Rules
+# Place this file alongside prometheus.yml
+
+groups:
+  - name: healthtech-availability
+    interval: 30s
+    rules:
+      # Service Health Alerts
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been down for more than 1 minute."
+
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m])) by (job)
+            /
+            sum(rate(http_requests_total[5m])) by (job)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on {{ $labels.job }}"
+          description: "Error rate is {{ $value | humanizePercentage }} on {{ $labels.job }}."
+
+      - alert: CriticalErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m])) by (job)
+            /
+            sum(rate(http_requests_total[5m])) by (job)
+          ) > 0.10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical error rate on {{ $labels.job }}"
+          description: "Error rate is {{ $value | humanizePercentage }} on {{ $labels.job }}."
+
+  - name: healthtech-performance
+    interval: 30s
+    rules:
+      # Latency Alerts
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.99, 
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency on {{ $labels.job }}"
+          description: "P99 latency is {{ $value | humanizeDuration }} on {{ $labels.job }}."
+
+      - alert: CriticalLatency
+        expr: |
+          histogram_quantile(0.99, 
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+          ) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical latency on {{ $labels.job }}"
+          description: "P99 latency is {{ $value | humanizeDuration }} on {{ $labels.job }}."
+
+      # ASR Processing Time
+      - alert: SlowASRProcessing
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(asr_processing_seconds_bucket[5m])) by (le)
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ASR processing is slow"
+          description: "P95 ASR processing time is {{ $value | humanizeDuration }}."
+
+      # LLM Inference Time
+      - alert: SlowLLMInference
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(llm_inference_seconds_bucket[5m])) by (le)
+          ) > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM inference is slow"
+          description: "P95 LLM inference time is {{ $value | humanizeDuration }}."
+
+  - name: healthtech-resources
+    interval: 30s
+    rules:
+      # Memory Alerts
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            process_resident_memory_bytes / 
+            (node_memory_MemTotal_bytes or 1073741824)
+          ) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.job }}"
+          description: "Memory usage is {{ $value | humanizePercentage }}."
+
+      # GPU Memory (if available)
+      - alert: HighGPUMemoryUsage
+        expr: nvidia_gpu_memory_used_bytes / nvidia_gpu_memory_total_bytes > 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High GPU memory usage"
+          description: "GPU memory usage is {{ $value | humanizePercentage }}."
+
+      # Queue Depth
+      - alert: HighQueueDepth
+        expr: soap_queue_depth > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High SOAP job queue depth"
+          description: "Queue depth is {{ $value }} jobs."
+
+  - name: healthtech-database
+    interval: 30s
+    rules:
+      # Database Connection Pool
+      - alert: DatabasePoolExhausted
+        expr: |
+          pg_stat_activity_count / pg_settings_max_connections > 0.80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database connection pool near exhaustion"
+          description: "{{ $value | humanizePercentage }} of connections used."
+
+      # Slow Queries
+      - alert: SlowDatabaseQueries
+        expr: |
+          rate(pg_stat_statements_seconds_total[5m]) /
+          rate(pg_stat_statements_calls_total[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow database queries detected"
+          description: "Average query time is {{ $value | humanizeDuration }}."
+
+  - name: healthtech-security
+    interval: 30s
+    rules:
+      # Authentication Failures
+      - alert: HighAuthFailureRate
+        expr: |
+          sum(rate(auth_failures_total[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High authentication failure rate"
+          description: "{{ $value }} auth failures per second."
+
+      # Rate Limiting
+      - alert: HighRateLimitHits
+        expr: |
+          sum(rate(rate_limit_hits_total[5m])) by (endpoint) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate limit hits on {{ $labels.endpoint }}"
+          description: "{{ $value }} rate limit hits per second."
+
+  - name: healthtech-business
+    interval: 1m
+    rules:
+      # SOAP Note Generation
+      - alert: LowSOAPNoteGeneration
+        expr: |
+          sum(rate(soap_notes_generated_total[1h])) < 1
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Low SOAP note generation rate"
+          description: "Less than 1 SOAP note generated in the last hour."
+
+      # FHIR Push Failures
+      - alert: FHIRPushFailures
+        expr: |
+          sum(rate(fhir_push_failures_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "FHIR push failures detected"
+          description: "{{ $value }} FHIR push failures per second."

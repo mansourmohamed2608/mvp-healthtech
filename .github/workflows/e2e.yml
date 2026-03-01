@@ -1,0 +1,175 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run E2E tests nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  cypress-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: healthtech
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: healthtech_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install gateway dependencies
+        working-directory: gateway
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend-vite
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: frontend-vite
+        run: pnpm build
+
+      - name: Start gateway (background)
+        working-directory: gateway
+        env:
+          NODE_ENV: test
+          JWT_SECRET: test-jwt-secret
+          DATABASE_URL: postgres://healthtech:testpassword@localhost:5432/healthtech_test
+          REDIS_URL: redis://localhost:6379
+          INTERNAL_SECRET: test-internal-secret
+        run: |
+          npm run start:dev &
+          sleep 10
+
+      - name: Serve frontend (background)
+        working-directory: frontend-vite
+        run: |
+          npx serve -s dist -l 5173 &
+          sleep 5
+
+      - name: Wait for services
+        run: |
+          timeout 60 bash -c 'until curl -s http://localhost:3000/health; do sleep 2; done' || echo "Gateway health check timed out"
+          timeout 30 bash -c 'until curl -s http://localhost:5173; do sleep 2; done' || echo "Frontend health check timed out"
+
+      - name: Run Cypress E2E tests
+        uses: cypress-io/github-action@v6
+        with:
+          working-directory: frontend-vite
+          browser: chrome
+          wait-on: 'http://localhost:5173'
+          wait-on-timeout: 120
+        env:
+          CYPRESS_BASE_URL: http://localhost:5173
+          CYPRESS_API_URL: http://localhost:3000
+
+      - name: Upload Cypress screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cypress-screenshots
+          path: frontend-vite/cypress/screenshots
+          retention-days: 7
+
+      - name: Upload Cypress videos
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cypress-videos
+          path: frontend-vite/cypress/videos
+          retention-days: 7
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: healthtech
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: healthtech_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install gateway dependencies
+        working-directory: gateway
+        run: npm ci
+
+      - name: Run integration tests
+        working-directory: gateway
+        env:
+          NODE_ENV: test
+          JWT_SECRET: test-jwt-secret
+          DATABASE_URL: postgres://healthtech:testpassword@localhost:5432/healthtech_test
+          REDIS_URL: redis://localhost:6379
+          INTERNAL_SECRET: test-internal-secret
+        run: npm run test:e2e
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results
+          path: gateway/coverage
+          retention-days: 7

@@ -1,38 +1,54 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AnimatePresence } from 'framer-motion';
 import { useThemeStore } from '@store/themeStore';
-import { useSmoothScroll } from '@hooks/useSmoothScroll';
+import { useAuthStore } from '@store/authStore';
 
-// Layout
-import Layout from '@components/Layout/Layout';
+// Layouts
+import ClinicalLayout from '@components/Layout/ClinicalLayout';
 
 // Pages
+import Login from '@pages/Login';
+import DashboardNew from '@pages/DashboardNew';
 import ClinicalNotes from '@pages/ClinicalNotes';
-import VoiceAgent from '@pages/VoiceAgent';
+import VoiceAgentClean from '@pages/VoiceAgentClean';
+import KnowledgeBase from '@pages/KnowledgeBase';
+
+// Protected Route wrapper
+const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
+  const { token } = useAuthStore();
+  if (!token) {
+    return <Navigate to="/login" replace />;
+  }
+  return <>{children}</>;
+};
 
 function App() {
   const { theme } = useThemeStore();
-  useSmoothScroll();
 
   useEffect(() => {
-    // Apply theme class to document
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
 
   return (
     <BrowserRouter>
-      <AnimatePresence mode="wait">
-        <Routes>
-          <Route path="/" element={<Layout />}>
-            <Route index element={<Navigate to="/voice-agent" replace />} />
-            <Route path="voice-agent" element={<VoiceAgent />} />
-            <Route path="clinical-notes" element={<ClinicalNotes />} />
-            <Route path="features/clinical-notes" element={<Navigate to="/clinical-notes" replace />} />
-            <Route path="*" element={<Navigate to="/voice-agent" replace />} />
-          </Route>
-        </Routes>
-      </AnimatePresence>
+      <Routes>
+        {/* Public route */}
+        <Route path="/login" element={<Login />} />
+        
+        {/* Protected routes with clinical layout */}
+        <Route path="/" element={
+          <ProtectedRoute>
+            <ClinicalLayout />
+          </ProtectedRoute>
+        }>
+          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route path="dashboard" element={<DashboardNew />} />
+          <Route path="voice-agent" element={<VoiceAgentClean />} />
+          <Route path="clinical-notes" element={<ClinicalNotes />} />
+          <Route path="knowledge-base" element={<KnowledgeBase />} />
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        </Route>
+      </Routes>
     </BrowserRouter>
   );
 }

@@ -1,0 +1,578 @@
+import { useState, useEffect, useRef } from 'react';
+import { useThemeStore } from '@store/themeStore';
+import { useAuthStore } from '@store/authStore';
+import {
+  IconPhone,
+  IconPhoneOff,
+  IconMicrophone,
+  IconMicrophoneOff,
+  IconCheck,
+  IconAlertCircle,
+  IconLoader2,
+  IconSettings,
+  IconEar,
+  IconVolume,
+  IconMessage
+} from '@tabler/icons-react';
+import { Device, Call } from '@twilio/voice-sdk';
+import api from '../utils/api';
+import clsx from 'clsx';
+
+interface Message {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: Date;
+}
+
+type VoiceActivityState = 'idle' | 'listening' | 'processing' | 'speaking';
+
+const VoiceAgentClean = () => {
+  const { theme, language } = useThemeStore();
+  const { token } = useAuthStore();
+  const [device, setDevice] = useState<Device | null>(null);
+  const [call, setCall] = useState<Call | null>(null);
+  const [callStatus, setCallStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
+  const [transcript, setTranscript] = useState<Message[]>([]);
+  const [isThinking, setIsThinking] = useState(false);
+  const [error, setError] = useState<string>('');
+  const [isMuted, setIsMuted] = useState(false);
+  const [deviceReady, setDeviceReady] = useState(false);
+  const [callSid, setCallSid] = useState<string>('');
+  const [dialectPreference, setDialectPreference] = useState<'auto' | 'egypt' | 'saudi'>('auto');
+  const [voicePreference, setVoicePreference] = useState<'auto' | 'egypt' | 'saudi'>('auto');
+  const [prefsStatus, setPrefsStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [prefsError, setPrefsError] = useState<string>('');
+  const [introMessage, setIntroMessage] = useState<Message | null>(null);
+  const [voiceActivity, setVoiceActivity] = useState<VoiceActivityState>('idle');
+  const [showSettings, setShowSettings] = useState(false);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const lastMessageRef = useRef<Message | null>(null);
+
+  const resolveVoiceId = (pref: string) => {
+    if (pref === 'egypt') return 'egtts';
+    if (pref === 'saudi') return 'saudi-tts';
+    return undefined;
+  };
+
+  // Auto-scroll transcript
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [transcript]);
+
+  // Sync voice preferences
+  useEffect(() => {
+    if (!callSid || callStatus !== 'connected') return;
+    let cancelled = false;
+
+    const syncPreferences = async () => {
+      setPrefsStatus('saving');
+      setPrefsError('');
+      try {
+        const voicePayload = voicePreference === 'auto' ? 'auto' : resolveVoiceId(voicePreference);
+        await api.updateConversationPreferences(callSid, {
+          dialect: dialectPreference,
+          voice: voicePayload,
+        });
+        if (!cancelled) setPrefsStatus('saved');
+      } catch (err: any) {
+        if (!cancelled) {
+          setPrefsStatus('error');
+          setPrefsError(err.message || 'Failed to update preferences');
+        }
+      }
+    };
+
+    syncPreferences();
+    return () => { cancelled = true; };
+  }, [callSid, callStatus, dialectPreference, voicePreference]);
+
+  // Poll transcript history
+  useEffect(() => {
+    if (!callSid || callStatus !== 'connected') return;
+    let cancelled = false;
+
+    const fetchHistory = async () => {
+      try {
+        const data = await api.getConversationHistory(callSid, 80);
+        if (cancelled) return;
+        const historyMessages: Message[] = (data.messages || []).map((msg: any) => ({
+          role: msg.role === 'assistant' || msg.role === 'system' ? msg.role : 'user',
+          content: msg.content,
+          timestamp: new Date(msg.timestamp),
+        }));
+        const merged = introMessage ? [introMessage, ...historyMessages] : historyMessages;
+        setTranscript(merged);
+        
+        const last = historyMessages[historyMessages.length - 1];
+        const isNewMessage = last && (!lastMessageRef.current || 
+          lastMessageRef.current.content !== last.content);
+        
+        if (last) {
+          lastMessageRef.current = last;
+          if (last.role === 'user') {
+            setVoiceActivity('processing');
+            setIsThinking(true);
+          } else if (last.role === 'assistant') {
+            if (isNewMessage) {
+              setVoiceActivity('speaking');
+              setTimeout(() => { if (!cancelled) setVoiceActivity('listening'); }, 2000);
+            } else {
+              setVoiceActivity('listening');
+            }
+            setIsThinking(false);
+          }
+        } else {
+          setVoiceActivity('listening');
+          setIsThinking(false);
+        }
+      } catch (err: any) {
+        setError((prev) => prev || `Transcript sync failed: ${err.message}`);
+        setIsThinking(false);
+      }
+    };
+
+    fetchHistory();
+    const intervalId = window.setInterval(fetchHistory, 2000);
+    return () => { cancelled = true; window.clearInterval(intervalId); };
+  }, [callSid, callStatus, introMessage]);
+
+  // Initialize Twilio Device
+  useEffect(() => {
+    let mounted = true;
+    let twilioDevice: Device | null = null;
+
+    async function initTwilioDevice() {
+      if (!token) {
+        setDeviceReady(false);
+        setDevice(null);
+        setError(language === 'ar' ? 'يرجى تسجيل الدخول' : 'Please sign in');
+        return;
+      }
+      try {
+        // Check microphone
+        try {
+          const testStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          testStream.getTracks().forEach(track => track.stop());
+        } catch (micErr: any) {
+          setError(language === 'ar' 
+            ? 'فشل الوصول إلى الميكروفون'
+            : 'Microphone access failed');
+          setDeviceReady(false);
+          return;
+        }
+
+        const { token: twilioToken } = await api.getTwilioToken();
+        if (!mounted) return;
+
+        twilioDevice = new Device(twilioToken, {
+          codecPreferences: [Call.Codec.Opus, Call.Codec.PCMU],
+          edge: 'ashburn',
+        });
+
+        twilioDevice.on('registered', () => {
+          setDeviceReady(true);
+          setError('');
+        });
+
+        twilioDevice.on('error', (error: any) => {
+          setError(`Device error: ${error.message}`);
+          setDeviceReady(false);
+        });
+
+        twilioDevice.on('unregistered', () => setDeviceReady(false));
+
+        await twilioDevice.register();
+        if (!mounted) return;
+        setDevice(twilioDevice);
+      } catch (err: any) {
+        setError(`Initialization failed: ${err.message}`);
+        setDeviceReady(false);
+      }
+    }
+
+    initTwilioDevice();
+    return () => { mounted = false; if (twilioDevice) twilioDevice.destroy(); };
+  }, [token, language]);
+
+  const startCall = async () => {
+    if (!device) {
+      setError('Device not initialized');
+      return;
+    }
+
+    try {
+      setCallStatus('connecting');
+      setError('');
+      setTranscript([]);
+      setIntroMessage(null);
+      setCallSid('');
+
+      const outgoingCall = await device.connect({ 
+        params: { To: '+1234567890' },
+        rtcConstraints: {
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        }
+      });
+      setCall(outgoingCall);
+
+      outgoingCall.on('accept', () => {
+        setCallStatus('connected');
+        setVoiceActivity('listening');
+        const callParams = (outgoingCall as any)?.parameters || {};
+        const sid = callParams.CallSid || callParams.callSid || '';
+        if (sid) setCallSid(sid);
+        
+        const greeting: Message = {
+          role: 'system',
+          content: language === 'ar' 
+            ? 'مرحباً بك. كيف يمكنني مساعدتك؟'
+            : 'Welcome. How can I help you?',
+          timestamp: new Date(),
+        };
+        setIntroMessage(greeting);
+        setTranscript([greeting]);
+      });
+
+      outgoingCall.on('disconnect', () => {
+        setCallStatus('disconnected');
+        setVoiceActivity('idle');
+        setCall(null);
+        setCallSid('');
+        setTimeout(() => setCallStatus('idle'), 2000);
+      });
+
+      outgoingCall.on('cancel', () => {
+        setCallStatus('idle');
+        setVoiceActivity('idle');
+        setCall(null);
+      });
+
+      outgoingCall.on('error', (error: any) => {
+        setError(`Call error: ${error.message}`);
+        setCallStatus('idle');
+        setCall(null);
+      });
+    } catch (err: any) {
+      setError(`Failed to connect: ${err.message}`);
+      setCallStatus('idle');
+    }
+  };
+
+  const endCall = () => {
+    if (call) {
+      call.disconnect();
+      setCall(null);
+      setCallStatus('idle');
+      setCallSid('');
+      setIntroMessage(null);
+      setVoiceActivity('idle');
+      lastMessageRef.current = null;
+    }
+  };
+
+  const toggleMute = () => {
+    if (call) {
+      call.mute(!isMuted);
+      setIsMuted(!isMuted);
+    }
+  };
+
+  const getStatusInfo = () => {
+    const statusMap = {
+      idle: { text: language === 'ar' ? 'جاهز' : 'Ready', color: 'bg-gray-400' },
+      connecting: { text: language === 'ar' ? 'جاري الاتصال...' : 'Connecting...', color: 'bg-yellow-500' },
+      connected: { text: language === 'ar' ? 'متصل' : 'Connected', color: 'bg-green-500' },
+      disconnected: { text: language === 'ar' ? 'منتهي' : 'Ended', color: 'bg-gray-500' }
+    };
+    return statusMap[callStatus];
+  };
+
+  const statusInfo = getStatusInfo();
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-2xl lg:text-3xl font-bold">
+          {language === 'ar' ? 'المساعد الصوتي' : 'Voice Agent'}
+        </h1>
+        <p className={clsx('mt-1', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
+          {language === 'ar' ? 'تحدث مع المساعد الطبي الذكي' : 'Talk to the AI medical assistant'}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Main Call Panel */}
+        <div className={clsx(
+          'lg:col-span-2 rounded-xl border p-6',
+          theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+        )}>
+          {/* Status Bar */}
+          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-200 dark:border-gray-700">
+            <div className="flex items-center gap-3">
+              <div className={clsx('w-3 h-3 rounded-full', statusInfo.color, 
+                callStatus === 'connecting' && 'animate-pulse')} />
+              <span className="font-medium">{statusInfo.text}</span>
+              {callSid && (
+                <span className={clsx('text-xs', theme === 'dark' ? 'text-gray-500' : 'text-gray-400')}>
+                  #{callSid.slice(-8)}
+                </span>
+              )}
+            </div>
+            {deviceReady && (
+              <span className="flex items-center gap-1 text-green-500 text-sm">
+                <IconCheck size={16} />
+                {language === 'ar' ? 'جاهز' : 'Ready'}
+              </span>
+            )}
+          </div>
+
+          {/* Error Display */}
+          {error && (
+            <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center gap-2 text-red-500">
+              <IconAlertCircle size={18} />
+              <span className="text-sm">{error}</span>
+            </div>
+          )}
+
+          {/* Voice Activity Indicator */}
+          {callStatus === 'connected' && (
+            <div className={clsx(
+              'mb-6 p-4 rounded-xl flex items-center gap-4',
+              theme === 'dark' ? 'bg-gray-700/50' : 'bg-gray-50'
+            )}>
+              {voiceActivity === 'listening' && (
+                <>
+                  <div className="p-3 rounded-full bg-green-500">
+                    <IconEar size={24} className="text-white" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-green-500">
+                      {language === 'ar' ? 'أستمع إليك...' : 'Listening...'}
+                    </p>
+                    <p className={clsx('text-sm', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
+                      {language === 'ar' ? 'تحدث الآن' : 'Speak now'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 ml-auto">
+                    {[...Array(4)].map((_, i) => (
+                      <div key={i} className="w-1 bg-green-500 rounded-full animate-pulse"
+                        style={{ height: `${12 + i * 4}px`, animationDelay: `${i * 0.15}s` }} />
+                    ))}
+                  </div>
+                </>
+              )}
+              {voiceActivity === 'processing' && (
+                <>
+                  <div className="p-3 rounded-full bg-yellow-500">
+                    <IconLoader2 size={24} className="text-white animate-spin" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-yellow-500">
+                      {language === 'ar' ? 'جاري المعالجة...' : 'Processing...'}
+                    </p>
+                    <p className={clsx('text-sm', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
+                      {language === 'ar' ? 'أفكر في إجابتك' : 'Thinking...'}
+                    </p>
+                  </div>
+                </>
+              )}
+              {voiceActivity === 'speaking' && (
+                <>
+                  <div className="p-3 rounded-full bg-blue-500">
+                    <IconVolume size={24} className="text-white" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-blue-500">
+                      {language === 'ar' ? 'أتحدث...' : 'Speaking...'}
+                    </p>
+                    <p className={clsx('text-sm', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
+                      {language === 'ar' ? 'استمع للإجابة' : 'Listen to response'}
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Call Controls */}
+          <div className="flex flex-wrap gap-3">
+            {callStatus === 'idle' && (
+              <button
+                onClick={startCall}
+                disabled={!deviceReady}
+                className={clsx(
+                  'flex-1 flex items-center justify-center gap-2 py-4 px-6 rounded-xl font-medium transition-colors',
+                  deviceReady 
+                    ? 'bg-green-600 hover:bg-green-700 text-white'
+                    : 'bg-gray-300 dark:bg-gray-700 cursor-not-allowed text-gray-500'
+                )}
+              >
+                <IconPhone size={20} />
+                {language === 'ar' ? 'ابدأ المكالمة' : 'Start Call'}
+              </button>
+            )}
+
+            {(callStatus === 'connected' || callStatus === 'connecting') && (
+              <>
+                <button
+                  onClick={toggleMute}
+                  className={clsx(
+                    'flex items-center justify-center gap-2 py-3 px-5 rounded-xl font-medium transition-colors',
+                    isMuted 
+                      ? 'bg-yellow-500 hover:bg-yellow-600 text-white'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  )}
+                >
+                  {isMuted ? <IconMicrophoneOff size={20} /> : <IconMicrophone size={20} />}
+                  {isMuted ? (language === 'ar' ? 'إلغاء الكتم' : 'Unmute') : (language === 'ar' ? 'كتم' : 'Mute')}
+                </button>
+                <button
+                  onClick={endCall}
+                  className="flex-1 flex items-center justify-center gap-2 py-3 px-5 rounded-xl font-medium bg-red-600 hover:bg-red-700 text-white transition-colors"
+                >
+                  <IconPhoneOff size={20} />
+                  {language === 'ar' ? 'إنهاء' : 'End Call'}
+                </button>
+              </>
+            )}
+
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className={clsx(
+                'p-3 rounded-xl transition-colors',
+                theme === 'dark' ? 'hover:bg-gray-700' : 'hover:bg-gray-100',
+                showSettings && (theme === 'dark' ? 'bg-gray-700' : 'bg-gray-100')
+              )}
+            >
+              <IconSettings size={20} />
+            </button>
+          </div>
+
+          {/* Voice Settings */}
+          {showSettings && (
+            <div className={clsx(
+              'mt-4 p-4 rounded-xl',
+              theme === 'dark' ? 'bg-gray-700/50' : 'bg-gray-50'
+            )}>
+              <h3 className="font-medium mb-3">
+                {language === 'ar' ? 'إعدادات الصوت' : 'Voice Settings'}
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={clsx(
+                    'block text-sm mb-1',
+                    theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+                  )}>
+                    {language === 'ar' ? 'اللهجة' : 'Dialect'}
+                  </label>
+                  <select
+                    value={dialectPreference}
+                    onChange={(e) => setDialectPreference(e.target.value as 'auto' | 'egypt' | 'saudi')}
+                    className={clsx(
+                      'w-full px-3 py-2 rounded-lg border transition-colors',
+                      theme === 'dark'
+                        ? 'bg-gray-800 border-gray-600 text-white'
+                        : 'bg-white border-gray-200 text-gray-900'
+                    )}
+                  >
+                    <option value="auto">{language === 'ar' ? 'تلقائي' : 'Auto'}</option>
+                    <option value="egypt">{language === 'ar' ? 'مصري' : 'Egyptian'}</option>
+                    <option value="saudi">{language === 'ar' ? 'سعودي' : 'Saudi'}</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={clsx(
+                    'block text-sm mb-1',
+                    theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+                  )}>
+                    {language === 'ar' ? 'الصوت' : 'Voice'}
+                  </label>
+                  <select
+                    value={voicePreference}
+                    onChange={(e) => setVoicePreference(e.target.value as 'auto' | 'egypt' | 'saudi')}
+                    className={clsx(
+                      'w-full px-3 py-2 rounded-lg border transition-colors',
+                      theme === 'dark'
+                        ? 'bg-gray-800 border-gray-600 text-white'
+                        : 'bg-white border-gray-200 text-gray-900'
+                    )}
+                  >
+                    <option value="auto">{language === 'ar' ? 'تلقائي' : 'Auto'}</option>
+                    <option value="egypt">{language === 'ar' ? 'مصري' : 'Egyptian'}</option>
+                    <option value="saudi">{language === 'ar' ? 'سعودي' : 'Saudi'}</option>
+                  </select>
+                </div>
+              </div>
+              {prefsStatus === 'saving' && (
+                <p className="text-xs text-yellow-500 mt-2 flex items-center gap-1">
+                  <IconLoader2 size={12} className="animate-spin" /> Saving...
+                </p>
+              )}
+              {prefsStatus === 'saved' && (
+                <p className="text-xs text-green-500 mt-2 flex items-center gap-1">
+                  <IconCheck size={12} /> Saved
+                </p>
+              )}
+              {prefsError && (
+                <p className="text-xs text-red-500 mt-2">{prefsError}</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Transcript Panel */}
+        <div className={clsx(
+          'rounded-xl border p-4',
+          theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+        )}>
+          <div className="flex items-center gap-2 mb-4">
+            <IconMessage size={18} />
+            <h2 className="font-medium">
+              {language === 'ar' ? 'المحادثة' : 'Transcript'}
+            </h2>
+            {isThinking && <IconLoader2 size={14} className="animate-spin text-gray-400" />}
+          </div>
+
+          <div className={clsx(
+            'h-[400px] lg:h-[500px] overflow-y-auto rounded-lg p-3 space-y-3',
+            theme === 'dark' ? 'bg-gray-900/50' : 'bg-gray-50'
+          )}>
+            {transcript.length === 0 ? (
+              <div className="flex items-center justify-center h-full">
+                <p className={clsx('text-sm', theme === 'dark' ? 'text-gray-500' : 'text-gray-400')}>
+                  {language === 'ar' ? 'ابدأ المكالمة لرؤية المحادثة' : 'Start a call to see transcript'}
+                </p>
+              </div>
+            ) : (
+              transcript.map((msg, idx) => (
+                <div
+                  key={idx}
+                  className={clsx(
+                    'max-w-[90%] rounded-xl p-3',
+                    msg.role === 'user'
+                      ? 'bg-blue-600 text-white ml-auto'
+                      : msg.role === 'system'
+                        ? 'bg-gray-300 dark:bg-gray-700 mx-auto text-center'
+                        : 'bg-green-600 text-white'
+                  )}
+                >
+                  <p className="text-sm" dir={language === 'ar' ? 'rtl' : 'ltr'}>{msg.content}</p>
+                  <p className="text-xs opacity-70 mt-1">
+                    {msg.timestamp.toLocaleTimeString(language === 'ar' ? 'ar-EG' : 'en-US', { 
+                      hour: '2-digit', 
+                      minute: '2-digit' 
+                    })}
+                  </p>
+                </div>
+              ))
+            )}
+            <div ref={transcriptEndRef} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default VoiceAgentClean;
