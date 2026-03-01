@@ -10,8 +10,7 @@ services:
       context: ../frontend-vite
       dockerfile: Dockerfile
     ports:
-      - "80:80"      # Main demo port
-      - "5173:80"    # Alternative port
+      - "5173:80"    # System nginx reverse-proxies this port to :443
     environment:
       - VITE_API_URL=http://gateway:3000
     depends_on:
