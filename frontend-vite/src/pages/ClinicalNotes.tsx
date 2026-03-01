@@ -114,17 +114,8 @@ export default function ClinicalNotes() {
   }, [userId, practitionerId]);
 
   useEffect(() => {
-    loadTemplates();
-  }, []);
-
-  useEffect(() => {
     if (token) {
       loadTemplates();
-    }
-  }, [token]);
-
-  useEffect(() => {
-    if (token) {
       loadPatients();
     }
   }, [token]);

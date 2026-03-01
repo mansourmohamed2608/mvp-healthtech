@@ -1,7 +1,6 @@
 # docker-compose.demo.yml — INVESTOR DEMO on GCE L4
 # Optimized for low latency and high accuracy
 # Single L4 GPU (24GB VRAM) - plenty for ASR + LLM sequential processing
-version: '3.8'
 
 services:
   # ============ FRONTEND ============
