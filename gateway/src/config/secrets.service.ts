@@ -95,6 +95,7 @@ class AwsSecretsProvider implements SecretProvider {
 
   private async getClient() {
     if (!this.client) {
+      // @ts-ignore - optional dependency, only needed when SECRETS_PROVIDER=aws
       const { SecretsManagerClient, GetSecretValueCommand } = await import(
         '@aws-sdk/client-secrets-manager'
       );
@@ -137,7 +138,9 @@ class AzureKeyVaultProvider implements SecretProvider {
 
   private async getClient() {
     if (!this.client) {
+      // @ts-ignore - optional dependency, only needed when SECRETS_PROVIDER=azure
       const { SecretClient } = await import('@azure/keyvault-secrets');
+      // @ts-ignore
       const { DefaultAzureCredential } = await import('@azure/identity');
       this.client = new SecretClient(this.vaultUrl, new DefaultAzureCredential());
     }

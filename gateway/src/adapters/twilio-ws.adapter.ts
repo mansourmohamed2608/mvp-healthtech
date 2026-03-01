@@ -45,7 +45,7 @@ export class TwilioWsAdapter extends AbstractWsAdapter {
   }
 
   bindClientDisconnect(client: WebSocket, callback: Function) {
-    client.on('close', callback);
+    client.on('close', callback as any);
   }
 
   bindMessageHandlers(
@@ -89,7 +89,7 @@ export class TwilioWsAdapter extends AbstractWsAdapter {
     }
   }
 
-  close(server: WebSocket.Server) {
-    server.close();
+  async close(server: WebSocket.Server): Promise<void> {
+    return new Promise((resolve) => server.close(() => resolve()));
   }
 }

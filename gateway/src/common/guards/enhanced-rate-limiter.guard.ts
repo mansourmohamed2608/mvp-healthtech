@@ -1,5 +1,5 @@
 import { Injectable, ExecutionContext } from '@nestjs/common';
-import { ThrottlerGuard, ThrottlerException } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottlerException, ThrottlerRequest } from '@nestjs/throttler';
 import { FastifyRequest } from 'fastify';
 
 /**
@@ -58,11 +58,8 @@ export class EnhancedRateLimiterGuard extends ThrottlerGuard {
     return `ip:${ip}`;
   }
 
-  protected async handleRequest(
-    context: ExecutionContext,
-    limit: number,
-    ttl: number,
-  ): Promise<boolean> {
+  protected async handleRequest(requestProps: ThrottlerRequest): Promise<boolean> {
+    const { context, limit, ttl, throttler, blockDuration } = requestProps;
     const request = context.switchToHttp().getRequest<FastifyRequest>();
     const path = this.normalizePath(request.url);
     
@@ -83,7 +80,7 @@ export class EnhancedRateLimiterGuard extends ThrottlerGuard {
     const tracker = await this.getTracker(request);
     const key = this.generateKey(context, tracker, `${path}`);
     
-    const { totalHits } = await this.storageService.increment(key, effectiveTtl);
+    const { totalHits } = await this.storageService.increment(key, effectiveTtl, effectiveLimit, blockDuration ?? 0, throttler?.name ?? 'default');
 
     if (totalHits > effectiveLimit) {
       // Add rate limit headers
