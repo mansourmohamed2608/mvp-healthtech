@@ -90,6 +90,35 @@ Configure at: Repository > Settings > Secrets and variables > Actions
 | `DATABASE_URL` | Test database connection |
 | `GHCR_TOKEN` | Container registry access |
 
+### Complete GitHub Actions Secrets for CI/CD Deploy
+
+The deploy pipeline (`deploy-staging` / `deploy-production` jobs) additionally requires:
+
+| Secret Name | Description | How to Generate |
+|---|---|---|
+| `GCP_SA_KEY` | GCP service account JSON key (base64 or raw JSON) | `gcloud iam service-accounts keys create key.json --iam-account=<sa>@<project>.iam.gserviceaccount.com` |
+| `GCP_PROJECT_ID` | GCP project ID | `healthtech-482409` |
+| `GCE_ZONE` | GCE zone of the VM | `us-east1-b` |
+| `GCE_STAGING_INSTANCE` | VM name for staging | `healthtech-demo` |
+| `GCE_PRODUCTION_INSTANCE` | VM name for production | `healthtech-prod` (when provisioned) |
+| `STAGING_URL` | HTTPS URL for staging | `https://34-26-235-26.nip.io` |
+| `PRODUCTION_URL` | HTTPS URL for production | `https://healthtech.example.com` |
+| `STAGING_CORS_ORIGINS` | Allowed origins for staging | `https://34-26-235-26.nip.io` |
+| `PRODUCTION_CORS_ORIGINS` | Allowed origins for production | `https://healthtech.example.com` |
+| `POSTGRES_PASSWORD` | Database password | `openssl rand -hex 24` |
+| `GRAFANA_PASSWORD` | Grafana admin password | `openssl rand -hex 16` |
+| `HUGGINGFACE_HUB_TOKEN` | HuggingFace model download token | https://huggingface.co/settings/tokens |
+| `TWILIO_ACCOUNT_SID` | Twilio account SID | Twilio console |
+| `TWILIO_AUTH_TOKEN` | Twilio auth token | Twilio console |
+| `TWILIO_API_KEY` | Twilio API key | Twilio console |
+| `TWILIO_API_SECRET` | Twilio API secret | Twilio console |
+| `TWILIO_PHONE_NUMBER` | Twilio phone number | Twilio console |
+| `TWILIO_TWIML_APP_SID` | Twilio TwiML app SID | Twilio console |
+
+Add secrets at: **GitHub → Repository → Settings → Secrets and variables → Actions → New repository secret**
+
+> Note: The deploy job writes secrets to `/tmp/deploy.env` on the runner (never to disk in the repo), then SCPs the file to the VM's `infra/.env`. The file is never committed to git.
+
 ---
 
 ## Production Secrets

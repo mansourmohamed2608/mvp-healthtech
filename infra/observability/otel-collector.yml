@@ -1,19 +1,63 @@
 receivers:
   otlp:
     protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
 
 processors:
   batch:
+    timeout: 5s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+  resource:
+    attributes:
+      - key: service.environment
+        value: ${env:NODE_ENV}
+        action: upsert
 
 exporters:
-  logging:
-    loglevel: info
+  # Structured trace logging (always on — no extra infra required)
+  debug:
+    verbosity: normal
+
+  # Prometheus metrics export (scraped by Prometheus on :8889)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: otel
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Otlphttp to Tempo if TEMPO_ENDPOINT is set (optional — uncomment for production)
+  # otlphttp/tempo:
+  #   endpoint: ${env:TEMPO_ENDPOINT}   # e.g. http://tempo:4318
+  #   tls:
+  #     insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1888
 
 service:
+  extensions: [health_check, pprof]
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [logging]
+      processors: [memory_limiter, batch, resource]
+      exporters: [debug]
+      # Add otlphttp/tempo to exporters list when Tempo is available
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

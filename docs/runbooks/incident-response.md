@@ -6,6 +6,44 @@ This playbook provides structured procedures for responding to production incide
 
 ---
 
+## GCP Demo VM – Quick Triage Commands
+
+Run these first for any incident. VM: `healthtech-demo`, project: `healthtech-482409`.
+
+```bash
+# 1. SSH in
+gcloud compute ssh healthtech-demo --zone=us-east1-b --project=healthtech-482409 \
+  --strict-host-key-checking=no
+
+# 2. Container health at a glance
+docker ps --format 'table {{.Names}}\t{{.Status}}' | sort
+
+# 3. Gateway logs (most frequent failure point)
+docker logs infra-gateway-1 --tail 60
+
+# 4. Check for TypeScript compilation errors (kills gateway startup)
+docker logs infra-gateway-1 2>&1 | grep 'error TS\|Found [0-9]* errors'
+
+# 5. Nginx/SSL
+sudo systemctl status nginx
+curl -sf http://localhost:3000/health && echo "Gateway OK"
+
+# 6. GPU memory (ASR/LLM OOM is common)
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+```
+
+**Common quick-fixes:**
+
+| Symptom | Fix |
+|---|---|
+| 502 on all routes | `docker compose -f infra/docker-compose.demo.yml restart gateway` |
+| `Found N errors` in gateway logs | Fix TS errors, push, rebuild gateway |
+| ASR/LLM `unhealthy` | `docker compose restart asr` or `restart llm` |
+| Nginx 502 but gateway OK | `sudo systemctl reload nginx` |
+| DB connection refused | `docker compose restart postgres && restart gateway` |
+
+---
+
 ## Severity Levels
 
 | Level | Description | Response Time | Examples |

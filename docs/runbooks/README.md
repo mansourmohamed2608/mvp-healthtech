@@ -6,14 +6,14 @@ This directory contains operational procedures for the HealthTech platform.
 
 | Runbook | Description |
 |---------|-------------|
-| [startup.md](./startup.md) | Service startup procedures |
+| [startup-shutdown.md](./startup-shutdown.md) | **GCP VM** startup, shutdown, demo checklist |
+| [startup.md](./startup.md) | Local dev service startup procedures |
 | [shutdown.md](./shutdown.md) | Graceful shutdown procedures |
-| [incident-response.md](./incident-response.md) | Incident response playbook |
+| [incident-response.md](./incident-response.md) | Incident response playbook (GCP triage first) |
+| [rollback.md](./rollback.md) | Deployment rollback procedures (GCP fast rollback) |
 | [scaling.md](./scaling.md) | Horizontal and vertical scaling |
 | [database.md](./database.md) | Database operations and recovery |
-| [rollback.md](./rollback.md) | Deployment rollback procedures |
 | [monitoring.md](./monitoring.md) | Monitoring and alerting guide |
-| [troubleshooting.md](./troubleshooting.md) | Common issues and solutions |
 
 ## Quick Reference
 

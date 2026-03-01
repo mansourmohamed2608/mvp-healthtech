@@ -6,6 +6,55 @@ This document outlines security measures implemented in the HealthTech platform.
 
 ---
 
+## ✅ Current Implementation Status
+
+The following controls are **active in the deployed codebase**. Each entry includes the exact source file.
+
+| Control | Status | Implementation |
+|---|---|---|
+| **Input validation** | ✅ Active | `gateway/src/main.ts` – `ValidationPipe({ whitelist: true, transform: true })` applied globally |
+| **Input sanitization** | ✅ Active | `gateway/src/common/interceptors/input-sanitization.interceptor.ts` – blocks SQL/NoSQL injection, XSS, path traversal |
+| **Rate limiting** | ✅ Active | `gateway/src/common/guards/enhanced-rate-limiter.guard.ts` + `@nestjs/throttler` v6.4 – per-endpoint and per-tenant limits |
+| **Security headers** | ✅ Active | `gateway/src/main.ts` – `helmet()` with CSP, HSTS (1 yr), frameguard: deny, noSniff, xssFilter, referrer policy |
+| **JWT authentication** | ✅ Active | `gateway/src/auth/` – HS256 JWT, validated on every protected route via `JwtAuthGuard` |
+| **WebSocket auth** | ✅ Active | `gateway/src/adapters/twilio-ws.adapter.ts` – HMAC-SHA256 sig + 5-min replay window |
+| **Internal service auth** | ✅ Active | All Python services validate `x-internal-secret` header on every non-health request |
+| **Audit logging** | ✅ Active | `gateway/src/audit/audit.service.ts` – tenant-scoped, writes to `audit_log` table in Postgres; `tenantId` is required (throws if missing) |
+| **Audit interceptor** | ✅ Active | `gateway/src/common/interceptors/audit-logging.interceptor.ts` – logs every API call with userId, tenantId, method, path, status, duration |
+| **CORS** | ✅ Active | `gateway/src/main.ts` – restricted to `CORS_ALLOWED_ORIGINS` env var |
+| **Gitleaks** | ✅ Active | `.github/workflows/ci.yml` – `gitleaks/gitleaks-action@v2` scans every push; `.gitleaks.toml` allowlists placeholder strings |
+| **NPM audit** | ✅ Active | CI: `npm audit --audit-level=high` on gateway |
+| **Container scan** | ✅ Active | CI: `aquasecurity/trivy-action` scans all Docker images |
+| **Encryption in transit** | ✅ Active | TLS 1.2+ via Let's Encrypt cert on nginx; HSTS preload |
+| **Encryption at rest** | ⚠️ Partial | GCP persistent disk is **not** encrypted with CMEK. See note below. |
+| **WAF** | ❌ Pending | No WAF in front of nginx yet. Cloud Armor recommended for production. |
+
+### Encryption at Rest – Gap and Remediation
+
+GCP Compute Engine disks are encrypted by default with Google-managed keys (AES-256), but **Customer-Managed Encryption Keys (CMEK)** are not configured. For HIPAA production readiness:
+
+```bash
+# 1. Create a Cloud KMS key ring
+gcloud kms keyrings create healthtech-keyring \
+  --location=us-east1 --project=healthtech-482409
+
+# 2. Create an encryption key
+gcloud kms keys create healthtech-disk-key \
+  --location=us-east1 \
+  --keyring=healthtech-keyring \
+  --purpose=encryption \
+  --project=healthtech-482409
+
+# 3. Create new disk with CMEK (migration step — requires VM stop)
+gcloud compute disks create healthtech-demo-encrypted \
+  --size=100GB --zone=us-east1-b \
+  --kms-key=projects/healthtech-482409/locations/us-east1/keyRings/healthtech-keyring/cryptoKeys/healthtech-disk-key
+```
+
+PostgreSQL data-at-rest encryption: install `pgcrypto` extension and use `pgp_sym_encrypt()` for PHI columns.
+
+---
+
 ## Security Layers
 
 ### 1. Network Security

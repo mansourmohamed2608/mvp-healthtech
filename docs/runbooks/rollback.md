@@ -6,6 +6,38 @@ This runbook covers deployment rollback procedures for the HealthTech platform.
 
 ---
 
+## GCP Production VM – Fast Rollback (30 seconds)
+
+The demo VM deploys via `git checkout <sha>` + `docker compose build`. To roll back:
+
+```bash
+gcloud compute ssh healthtech-demo \
+  --zone=us-east1-b --project=healthtech-482409 \
+  --strict-host-key-checking=no \
+  --command="
+    set -euo pipefail
+    cd ~/mvp-healthtech/infra
+
+    # Option A: roll back to the previous saved SHA (set automatically by CI/CD)
+    PREV_SHA=\$(cat /tmp/pre-deploy-sha.txt)
+    echo \"Rolling back to \${PREV_SHA}\"
+    cd ..
+    git checkout \${PREV_SHA}
+
+    # Option B: roll back to a specific tag or commit
+    # git checkout v1.2.3
+
+    cd infra
+    docker compose -f docker-compose.demo.yml up -d --build gateway frontend
+    sleep 25
+    curl -sf http://localhost:3000/health && echo 'Rollback successful' || echo 'Health check FAILED'
+  "
+```
+
+The CI/CD deploy job writes `/tmp/pre-deploy-sha.txt` on every deploy, so Option A works without knowing the previous SHA.
+
+---
+
 ## When to Rollback
 
 Trigger a rollback when:

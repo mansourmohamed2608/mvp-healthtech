@@ -1,0 +1,45 @@
+# Gitleaks configuration for HealthTech platform
+# Repo: mansourmohamed2608/mvp-healthtech
+# Purpose: block real secrets while allowing documented placeholder patterns
+
+title = "HealthTech Gitleaks Config"
+
+[extend]
+# Use the default gitleaks ruleset as base
+useDefault = true
+
+[allowlist]
+description = "Allow placeholder values used in .env.demo, .env.example and documentation"
+
+regexes = [
+  # Generic placeholder tokens used throughout demo/example files
+  '''GENERATE_ME_[A-Z0-9_]+''',
+  '''hf_xxxxxxxxxxxxxxxxxxxx''',
+  '''ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx''',
+  '''SKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx''',
+  '''APxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx''',
+  '''your_auth_token_here''',
+  '''your_api_secret_here''',
+  '''\+1xxxxxxxxxx''',
+  # Test/CI values
+  '''test-jwt-secret''',
+  '''test-internal''',
+  '''changeme''',
+  '''demo123''',
+  # Documentation examples
+  '''REPLACE_WITH_.*''',
+  '''<YOUR[_A-Z]+>''',
+]
+
+paths = [
+  # Example and demo env files — intentional placeholders only
+  '''.env\.demo''',
+  '''.env\.example''',
+  '''.env\.local\.example''',
+  # Documentation
+  '''docs/.*\.md''',
+  '''README.*\.md''',
+  # Test fixtures
+  '''.*\.spec\.ts''',
+  '''.*test.*\.py''',
+]

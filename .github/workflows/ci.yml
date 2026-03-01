@@ -354,20 +354,97 @@ jobs:
     if: github.ref == 'refs/heads/develop'
     environment:
       name: staging
-      url: https://staging.healthtech.example.com
+      url: ${{ secrets.STAGING_URL }}
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy to staging
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Write runtime env file
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          INTERNAL_SECRET: ${{ secrets.INTERNAL_SECRET }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          HUGGINGFACE_HUB_TOKEN: ${{ secrets.HUGGINGFACE_HUB_TOKEN }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_API_KEY: ${{ secrets.TWILIO_API_KEY }}
+          TWILIO_API_SECRET: ${{ secrets.TWILIO_API_SECRET }}
+          TWILIO_PHONE_NUMBER: ${{ secrets.TWILIO_PHONE_NUMBER }}
+          TWILIO_TWIML_APP_SID: ${{ secrets.TWILIO_TWIML_APP_SID }}
+          CORS_ALLOWED_ORIGINS: ${{ secrets.STAGING_CORS_ORIGINS }}
+          GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD }}
         run: |
-          echo "Deploying to staging environment..."
-          # Add your deployment commands here
-          # Examples:
-          # - kubectl apply -f infra/k8s/staging/
-          # - docker-compose -f docker-compose.staging.yml up -d
-          # - terraform apply -var="environment=staging"
+          cat > /tmp/deploy.env << EOF
+          JWT_SECRET=${JWT_SECRET}
+          INTERNAL_SECRET=${INTERNAL_SECRET}
+          WS_SHARED_SECRET=${INTERNAL_SECRET}
+          POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+          HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN}
+          TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+          TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+          TWILIO_API_KEY=${TWILIO_API_KEY}
+          TWILIO_API_SECRET=${TWILIO_API_SECRET}
+          TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
+          TWILIO_TWIML_APP_SID=${TWILIO_TWIML_APP_SID}
+          CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
+          GRAFANA_PASSWORD=${GRAFANA_PASSWORD}
+          EOF
+
+      - name: Deploy to GCE (staging)
+        env:
+          GCE_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GCE_ZONE: ${{ secrets.GCE_ZONE }}
+          GCE_INSTANCE: ${{ secrets.GCE_STAGING_INSTANCE }}
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          # Copy runtime env to VM — secrets never stored in git
+          gcloud compute scp /tmp/deploy.env \
+            "${GCE_INSTANCE}:~/mvp-healthtech/infra/.env" \
+            --zone="${GCE_ZONE}" --project="${GCE_PROJECT}" \
+            --strict-host-key-checking=no
+
+          # Deploy: checkout exact SHA, rebuild changed layers, rolling restart
+          gcloud compute ssh "${GCE_INSTANCE}" \
+            --zone="${GCE_ZONE}" --project="${GCE_PROJECT}" \
+            --strict-host-key-checking=no \
+            --command="
+              set -euo pipefail
+              cd ~/mvp-healthtech
+
+              # Save rollback checkpoint
+              git rev-parse HEAD > /tmp/pre-deploy-sha.txt
+              docker compose -f infra/docker-compose.demo.yml images -q > /tmp/pre-deploy-images.txt 2>/dev/null || true
+
+              git fetch origin
+              git checkout ${GIT_SHA}
+
+              cd infra
+              docker compose -f docker-compose.demo.yml build gateway frontend
+              docker compose -f docker-compose.demo.yml up -d
+
+              echo 'Waiting 25s for NestJS compilation...'
+              sleep 25
+
+              if ! curl -sf http://localhost:3000/health > /dev/null; then
+                echo '--- Gateway health FAILED — initiating rollback ---'
+                PREV_SHA=\$(cat /tmp/pre-deploy-sha.txt)
+                git checkout \${PREV_SHA}
+                docker compose -f docker-compose.demo.yml up -d --build gateway
+                echo 'ROLLBACK COMPLETE'
+                exit 1
+              fi
+              echo 'Staging deployment successful'
+            "
 
   # ========================================
-  # DEPLOY TO PRODUCTION
+  # DEPLOY TO PRODUCTION  (requires manual approval in GitHub environment settings)
   # ========================================
   deploy-production:
     runs-on: ubuntu-latest
@@ -375,13 +452,92 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment:
       name: production
-      url: https://healthtech.example.com
+      url: ${{ secrets.PRODUCTION_URL }}
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy to production
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Write runtime env file
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          INTERNAL_SECRET: ${{ secrets.INTERNAL_SECRET }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          HUGGINGFACE_HUB_TOKEN: ${{ secrets.HUGGINGFACE_HUB_TOKEN }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_API_KEY: ${{ secrets.TWILIO_API_KEY }}
+          TWILIO_API_SECRET: ${{ secrets.TWILIO_API_SECRET }}
+          TWILIO_PHONE_NUMBER: ${{ secrets.TWILIO_PHONE_NUMBER }}
+          TWILIO_TWIML_APP_SID: ${{ secrets.TWILIO_TWIML_APP_SID }}
+          CORS_ALLOWED_ORIGINS: ${{ secrets.PRODUCTION_CORS_ORIGINS }}
+          GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD }}
         run: |
-          echo "Deploying to production environment..."
-          # Add your deployment commands here
+          cat > /tmp/deploy.env << EOF
+          JWT_SECRET=${JWT_SECRET}
+          INTERNAL_SECRET=${INTERNAL_SECRET}
+          WS_SHARED_SECRET=${INTERNAL_SECRET}
+          POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+          HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN}
+          TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+          TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+          TWILIO_API_KEY=${TWILIO_API_KEY}
+          TWILIO_API_SECRET=${TWILIO_API_SECRET}
+          TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
+          TWILIO_TWIML_APP_SID=${TWILIO_TWIML_APP_SID}
+          CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
+          GRAFANA_PASSWORD=${GRAFANA_PASSWORD}
+          EOF
+
+      - name: Deploy to GCE (production)
+        env:
+          GCE_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GCE_ZONE: ${{ secrets.GCE_ZONE }}
+          GCE_INSTANCE: ${{ secrets.GCE_PRODUCTION_INSTANCE }}
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          gcloud compute scp /tmp/deploy.env \
+            "${GCE_INSTANCE}:~/mvp-healthtech/infra/.env" \
+            --zone="${GCE_ZONE}" --project="${GCE_PROJECT}" \
+            --strict-host-key-checking=no
+
+          gcloud compute ssh "${GCE_INSTANCE}" \
+            --zone="${GCE_ZONE}" --project="${GCE_PROJECT}" \
+            --strict-host-key-checking=no \
+            --command="
+              set -euo pipefail
+              cd ~/mvp-healthtech
+
+              # Save rollback checkpoint
+              git rev-parse HEAD > /tmp/pre-deploy-sha.txt
+
+              git fetch origin
+              git checkout ${GIT_SHA}
+
+              cd infra
+              docker compose -f docker-compose.demo.yml build gateway frontend
+              docker compose -f docker-compose.demo.yml up -d
+
+              echo 'Waiting 25s for NestJS compilation...'
+              sleep 25
+
+              if ! curl -sf http://localhost:3000/health > /dev/null; then
+                echo '--- Gateway health FAILED — auto-rollback initiating ---'
+                PREV_SHA=\$(cat /tmp/pre-deploy-sha.txt)
+                git checkout \${PREV_SHA}
+                docker compose -f docker-compose.demo.yml up -d --build gateway
+                docker compose -f docker-compose.demo.yml up -d --build frontend
+                echo 'AUTO-ROLLBACK COMPLETE to' \${PREV_SHA}
+                exit 1
+              fi
+              echo 'Production deployment successful'
+            "
 
   # ========================================
   # POST-DEPLOYMENT SMOKE TESTS
@@ -394,15 +550,29 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - name: Run smoke tests
+      - name: Run smoke tests against staging
         env:
-          BASE_URL: https://staging.healthtech.example.com
+          BASE_URL: ${{ secrets.STAGING_URL }}
         run: |
-          echo "Running smoke tests against staging..."
-          # Health check endpoints
-          curl -f $BASE_URL/health || exit 1
-          curl -f $BASE_URL/api/health || exit 1
-          echo "Smoke tests passed!"
+          set -e
+          echo "Running smoke tests against ${BASE_URL}"
+
+          # 1. Gateway health
+          curl -sf "${BASE_URL}/health" | grep -q 'ok\|healthy\|UP' || \
+            { echo 'FAIL: /health'; exit 1; }
+
+          # 2. Auth endpoint responds (not 502) — expect 401 for bad creds
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            -X POST "${BASE_URL}/auth/login" \
+            -H 'Content-Type: application/json' \
+            -d '{"userId":"smoke","password":"wrong"}')
+          [ "$STATUS" = "401" ] || { echo "FAIL: /auth/login returned $STATUS (expected 401)"; exit 1; }
+
+          # 3. Frontend HTML loads
+          curl -sf "${BASE_URL}/" | grep -q '<html\|<!DOCTYPE' || \
+            { echo 'FAIL: frontend did not return HTML'; exit 1; }
+
+          echo 'All smoke tests passed.'
 
   smoke-test-production:
     runs-on: ubuntu-latest
@@ -412,14 +582,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - name: Run smoke tests
+      - name: Run smoke tests against production
         env:
-          BASE_URL: https://healthtech.example.com
+          BASE_URL: ${{ secrets.PRODUCTION_URL }}
         run: |
-          echo "Running smoke tests against production..."
-          curl -f $BASE_URL/health || exit 1
-          curl -f $BASE_URL/api/health || exit 1
-          echo "Smoke tests passed!"
+          set -e
+          echo "Running smoke tests against ${BASE_URL}"
+
+          curl -sf "${BASE_URL}/health" | grep -q 'ok\|healthy\|UP' || \
+            { echo 'FAIL: /health'; exit 1; }
+
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            -X POST "${BASE_URL}/auth/login" \
+            -H 'Content-Type: application/json' \
+            -d '{"userId":"smoke","password":"wrong"}')
+          [ "$STATUS" = "401" ] || { echo "FAIL: /auth/login returned $STATUS (expected 401)"; exit 1; }
+
+          curl -sf "${BASE_URL}/" | grep -q '<html\|<!DOCTYPE' || \
+            { echo 'FAIL: frontend did not return HTML'; exit 1; }
+
+          echo 'All smoke tests passed.'
 
   # ========================================
   # RELEASE

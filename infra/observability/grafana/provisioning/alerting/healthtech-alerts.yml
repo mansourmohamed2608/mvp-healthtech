@@ -1,0 +1,168 @@
+# Grafana Alerting Provisioning
+# Grafana 9+ format — auto-loaded from provisioning/alerting/
+# Reference: https://grafana.com/docs/grafana/latest/alerting/set-up/provision-alerting-resources/file-provisioning/
+
+apiVersion: 1
+
+# ==========================================
+# CONTACT POINTS
+# ==========================================
+contactPoints:
+  - orgId: 1
+    name: ops-email
+    receivers:
+      - uid: ops-email-receiver
+        type: email
+        settings:
+          addresses: ops@example.com
+          singleEmail: false
+        disableResolveMessage: false
+
+  - orgId: 1
+    name: ops-slack
+    receivers:
+      - uid: ops-slack-receiver
+        type: slack
+        settings:
+          url: ${SLACK_WEBHOOK_URL}   # set in Grafana env or via Grafana Secrets
+          channel: "#alerts"
+          title: "HealthTech Alert: {{ .CommonLabels.alertname }}"
+          text: |
+            {{ range .Alerts }}
+            *Status:* {{ .Status | toUpper }}
+            *Summary:* {{ .Annotations.summary }}
+            *Detail:* {{ .Annotations.description }}
+            *Severity:* {{ .Labels.severity }}
+            {{ end }}
+        disableResolveMessage: false
+
+# ==========================================
+# NOTIFICATION POLICIES
+# ==========================================
+policies:
+  - orgId: 1
+    receiver: ops-slack       # default receiver
+    group_by: [alertname, service]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      # Critical alerts → immediate, shorter repeat
+      - receiver: ops-slack
+        matchers:
+          - severity = critical
+        group_wait: 0s
+        group_interval: 1m
+        repeat_interval: 30m
+        continue: false
+
+      # Security alerts → also email
+      - receiver: ops-email
+        matchers:
+          - alertname =~ "BruteForce.*|MissingTenantId.*|JWT.*"
+        continue: false
+
+# ==========================================
+# ALERT RULES  (Grafana-managed, Prometheus datasource)
+# ==========================================
+groups:
+  - orgId: 1
+    name: healthtech-availability
+    folder: HealthTech
+    interval: 1m
+    rules:
+      - uid: svc-down-rule
+        title: Service Down
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: up == 0
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: NoData
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been unreachable for > 1 minute."
+        labels:
+          severity: critical
+          team: ops
+
+      - uid: high-5xx-rule
+        title: High 5xx Error Rate
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: |
+                (
+                  sum(rate(http_requests_total{status=~"5.."}[5m])) by (job)
+                  /
+                  sum(rate(http_requests_total[5m])) by (job)
+                ) > 0.05
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High 5xx rate on {{ $labels.job }}"
+          description: "5xx error rate is {{ $value | humanizePercentage }}."
+        labels:
+          severity: warning
+
+  - orgId: 1
+    name: healthtech-latency
+    folder: HealthTech
+    interval: 1m
+    rules:
+      - uid: p99-latency-rule
+        title: P99 Latency > 2s
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.99,
+                  sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+                ) > 2
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "P99 latency on {{ $labels.job }} exceeds 2 s"
+          description: "P99 = {{ $value | humanizeDuration }}."
+        labels:
+          severity: warning
+
+  - orgId: 1
+    name: healthtech-security
+    folder: HealthTech
+    interval: 1m
+    rules:
+      - uid: auth-failure-rule
+        title: High Auth Failure Rate
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(auth_failures_total[5m])) > 10
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High authentication failure rate"
+          description: "{{ $value }} auth failures/sec — possible brute-force."
+        labels:
+          severity: warning
+          team: security

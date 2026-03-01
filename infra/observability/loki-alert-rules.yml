@@ -1,0 +1,116 @@
+# Loki Alerting Rules for HealthTech Platform
+# These rules fire alerts based on log content patterns via LogQL
+# Reference: https://grafana.com/docs/loki/latest/alert/
+#
+# Consumed by: Loki ruler (requires ruler config in loki.yml)
+# OR: loaded into Grafana as managed alert rules via provisioning
+
+groups:
+  - name: healthtech-error-logs
+    interval: 1m
+    rules:
+      - alert: GatewayErrorSpike
+        expr: |
+          sum(count_over_time({container="infra-gateway-1"} |= "ERROR" [5m])) > 20
+        for: 2m
+        labels:
+          severity: warning
+          service: gateway
+        annotations:
+          summary: "Gateway error log spike"
+          description: "More than 20 ERROR log lines in the last 5 minutes from the gateway."
+
+      - alert: GatewayTypeScriptCompileError
+        expr: |
+          count_over_time({container="infra-gateway-1"} |~ "Found [1-9][0-9]* errors" [1m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: gateway
+        annotations:
+          summary: "Gateway TypeScript compilation errors — service may not be running"
+          description: "TypeScript watch-mode reported compilation errors. The NestJS HTTP server will not start until fixed."
+
+      - alert: ServicePanicOrCrash
+        expr: |
+          sum by (container) (
+            count_over_time({job="docker"} |~ "panic|CRITICAL|fatal error|killed" [5m])
+          ) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service crash/panic detected in {{ $labels.container }}"
+          description: "A panic, CRITICAL, or fatal error was logged by {{ $labels.container }}."
+
+      - alert: DatabaseConnectionErrors
+        expr: |
+          count_over_time({container="infra-gateway-1"} |~ "ECONNREFUSED|connection refused|connect ETIMEDOUT" [2m]) > 5
+        for: 1m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "Repeated database/service connection failures"
+          description: "More than 5 connection-refused errors in 2 minutes on the gateway."
+
+  - name: healthtech-security-logs
+    interval: 1m
+    rules:
+      - alert: BruteForceAtttempt
+        expr: |
+          sum(count_over_time({container="infra-gateway-1"} |= "Invalid credentials" [5m])) > 20
+        for: 1m
+        labels:
+          severity: warning
+          service: auth
+        annotations:
+          summary: "Possible brute-force: high invalid-credential rate"
+          description: "More than 20 invalid credential attempts in 5 minutes."
+
+      - alert: JWTFormatErrors
+        expr: |
+          count_over_time({container="infra-gateway-1"} |~ "JsonWebTokenError|jwt malformed|invalid signature" [5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          service: auth
+        annotations:
+          summary: "High rate of malformed JWT tokens"
+          description: "More than 10 JWT format errors in 5 min — possible token replay or scanner activity."
+
+      - alert: MissingTenantIdInAudit
+        expr: |
+          count_over_time({container="infra-gateway-1"} |= "SECURITY: Audit log called without tenantId" [5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: audit
+        annotations:
+          summary: "Audit log call missing tenantId — tenant isolation violation"
+          description: "An audit log was attempted without a tenantId. This indicates a missing tenant context in a controller."
+
+  - name: healthtech-ml-services
+    interval: 2m
+    rules:
+      - alert: ASRModelLoadFailure
+        expr: |
+          count_over_time({container="infra-asr-1"} |~ "RuntimeError|CUDA out of memory|model not found" [5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: asr
+        annotations:
+          summary: "ASR service model load failure"
+          description: "ASR service logged a RuntimeError or CUDA OOM. The service may be unable to transcribe audio."
+
+      - alert: LLMInferenceErrors
+        expr: |
+          count_over_time({container="infra-llm-1"} |~ "generation failed|ValueError|CUDA out of memory" [5m]) > 3
+        for: 2m
+        labels:
+          severity: warning
+          service: llm
+        annotations:
+          summary: "LLM inference errors accumulating"
+          description: "More than 3 LLM generation failures logged in 5 minutes."
