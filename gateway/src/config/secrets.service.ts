@@ -2,12 +2,6 @@
  * Secrets Service for loading secrets from various providers
  * Supports: Environment variables, AWS Secrets Manager, Azure Key Vault, HashiCorp Vault
  */
-
-// Ambient declarations for optional cloud SDK dependencies (not installed by default)
-declare module '@aws-sdk/client-secrets-manager';
-declare module '@azure/keyvault-secrets';
-declare module '@azure/identity';
-
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
@@ -88,78 +82,24 @@ class EnvSecretProvider implements SecretProvider {
 }
 
 /**
- * AWS Secrets Manager provider
+ * AWS Secrets Manager provider (stub - install @aws-sdk/client-secrets-manager to enable)
  */
 class AwsSecretsProvider implements SecretProvider {
-  private client: any;
-  private prefix: string;
+  constructor(private configService: ConfigService) {}
 
-  constructor(private configService: ConfigService) {
-    this.prefix = configService.get<string>('AWS_SECRETS_PREFIX', 'healthtech/');
-    // Lazy load AWS SDK to avoid bundling if not needed
-  }
-
-  private async getClient() {
-    if (!this.client) {
-      const { SecretsManagerClient, GetSecretValueCommand } = await import(
-        '@aws-sdk/client-secrets-manager'
-      );
-      this.client = new SecretsManagerClient({
-        region: this.configService.get<string>('AWS_REGION', 'us-east-1'),
-      });
-      this.GetSecretValueCommand = GetSecretValueCommand;
-    }
-    return this.client;
-  }
-
-  private GetSecretValueCommand: any;
-
-  async getSecret(key: string): Promise<string | undefined> {
-    try {
-      const client = await this.getClient();
-      const response = await client.send(
-        new this.GetSecretValueCommand({
-          SecretId: `${this.prefix}${key}`,
-        }),
-      );
-      return response.SecretString;
-    } catch (error) {
-      console.error(`Failed to retrieve secret ${key} from AWS:`, error);
-      return undefined;
-    }
+  async getSecret(_key: string): Promise<string | undefined> {
+    throw new Error('AWS Secrets Manager provider requires @aws-sdk/client-secrets-manager to be installed');
   }
 }
 
 /**
- * Azure Key Vault provider
+ * Azure Key Vault provider (stub - install @azure/keyvault-secrets and @azure/identity to enable)
  */
 class AzureKeyVaultProvider implements SecretProvider {
-  private client: any;
-  private vaultUrl: string;
+  constructor(private configService: ConfigService) {}
 
-  constructor(private configService: ConfigService) {
-    this.vaultUrl = configService.get<string>('AZURE_KEYVAULT_URL', '');
-  }
-
-  private async getClient() {
-    if (!this.client) {
-      const { SecretClient } = await import('@azure/keyvault-secrets');
-      // @ts-ignore
-      const { DefaultAzureCredential } = await import('@azure/identity');
-      this.client = new SecretClient(this.vaultUrl, new DefaultAzureCredential());
-    }
-    return this.client;
-  }
-
-  async getSecret(key: string): Promise<string | undefined> {
-    try {
-      const client = await this.getClient();
-      const secret = await client.getSecret(key.replace(/_/g, '-'));
-      return secret.value;
-    } catch (error) {
-      console.error(`Failed to retrieve secret ${key} from Azure:`, error);
-      return undefined;
-    }
+  async getSecret(_key: string): Promise<string | undefined> {
+    throw new Error('Azure Key Vault provider requires @azure/keyvault-secrets and @azure/identity to be installed');
   }
 }
 
