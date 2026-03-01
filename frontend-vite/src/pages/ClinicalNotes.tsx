@@ -93,7 +93,9 @@ export default function ClinicalNotes() {
   const [ragText, setRagText] = useState<string>('');
   const [ragStatus, setRagStatus] = useState<string>('');
   const [ragError, setRagError] = useState<string>('');
-  
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
@@ -103,6 +105,7 @@ export default function ClinicalNotes() {
   const fieldRecorderRef = useRef<MediaRecorder | null>(null);
   const fieldAudioChunksRef = useRef<Blob[]>([]);
   const fieldTimerRef = useRef<number | null>(null);
+  const recordingDurationRef = useRef(0);
 
   useEffect(() => {
     if (userId && !practitionerId) {
@@ -181,6 +184,27 @@ export default function ClinicalNotes() {
     return undefined;
   };
 
+  // Returns the best supported audio MIME type for the current browser
+  const getSupportedMimeType = (): string => {
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/mp4',
+    ];
+    for (const type of candidates) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) {
+        return type;
+      }
+    }
+    return '';
+  };
+
+  const showToast = (type: 'success' | 'error', message: string) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), 4000);
+  };
+
   // Record review metrics
   const recordReviewMetrics = async (
     recording: AudioRecording,
@@ -209,10 +233,13 @@ export default function ClinicalNotes() {
   // Load metrics dashboard
   const loadMetrics = async () => {
     try {
+      setMetricsLoading(true);
       const data = await api.getClinicalMetricsDashboard();
       setMetrics(data);
     } catch (err) {
       console.error('Failed to load metrics:', err);
+    } finally {
+      setMetricsLoading(false);
     }
   };
 
@@ -573,9 +600,8 @@ export default function ClinicalNotes() {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus',
-      });
+      const supportedMime = getSupportedMimeType();
+      const mediaRecorder = new MediaRecorder(stream, supportedMime ? { mimeType: supportedMime } : {});
 
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -597,13 +623,14 @@ export default function ClinicalNotes() {
         const newRecording: AudioRecording = {
           id: `rec-${Date.now()}`,
           file: audioFile,
-          duration: recordingTime,
+          duration: recordingDurationRef.current,
           timestamp: new Date(),
           status: 'pending',
         };
 
         setRecordings((prev) => [newRecording, ...prev]);
         setRecordingTime(0);
+        recordingDurationRef.current = 0;
 
         // Auto-process the recording
         await processRecording(newRecording);
@@ -614,7 +641,10 @@ export default function ClinicalNotes() {
 
       // Start timer
       timerRef.current = window.setInterval(() => {
-        setRecordingTime((prev) => prev + 1);
+        setRecordingTime((prev) => {
+          recordingDurationRef.current = prev + 1;
+          return prev + 1;
+        });
       }, 1000);
     } catch (error: any) {
       console.error('Failed to start recording:', error);
@@ -647,9 +677,8 @@ export default function ClinicalNotes() {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus',
-      });
+      const supportedMime = getSupportedMimeType();
+      const mediaRecorder = new MediaRecorder(stream, supportedMime ? { mimeType: supportedMime } : {});
 
       fieldRecorderRef.current = mediaRecorder;
       fieldAudioChunksRef.current = [];
@@ -886,9 +915,9 @@ export default function ClinicalNotes() {
         setEditedSoapNote('');
       }
       await api.approveSOAPNote(selectedRecording.noteId);
-      alert('✅ تم الحفظ بنجاح!');
+      showToast('success', 'تم الحفظ بنجاح!');
     } catch (error: any) {
-      alert(`❌ خطأ في الحفظ: ${error.message}`);
+      showToast('error', `خطأ في الحفظ: ${error.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -934,7 +963,18 @@ export default function ClinicalNotes() {
 
         {/* Metrics Dashboard */}
         <AnimatePresence>
-          {showMetrics && metrics && (
+          {showMetrics && metricsLoading && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 mb-8 shadow-2xl flex items-center justify-center gap-4"
+            >
+              <IconLoader2 className="w-6 h-6 text-purple-300 animate-spin" />
+              <p className="text-purple-200">جارٍ تحميل المقاييس...</p>
+            </motion.div>
+          )}
+          {showMetrics && !metricsLoading && metrics && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
@@ -1678,7 +1718,7 @@ export default function ClinicalNotes() {
                             if (selectedRecording.noteId) {
                               await api.rejectSOAPNote(selectedRecording.noteId);
                             }
-                            alert('تم رفض الملاحظة');
+                            showToast('success', 'تم رفض الملاحظة');
                           }}
                           whileHover={{ scale: 1.02 }}
                           whileTap={{ scale: 0.98 }}
@@ -1714,6 +1754,29 @@ export default function ClinicalNotes() {
           </div>
         </div>
       </div>
+
+      {/* Toast Notifications */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: 50, x: '-50%' }}
+            className={`fixed bottom-8 left-1/2 z-50 flex items-center gap-3 px-6 py-4 rounded-2xl shadow-2xl text-white font-bold text-sm ${
+              toast.type === 'success'
+                ? 'bg-gradient-to-r from-green-500 to-green-600 shadow-green-500/40'
+                : 'bg-gradient-to-r from-red-500 to-red-600 shadow-red-500/40'
+            }`}
+          >
+            {toast.type === 'success' ? (
+              <IconCheck className="w-5 h-5 shrink-0" />
+            ) : (
+              <IconX className="w-5 h-5 shrink-0" />
+            )}
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <style>{`
         .custom-scrollbar::-webkit-scrollbar {
