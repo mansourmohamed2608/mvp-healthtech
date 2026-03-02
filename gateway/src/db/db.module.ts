@@ -7,10 +7,12 @@
  * unbounded connection growth under load.
  *
  * Inject the pool with:  @Inject(PG_POOL) private readonly pool: Pool
+ * Inject tenant-aware queries: @Inject(TENANT_DB) private readonly db: TenantDbService
  */
 import { Global, Module, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
+import { TenantDbService, TENANT_DB } from './tenant-db.service';
 
 export const PG_POOL = 'PG_POOL';
 
@@ -40,7 +42,12 @@ export const PG_POOL = 'PG_POOL';
         return pool;
       },
     },
+    TenantDbService,
+    {
+      provide: TENANT_DB,
+      useExisting: TenantDbService,
+    },
   ],
-  exports: [PG_POOL],
+  exports: [PG_POOL, TenantDbService, TENANT_DB],
 })
 export class DbModule {}

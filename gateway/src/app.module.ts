@@ -32,6 +32,7 @@ import { AuditService } from './audit/audit.service';
 import { InternalHttpClient } from './http/internal-http-client.service';
 import { VaModule } from './va/va.module';
 import { DbModule } from './db/db.module';
+import { FhirOutboxWorker } from './fhir/fhir-outbox.worker';
 import { join } from 'path';
 
 @Module({
@@ -88,6 +89,7 @@ import { join } from 'path';
     KvCacheService,
     AuditService,
     InternalHttpClient,
+    FhirOutboxWorker,
   ],
 })
 export class AppModule {

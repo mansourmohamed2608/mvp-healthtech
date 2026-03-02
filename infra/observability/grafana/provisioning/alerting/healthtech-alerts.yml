@@ -166,3 +166,170 @@ groups:
         labels:
           severity: warning
           team: security
+
+  - orgId: 1
+    name: healthtech-sla
+    folder: HealthTech
+    interval: 1m
+    rules:
+      - uid: gateway-p95-sla-rule
+        title: Gateway P95 Latency > 500ms (SLA breach)
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(http_request_duration_seconds_bucket{job="gateway"}[5m])) by (le)
+                ) > 0.5
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Gateway P95 latency SLA breach (>500ms)"
+          description: "P95 = {{ $value | humanizeDuration }} — SLA threshold is 500ms."
+        labels:
+          severity: critical
+          team: ops
+
+      - uid: asr-p95-sla-rule
+        title: ASR P95 Latency > 10s (SLA breach)
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(http_request_duration_seconds_bucket{job="asr"}[5m])) by (le)
+                ) > 10
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "ASR P95 latency SLA breach (>10s)"
+          description: "P95 transcription latency = {{ $value | humanizeDuration }}."
+        labels:
+          severity: warning
+          team: ops
+
+      - uid: error-rate-sla-rule
+        title: Overall Error Rate > 1% (SLA breach)
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: |
+                (
+                  sum(rate(http_requests_total{status=~"5.."}[5m]))
+                  /
+                  sum(rate(http_requests_total[5m]))
+                ) > 0.01
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Error rate SLA breach (>1%)"
+          description: "Current error rate: {{ $value | humanizePercentage }}."
+        labels:
+          severity: critical
+          team: ops
+
+  - orgId: 1
+    name: healthtech-gpu
+    folder: HealthTech
+    interval: 1m
+    rules:
+      - uid: gpu-queue-depth-rule
+        title: GPU Queue Depth > 20 (backlog)
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: sum(soap_queue_depth) > 20
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 3m
+        annotations:
+          summary: "GPU inference queue backlog (depth > 20)"
+          description: "Queue depth = {{ $value }}. Requests may time out."
+        labels:
+          severity: warning
+          team: ops
+
+      - uid: gpu-throttle-rule
+        title: GPU Rate Limit Rejections Elevated
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(http_requests_total{status="429",job=~"asr|llm"}[5m])) > 1
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "GPU endpoints rejecting requests (429 rate limit)"
+          description: "{{ $value }} throttled req/sec on GPU services."
+        labels:
+          severity: warning
+          team: ops
+
+  - orgId: 1
+    name: healthtech-fhir-outbox
+    folder: HealthTech
+    interval: 1m
+    rules:
+      - uid: fhir-outbox-backlog-rule
+        title: FHIR Outbox Backlog > 50 pending
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              # Requires a gauge metric exported by fhir-outbox-worker
+              expr: fhir_outbox_pending_total > 50
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "FHIR outbox has >50 pending items"
+          description: "{{ $value }} FHIR writes queued — possible FHIR service outage."
+        labels:
+          severity: warning
+          team: ops
+
+      - uid: fhir-dead-letter-rule
+        title: FHIR Dead-Letter Items Detected
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: increase(fhir_outbox_dead_total[1h]) > 0
+              intervalMs: 60000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: "FHIR outbox dead-letter items — manual intervention required"
+          description: "{{ $value }} FHIR write(s) exhausted all retries in the last hour."
+        labels:
+          severity: critical
+          team: ops

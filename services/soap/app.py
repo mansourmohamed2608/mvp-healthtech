@@ -490,29 +490,33 @@ async def list_patient_rag(patient_id: str):
     return {"items": await list_patient_rag_items(patient_id, limit=50)}
 
 @app.get("/notes")
-async def list_notes(status: Optional[str] = None, clinicianId: Optional[str] = None):
+async def list_notes(request: Request, status: Optional[str] = None, clinicianId: Optional[str] = None):
     if _pool is None:
         raise HTTPException(status_code=503, detail="DB not available")
-    rows = await fetch_notes(status=status, clinician_id=clinicianId)
+    tenant_id = request.headers.get("x-tenant-id", "default")
+    rows = await fetch_notes(tenant_id=tenant_id, status=status, clinician_id=clinicianId)
     return {"notes": rows}
 
 @app.get("/notes/{note_id}", response_model=SOAPResponse)
-async def get_note(note_id: str):
-    note = await fetch_note(note_id)
+async def get_note(note_id: str, request: Request):
+    tenant_id = request.headers.get("x-tenant-id", "default")
+    note = await fetch_note(note_id, tenant_id=tenant_id)
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     return note
 
 @app.patch("/notes/{note_id}/approve", response_model=SOAPResponse)
-async def approve_note(note_id: str):
-    updated = await update_status(note_id, "approved")
+async def approve_note(note_id: str, request: Request):
+    tenant_id = request.headers.get("x-tenant-id", "default")
+    updated = await update_status(note_id, "approved", tenant_id=tenant_id)
     if not updated:
         raise HTTPException(status_code=404, detail="Note not found")
     return updated
 
 @app.patch("/notes/{note_id}/reject", response_model=SOAPResponse)
-async def reject_note(note_id: str):
-    updated = await update_status(note_id, "rejected")
+async def reject_note(note_id: str, request: Request):
+    tenant_id = request.headers.get("x-tenant-id", "default")
+    updated = await update_status(note_id, "rejected", tenant_id=tenant_id)
     if not updated:
         raise HTTPException(status_code=404, detail="Note not found")
     return updated
@@ -1173,6 +1177,8 @@ async def save_note(note: Dict[str, Any]) -> SOAPResponse:
         # Atomically create the SOAP note AND the audit trail entry.
         # If either INSERT fails the whole transaction rolls back — no unaudited PHI.
         async with conn.transaction():
+            # RLS: tell Postgres which tenant this request belongs to
+            await conn.execute("SET LOCAL app.tenant_id = $1", tenant_id)
             row = await conn.fetchrow(
                 """
                 INSERT INTO soap_notes (session_id, patient_id, clinician_id, template_id, status, raw_transcript, soap_json,
@@ -1212,9 +1218,9 @@ async def save_note(note: Dict[str, Any]) -> SOAPResponse:
             )
     return record_to_model(row)
 
-async def fetch_notes(status: Optional[str] = None, clinician_id: Optional[str] = None) -> List[Dict[str, Any]]:
+async def fetch_notes(tenant_id: str = "default", status: Optional[str] = None, clinician_id: Optional[str] = None) -> List[Dict[str, Any]]:
     query = "SELECT * FROM soap_notes"
-    conds = []
+    conds: List[str] = []
     params: List[Any] = []
     if status:
         params.append(status)
@@ -1226,23 +1232,29 @@ async def fetch_notes(status: Optional[str] = None, clinician_id: Optional[str] 
         query += " WHERE " + " AND ".join(conds)
     query += " ORDER BY created_at DESC"
     async with _pool.acquire() as conn:  # type: ignore
-        rows = await conn.fetch(query, *params)
+        async with conn.transaction():
+            await conn.execute("SET LOCAL app.tenant_id = $1", tenant_id)
+            rows = await conn.fetch(query, *params)
     return [record_to_model(r).dict() for r in rows]
 
-async def fetch_note(note_id: str) -> Optional[SOAPResponse]:
+async def fetch_note(note_id: str, tenant_id: str = "default") -> Optional[SOAPResponse]:
     async with _pool.acquire() as conn:  # type: ignore
-        row = await conn.fetchrow("SELECT * FROM soap_notes WHERE id = $1", note_id)
+        async with conn.transaction():
+            await conn.execute("SET LOCAL app.tenant_id = $1", tenant_id)
+            row = await conn.fetchrow("SELECT * FROM soap_notes WHERE id = $1", note_id)
     if not row:
         return None
     return record_to_model(row)
 
-async def update_status(note_id: str, status: str) -> Optional[SOAPResponse]:
+async def update_status(note_id: str, status: str, tenant_id: str = "default") -> Optional[SOAPResponse]:
     async with _pool.acquire() as conn:  # type: ignore
-        row = await conn.fetchrow(
-            "UPDATE soap_notes SET status=$2, updated_at=now() WHERE id=$1 RETURNING *",
-            note_id,
-            status,
-        )
+        async with conn.transaction():
+            await conn.execute("SET LOCAL app.tenant_id = $1", tenant_id)
+            row = await conn.fetchrow(
+                "UPDATE soap_notes SET status=$2, updated_at=now() WHERE id=$1 RETURNING *",
+                note_id,
+                status,
+            )
     if not row:
         return None
     return record_to_model(row)
