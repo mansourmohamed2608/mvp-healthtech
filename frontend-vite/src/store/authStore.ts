@@ -20,6 +20,10 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'healthtech-auth-storage',
+      // Never persist the access token — keep it in memory only so it isn't
+      // readable by third-party scripts via localStorage.  userId + roles are
+      // safe to persist so the UI can restore the session identity on reload.
+      partialize: (state) => ({ userId: state.userId, roles: state.roles }),
     }
   )
 );

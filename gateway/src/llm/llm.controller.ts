@@ -1,5 +1,6 @@
 // gateway/src/llm/llm.controller.ts
 import { Controller, Post, Body, Logger, UseGuards, Req } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { LlmService, LlmResponse } from './llm.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { TenantGuard } from '../auth/tenant.guard';
@@ -30,6 +31,7 @@ class ChatDto {
   intent?: string;
 }
 
+@Throttle({ gpu: { ttl: 60_000, limit: 5 } }) // 5 LLM inferences per IP per minute
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('llm')
 export class LlmController {

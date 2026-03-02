@@ -31,6 +31,7 @@ import { CorrelationMiddleware } from './middleware/correlation.middleware';
 import { AuditService } from './audit/audit.service';
 import { InternalHttpClient } from './http/internal-http-client.service';
 import { VaModule } from './va/va.module';
+import { DbModule } from './db/db.module';
 import { join } from 'path';
 
 @Module({
@@ -47,9 +48,11 @@ import { join } from 'path';
     }),
     ThrottlerModule.forRoot({
       throttlers: [
-        { ttl: 60_000, limit: 50 }, // 50 requests per minute
+        { name: 'global', ttl: 60_000, limit: 100 }, // 100 req/min per IP (general API)
+        { name: 'gpu',    ttl: 60_000, limit: 5 },   // 5 req/min per IP for GPU endpoints
       ],
     }),
+    DbModule,
     AuthModule,
     SessionModule,
     TwilioModule,

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 
 export interface JwtPayload {
@@ -24,11 +24,22 @@ export class AuthService {
   constructor(private readonly jwtService: JwtService) {}
 
   /**
-   * In a production system you would verify the user against a DB or OIDC provider.
-   * For the MVP we accept any username/password combination and return a signed JWT.
+   * Validate credentials against DEV_AUTH_USERS env var (dev/demo only).
+   * Always returns false in production — OIDC is the only permitted auth path.
    */
   async validateUser(username: string, password: string): Promise<boolean> {
-    return !!username && !!password;
+    if (process.env.NODE_ENV === 'production') {
+      return false; // Only OIDC authentication is permitted in production
+    }
+    if (!username || !password) return false;
+    const allowedUsers = (process.env.DEV_AUTH_USERS || 'dev:changeme')
+      .split(',')
+      .map((p) => p.trim());
+    return allowedUsers.some((pair) => {
+      const sep = pair.indexOf(':');
+      if (sep < 0) return false;
+      return pair.slice(0, sep) === username && pair.slice(sep + 1) === password;
+    });
   }
 
   async validateJwtPayload(payload: JwtPayload): Promise<any> {
@@ -77,6 +88,41 @@ export class AuthService {
       this.logger.error('Token verification failed', error);
       throw error;
     }
+  }
+
+  /**
+   * Issue a long-lived refresh token signed with a separate secret.
+   * Intended for storage as an httpOnly cookie — never accessible to JS.
+   */
+  async generateRefreshToken(userId: string): Promise<string> {
+    const secret = this.getRefreshSecret();
+    const expiresIn = process.env.REFRESH_TOKEN_EXPIRES_IN || '7d';
+    return this.jwtService.sign(
+      { sub: userId, type: 'refresh' },
+      { secret, expiresIn },
+    );
+  }
+
+  /** Verify a refresh token from the httpOnly cookie. Throws on invalid/expired. */
+  async verifyRefreshToken(token: string): Promise<{ sub: string }> {
+    const secret = this.getRefreshSecret();
+    try {
+      const payload = this.jwtService.verify<{ sub: string; type: string }>(
+        token,
+        { secret },
+      );
+      if (payload.type !== 'refresh') throw new Error('not a refresh token');
+      return { sub: payload.sub };
+    } catch {
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+  }
+
+  private getRefreshSecret(): string {
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) throw new Error('JWT_SECRET not set');
+    // REFRESH_TOKEN_SECRET must differ from JWT_SECRET in production
+    return process.env.REFRESH_TOKEN_SECRET || `${jwtSecret}_refresh`;
   }
 
   private parseExpiresIn(expiresIn: string): number {

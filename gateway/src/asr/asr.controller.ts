@@ -1,5 +1,6 @@
 // gateway/src/asr/asr.controller.ts
 import { Controller, Post, Body, Logger, UseGuards, Req } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import {
   AsrService,
   TranscriptionResponse,
@@ -26,6 +27,7 @@ class StreamDto {
   dialect?: string;
 }
 
+@Throttle({ gpu: { ttl: 60_000, limit: 5 } }) // 5 GPU transcriptions per IP per minute
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('asr')
 export class AsrController {

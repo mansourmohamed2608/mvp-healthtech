@@ -206,10 +206,16 @@ export class SoapController {
   ) {
     this.logger.log('Get SOAP notes request');
     const start = process.hrtime();
+    const tenantId = getTenantId(req as Request);
+    const userId = (req as any)?.user?.sub || '';
     try {
       const response = await this.soapClient.get(`/notes`, {
         params: query || {},
-        headers: { 'x-correlation-id': (req as any)?.correlationId },
+        headers: {
+          'x-correlation-id': (req as any)?.correlationId,
+          'x-tenant-id': tenantId,
+          'x-user-id': userId,
+        },
       });
       this.soapLatency.observe(
         { endpoint: 'notes', status: 'ok' },
@@ -258,14 +264,29 @@ export class SoapController {
   @Get('notes/:id')
   async getNote(@Param('id') id: string, @Req() req?: Request) {
     const start = process.hrtime();
+    const tenantId = getTenantId(req as Request);
+    const userId = (req as any)?.user?.sub || '';
     const response = await this.soapClient.get(`/notes/${id}`, {
-      headers: { 'x-correlation-id': (req as any)?.correlationId },
+      headers: {
+        'x-correlation-id': (req as any)?.correlationId,
+        'x-tenant-id': tenantId,
+        'x-user-id': userId,
+      },
     });
+    const note = camelResponse(response.data);
+    // IDOR guard: verify the note's tenant matches the requesting user's tenant
+    const noteTenant: string | undefined = (note as any).tenantId;
+    if (tenantId && noteTenant && noteTenant !== tenantId) {
+      this.logger.warn(
+        `SECURITY: cross-tenant note access attempt — user tenant=${tenantId} note tenant=${noteTenant} noteId=${id} userId=${userId}`,
+      );
+      throw new ForbiddenException('Access denied');
+    }
     this.soapLatency.observe(
       { endpoint: 'note', status: 'ok' },
       this.durationSeconds(start),
     );
-    return camelResponse(response.data);
+    return note;
   }
 
   @Get('templates')

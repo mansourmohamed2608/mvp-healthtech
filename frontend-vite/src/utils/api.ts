@@ -54,9 +54,43 @@ class ApiClient {
     return this.baseUrl;
   }
 
+  // Attempt a silent token refresh using the httpOnly refresh cookie.
+  // Returns true if a new access token was obtained and stored.
+  private async tryRefresh(): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.baseUrl}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data.access_token) {
+        const { userId, roles } = useAuthStore.getState();
+        useAuthStore.getState().setAuth(data.access_token, userId, roles);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  // Call this on explicit logout — clears cookie server-side, then wipes in-memory state.
+  async logout(): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } finally {
+      useAuthStore.getState().clearAuth();
+    }
+  }
+
   private async request<T>(
     endpoint: string,
-    options?: RequestInit
+    options?: RequestInit,
+    _retry = true,
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     const handleError = async (response: Response) => {
@@ -70,12 +104,24 @@ class ApiClient {
     try {
       const response = await fetch(url, {
         ...options,
+        // Include httpOnly cookies (refresh_token) on every request.
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           ...getAuthHeader(),
           ...options?.headers,
         },
       });
+
+      // 401 → try a silent refresh once, then retry the original call.
+      if (response.status === 401 && _retry) {
+        const refreshed = await this.tryRefresh();
+        if (refreshed) {
+          return this.request<T>(endpoint, options, false);
+        }
+        // Refresh failed — clear stale auth state so UI redirects to login.
+        useAuthStore.getState().clearAuth();
+      }
 
       if (!response.ok) {
         await handleError(response);
@@ -105,6 +151,7 @@ class ApiClient {
     try {
       const response = await fetch(url, {
         ...options,
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           ...getAuthHeader(),

@@ -139,11 +139,48 @@ jobs:
           exit-code: '0'
 
   # ========================================
+  # DATABASE MIGRATION
+  # ========================================
+  db-migrate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: healthtech
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply migrations (idempotent)
+        env:
+          PGPASSWORD: testpass
+        run: |
+          for f in $(ls infra/db/migrations/*.sql | sort); do
+            echo "Applying $f"
+            psql -h localhost -U postgres -d healthtech -f "$f"
+          done
+      - name: Verify idempotency (second run must succeed)
+        env:
+          PGPASSWORD: testpass
+        run: |
+          for f in $(ls infra/db/migrations/*.sql | sort); do
+            echo "Re-applying $f"
+            psql -h localhost -U postgres -d healthtech -f "$f"
+          done
+
+  # ========================================
   # TEST JOBS
   # ========================================
   test:
     runs-on: ubuntu-latest
-    needs: [lint-gateway, lint-python]
+    needs: [lint-gateway, lint-python, db-migrate]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

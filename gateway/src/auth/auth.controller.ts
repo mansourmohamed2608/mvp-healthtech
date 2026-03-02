@@ -16,6 +16,13 @@ import { AuthService } from './auth.service';
 import type { Request, Response } from 'express';
 import { AuditService } from '../audit/audit.service';
 
+/** Parse a named cookie value from a raw Cookie header string (no dependency needed). */
+function parseCookie(header: string | undefined, name: string): string | undefined {
+  if (!header) return undefined;
+  const match = header.split(';').find((p) => p.trim().startsWith(`${name}=`));
+  return match ? decodeURIComponent(match.split('=').slice(1).join('=').trim()) : undefined;
+}
+
 interface LoginBody {
   userId: string;
   password: string;
@@ -36,7 +43,7 @@ export class AuthController {
    */
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  async login(@Req() req: Request) {
+  async login(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     // DEV-ONLY fallback auth — DISABLED in production
     if (process.env.NODE_ENV === 'production') {
       this.logger.warn('Dev auth login attempt blocked in production');
@@ -51,16 +58,9 @@ export class AuthController {
       throw new UnauthorizedException('userId and password are required');
     }
 
-    const allowedUsers = (process.env.DEV_AUTH_USERS || 'dev:changeme')
-      .split(',')
-      .map((pair) => pair.trim());
-    const valid = allowedUsers.some((pair) => {
-      const [user, pass] = pair.split(':');
-      return user === userId && pass === password;
-    });
-
+    const valid = await this.authService.validateUser(userId, password);
     if (!valid) {
-      throw new UnauthorizedException('Invalid credentials (dev fallback)');
+      throw new UnauthorizedException('Invalid credentials');
     }
 
     // Dev auth users get clinician role to access all features in demo
@@ -70,6 +70,17 @@ export class AuthController {
     };
     const token = await this.authService.generateToken(userId, devMetadata);
     this.logger.log(`JWT token generated for user: ${userId} (DEV MODE)`);
+
+    // Issue refresh token as httpOnly cookie (never accessible to JS)
+    const refreshToken = await this.authService.generateRefreshToken(userId);
+    res.cookie('refresh_token', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      path: '/auth',
+    });
+
     // For login events, use 'system' tenant since user is authenticating
     await this.auditService.log({
       tenantId: 'system',
@@ -81,6 +92,47 @@ export class AuthController {
     });
 
     return token;
+  }
+
+  /**
+   * Refresh access token using the httpOnly refresh-token cookie.
+   * Implements single-use rotation: issues a new refresh token on every call.
+   */
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const rawCookie = req.headers.cookie as string | undefined;
+    const refreshToken = parseCookie(rawCookie, 'refresh_token');
+    if (!refreshToken) {
+      throw new UnauthorizedException('Refresh token missing');
+    }
+
+    const payload = await this.authService.verifyRefreshToken(refreshToken);
+    const newAccessToken = await this.authService.generateToken(payload.sub, {});
+
+    // Rotate: replace old refresh token with a new one
+    const newRefreshToken = await this.authService.generateRefreshToken(payload.sub);
+    res.cookie('refresh_token', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: '/auth',
+    });
+
+    return newAccessToken;
+  }
+
+  /** Clear refresh token cookie and log the user out. */
+  @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async logout(@Res({ passthrough: true }) res: Response) {
+    res.clearCookie('refresh_token', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path: '/auth',
+    });
   }
 
   /**
