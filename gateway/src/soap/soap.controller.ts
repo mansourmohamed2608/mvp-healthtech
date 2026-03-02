@@ -14,6 +14,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import axios from 'axios';
+import { createClient } from 'redis';
 import { InternalHttpClient } from '../http/internal-http-client.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { TenantGuard, getTenantId } from '../auth/tenant.guard';
@@ -90,6 +91,8 @@ export class SoapController {
   private readonly soapErrors = MetricsController.getSoapErrors();
   private readonly soapClient;
   private readonly fhirClient;
+  /** Lazily initialized shared Redis client — avoids per-request connect/disconnect */
+  private redisClientInstance: ReturnType<typeof createClient> | null = null;
 
   constructor(
     private readonly auditService: AuditService,
@@ -243,13 +246,8 @@ export class SoapController {
       }
     }
 
-    const redis = require('redis');
-    const client = redis.createClient({
-      url: process.env.SOAP_QUEUE_URL || process.env.REDIS_URL,
-    });
-    await client.connect();
-    const data = await client.hGetAll(id);
-    await client.quit();
+    const redisClient = await this.getRedisClient();
+    const data = await redisClient.hGetAll(id);
     if (!data || Object.keys(data).length === 0) {
       throw new BadRequestException('Job not found');
     }
@@ -719,15 +717,25 @@ export class SoapController {
     return diff[0] + diff[1] / 1e9;
   }
 
+  /** Returns (and lazily creates) a connected shared Redis client. */
+  private async getRedisClient(): Promise<ReturnType<typeof createClient>> {
+    if (!this.redisClientInstance) {
+      this.redisClientInstance = createClient({
+        url: process.env.SOAP_QUEUE_URL || process.env.REDIS_URL,
+      });
+      this.redisClientInstance.on('error', (err) =>
+        this.logger.error('Redis client error', err),
+      );
+      await this.redisClientInstance.connect();
+    }
+    return this.redisClientInstance;
+  }
+
   private async enqueueJob(
     payload: any,
     correlationId?: string,
   ): Promise<string> {
-    const redis = require('redis');
-    const client = redis.createClient({
-      url: process.env.SOAP_QUEUE_URL || process.env.REDIS_URL,
-    });
-    await client.connect();
+    const redisClient = await this.getRedisClient();
     const jobId = `soap:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`;
     const job = {
       id: jobId,
@@ -750,9 +758,15 @@ export class SoapController {
         ],
       );
     }
-    await client.hSet(jobId, job);
-    await client.lPush('soap_jobs', jobId);
-    await client.quit();
+    await redisClient.hSet(jobId, {
+      id: job.id,
+      status: job.status,
+      payload: JSON.stringify(job.payload),
+      attempts: String(job.attempts),
+      correlationId: job.correlationId ?? '',
+      createdAt: String(job.createdAt),
+    });
+    await redisClient.lPush('soap_jobs', jobId);
     return jobId;
   }
 }

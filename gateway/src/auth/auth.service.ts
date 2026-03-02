@@ -58,8 +58,8 @@ export class AuthService {
       roles: metadata?.roles || ['user'],
     };
 
-    const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
-    const accessToken = this.jwtService.sign(payload);
+    const expiresIn = process.env.JWT_EXPIRES_IN || '1h';
+    const accessToken = this.jwtService.sign(payload, { expiresIn });
 
     this.logger.log(`Generated token for user: ${userId}`);
 

@@ -21,7 +21,7 @@ import { AuditService } from '../audit/audit.service';
         if (!secret) throw new Error('JWT_SECRET not set');
         return {
           secret,
-          signOptions: { expiresIn: '1h' },
+          signOptions: { expiresIn: configService.get<string>('JWT_EXPIRES_IN', '1h') },
         };
       },
     }),

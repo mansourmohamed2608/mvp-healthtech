@@ -8,6 +8,18 @@ const SENSITIVE_KEYS = [
   'audio',
   'body',
   'message',
+  // Credential / auth fields
+  'password',
+  'passwd',
+  'secret',
+  'token',
+  'authorization',
+  'bearer',
+  'apikey',
+  'api_key',
+  'credential',
+  'privatekey',
+  'private_key',
 ];
 
 function redact(value: any): any {

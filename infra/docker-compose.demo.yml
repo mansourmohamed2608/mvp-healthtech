@@ -22,8 +22,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=development
-      - DEV_AUTH_USERS=demo@healthtech.com:demo123,dev:changeme
+      - NODE_ENV=production
+      - DEV_AUTH_USERS=demo@healthtech.com:demo123,dev:changeme  # plain-text; only active if NODE_ENV!=production
       - PORT=3000
       - JWT_SECRET=${JWT_SECRET}
       - INTERNAL_SECRET=${INTERNAL_SECRET}
@@ -44,7 +44,7 @@ services:
       - FHIR_BASE_URL=http://fhir:5004
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:?CORS_ALLOWED_ORIGINS must be set (e.g. https://your-domain.com)}
       - ENABLE_DEV_TENANT_FALLBACK=true
       - MULTI_TENANT=false
     depends_on:
