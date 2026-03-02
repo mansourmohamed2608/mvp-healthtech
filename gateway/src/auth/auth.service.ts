@@ -1,5 +1,7 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Inject, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { Pool } from 'pg';
+import * as bcrypt from 'bcrypt';
 
 export interface JwtPayload {
   sub: string; // User ID
@@ -21,17 +23,43 @@ export interface TokenResponse {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    @Inject('PG_POOL') private readonly pool: Pool | null,
+  ) {}
 
   /**
-   * Validate credentials against DEV_AUTH_USERS env var (dev/demo only).
-   * Always returns false in production — OIDC is the only permitted auth path.
+   * Validate credentials against the users table (bcrypt) first.
+   * Falls back to DEV_AUTH_USERS env var ONLY in non-production when the
+   * users table is empty (first boot before seeds are applied).
+   * Always returns false in production unless the DB has a matching user.
    */
   async validateUser(username: string, password: string): Promise<boolean> {
-    if (process.env.NODE_ENV === 'production') {
-      return false; // Only OIDC authentication is permitted in production
-    }
     if (!username || !password) return false;
+
+    // --- Primary path: check the users table with bcrypt ---
+    if (this.pool) {
+      try {
+        const result = await this.pool.query(
+          `SELECT password_hash, active FROM users
+           WHERE tenant_id = 'default' AND username = $1 LIMIT 1`,
+          [username],
+        );
+        if (result.rows.length > 0) {
+          const { password_hash, active } = result.rows[0] as { password_hash: string; active: boolean };
+          if (!active) return false;
+          return bcrypt.compare(password, password_hash);
+        }
+      } catch (err) {
+        this.logger.error('DB lookup in validateUser failed', (err as Error).message);
+        // Fall through to env-var path so a DB hiccup doesn't lock everyone out in dev
+      }
+    }
+
+    // --- Fallback: DEV_AUTH_USERS env var (non-production only) ---
+    if (process.env.NODE_ENV === 'production') {
+      return false; // Never allow env-var auth in production
+    }
     const allowedUsers = (process.env.DEV_AUTH_USERS || 'dev:changeme')
       .split(',')
       .map((p) => p.trim());

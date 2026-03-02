@@ -326,13 +326,17 @@ async def create_template(req: TemplateCreateRequest):
     return {"id": template_id}
 
 @app.post("/generate", response_model=SOAPResponse)
-async def generate_soap(req: SOAPRequest):
+async def generate_soap(req: SOAPRequest, request: Request):
     if _pool is None:
         raise HTTPException(status_code=503, detail="DB not available")
     if _llm_client is None:
         raise HTTPException(status_code=503, detail="LLM client not ready")
     if not req.transcript:
         raise HTTPException(status_code=400, detail="transcript required")
+
+    # Capture tenant_id and clinician_id from gateway-forwarded headers
+    tenant_id = request.headers.get("x-tenant-id", "default")
+    actor_id  = request.headers.get("x-user-id") or req.clinicianId
 
     session_id = req.sessionId or f"soap-{int(datetime.utcnow().timestamp())}"
     template_id = req.templateId
@@ -392,6 +396,8 @@ async def generate_soap(req: SOAPRequest):
         "plan": sections.plan,
         "icd_codes": note_struct.get("icd_codes") if isinstance(note_struct, dict) else [],
         "cpt_codes": note_struct.get("cpt_codes") if isinstance(note_struct, dict) else [],
+        "tenant_id": tenant_id,
+        "actor_id": actor_id,
     })
     await store_note_rag_items(record)
 
@@ -1161,28 +1167,49 @@ async def save_note(note: Dict[str, Any]) -> SOAPResponse:
     icd = note.get("icd_codes") or []
     cpt = note.get("cpt_codes") or []
     soap_json = note.get("soap_json") or {}
+    tenant_id = note.get("tenant_id") or "default"
+    actor_id  = note.get("actor_id")  or note.get("clinician_id") or "unknown"
     async with _pool.acquire() as conn:  # type: ignore
-        row = await conn.fetchrow(
-            """
-            INSERT INTO soap_notes (session_id, patient_id, clinician_id, template_id, status, raw_transcript, soap_json,
-                                    subjective, objective, assessment, plan, icd_codes, cpt_codes)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-            RETURNING id, session_id, patient_id, clinician_id, template_id, status, subjective, objective, assessment, plan, icd_codes, cpt_codes, created_at, updated_at, raw_transcript, soap_json
-            """,
-            note.get("session_id"),
-            note.get("patient_id"),
-            note.get("clinician_id"),
-            note.get("template_id"),
-            note.get("status", "pending"),
-            note.get("raw_transcript"),
-            json.dumps(soap_json),
-            note.get("subjective"),
-            note.get("objective"),
-            note.get("assessment"),
-            note.get("plan"),
-            icd,
-            cpt,
-        )
+        # Atomically create the SOAP note AND the audit trail entry.
+        # If either INSERT fails the whole transaction rolls back — no unaudited PHI.
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO soap_notes (session_id, patient_id, clinician_id, template_id, status, raw_transcript, soap_json,
+                                        subjective, objective, assessment, plan, icd_codes, cpt_codes)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                RETURNING id, session_id, patient_id, clinician_id, template_id, status, subjective, objective, assessment, plan, icd_codes, cpt_codes, created_at, updated_at, raw_transcript, soap_json
+                """,
+                note.get("session_id"),
+                note.get("patient_id"),
+                note.get("clinician_id"),
+                note.get("template_id"),
+                note.get("status", "pending"),
+                note.get("raw_transcript"),
+                json.dumps(soap_json),
+                note.get("subjective"),
+                note.get("objective"),
+                note.get("assessment"),
+                note.get("plan"),
+                icd,
+                cpt,
+            )
+            # Audit log insert — inside the same transaction
+            await conn.execute(
+                """
+                INSERT INTO audit_log (actor_id, action, resource_type, resource_id, metadata, tenant_id)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                """,
+                actor_id,
+                "SOAP_NOTE_CREATED",
+                "soap_note",
+                str(row["id"]),
+                json.dumps({
+                    "session_id": note.get("session_id"),
+                    "patient_id":  note.get("patient_id"),
+                }),
+                tenant_id,
+            )
     return record_to_model(row)
 
 async def fetch_notes(status: Optional[str] = None, clinician_id: Optional[str] = None) -> List[Dict[str, Any]]:

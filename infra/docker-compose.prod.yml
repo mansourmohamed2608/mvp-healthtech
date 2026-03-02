@@ -4,8 +4,7 @@ version: '3.8'
 services:
   gateway:
     build: ../gateway
-    working_dir: /app
-    command: sh -lc "pnpm install && pnpm start:prod"
+    # OPS-03: uses the image built by the Dockerfile — no live source mount
     ports:
       - "3000:3000"
     environment:
@@ -25,9 +24,6 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://your-domain.com}
-    volumes:
-      - ../gateway:/app
-      - gateway_node_modules:/app/node_modules
     depends_on:
       - asr
       - llm
@@ -63,7 +59,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
       - CORS_ALLOWED_ORIGINS=http://gateway:3000
     volumes:
-      - ../services/asr:/app
       - huggingface_cache:/cache
 
   llm:
@@ -84,8 +79,6 @@ services:
       - CORS_ALLOWED_ORIGINS=http://gateway:3000
       - GUARDRAILS_FAIL_OPEN=false
     volumes:
-      - ../services/llm:/app
-      - ../services/llm/data:/app/data
       - huggingface_cache:/cache
 
   llm-va:
@@ -99,7 +92,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
       - CORS_ALLOWED_ORIGINS=http://gateway:3000
     volumes:
-      - ../services/llm-va:/app
       - huggingface_cache:/cache
 
   tts:
@@ -111,8 +103,7 @@ services:
       - OTEL_ENABLED=true
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
       - CORS_ALLOWED_ORIGINS=http://gateway:3000
-    volumes:
-      - ../services/tts:/app
+    # no source-code volumes — service runs from container image
 
   soap:
     build: ../services/soap
@@ -123,8 +114,7 @@ services:
       - OTEL_ENABLED=true
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
       - CORS_ALLOWED_ORIGINS=http://gateway:3000
-    volumes:
-      - ../services/soap:/app
+    # no source-code volumes — service runs from container image
 
   soap-worker:
     build:
@@ -153,8 +143,7 @@ services:
       - OTEL_ENABLED=true
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
       - CORS_ALLOWED_ORIGINS=http://gateway:3000
-    volumes:
-      - ../services/fhir:/app
+    # no source-code volumes — service runs from container image
 
   orchestrator:
     build: ../services/llm
@@ -167,7 +156,6 @@ services:
       - TRANSFORMERS_CACHE=/cache
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
     volumes:
-      - ../services/llm:/app
       - huggingface_cache:/cache
     depends_on:
       - llm
@@ -244,7 +232,6 @@ services:
     # NO ports exposed - internal only
 
 volumes:
-  gateway_node_modules:
   huggingface_cache:
   prometheus_data:
   loki_data:
