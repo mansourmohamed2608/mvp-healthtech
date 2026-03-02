@@ -27,6 +27,14 @@ services:
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://your-domain.com}
       - MULTI_TENANT=${MULTI_TENANT:-true}
       - FRONTEND_URL=${FRONTEND_URL:-https://your-domain.com}
+      # OIDC \u2014 optional; leave unset to disable SSO (password auth still works)
+      - OIDC_ISSUER=${OIDC_ISSUER:-}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-}
+      - OIDC_CALLBACK_URL=${OIDC_CALLBACK_URL:-}
+      - OIDC_AUTHORIZATION_URL=${OIDC_AUTHORIZATION_URL:-}
+      - OIDC_TOKEN_URL=${OIDC_TOKEN_URL:-}
+      - OIDC_USERINFO_URL=${OIDC_USERINFO_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,15 +50,18 @@ services:
         condition: service_started
       redis:
         condition: service_started
+      db-migrate:
+        condition: service_completed_successfully
 
   frontend-vite:
     build:
       context: ../frontend-vite
       dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL:-}
+        - VITE_OIDC_ENABLED=${VITE_OIDC_ENABLED:-false}
     depends_on:
       - gateway
-    environment:
-      - VITE_API_URL=http://gateway:3000
     ports:
       - "5173:80"
 
@@ -248,6 +259,28 @@ services:
       start_period: 10s
     # NO ports exposed - internal only
 
+  # One-shot: runs all migration files in order before any app service starts.
+  # Idempotent — safe to run on every deploy (migrations use IF NOT EXISTS / IF NOT EXISTS).
+  db-migrate:
+    image: postgres:16
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        for f in $(ls /migrations/*.sql | sort); do
+          echo "Applying $$f"
+          psql -h postgres -U postgres -d healthtech -f "$$f"
+        done
+        echo "All migrations applied."
+    environment:
+      - PGPASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - ../infra/db/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   # One-shot job: upserts the initial admin user on first deploy.
   # Re-running is safe (ON CONFLICT DO UPDATE). Exits 0 on success.
   # Set SEED_ADMIN_PASSWORD via environment or .env file.
@@ -263,6 +296,8 @@ services:
       - SEED_ADMIN_TENANT=${SEED_ADMIN_TENANT:-default}
       - NODE_ENV=production
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     restart: "no"

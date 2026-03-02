@@ -3,6 +3,12 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
+# Build-time config injected by docker compose build args
+ARG VITE_API_URL
+ARG VITE_OIDC_ENABLED=false
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_OIDC_ENABLED=$VITE_OIDC_ENABLED
+
 # Install dependencies
 COPY package*.json ./
 RUN npm install

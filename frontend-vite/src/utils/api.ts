@@ -3,6 +3,19 @@
 
 import { useAuthStore } from '@store/authStore';
 
+/** Decode the roles array from a JWT access token payload without a library. */
+function decodeJwtRoles(token: string): string[] {
+  try {
+    const base64 = token.split('.')[1];
+    if (!base64) return ['user'];
+    const json = atob(base64.replace(/-/g, '+').replace(/_/g, '/'));
+    const payload = JSON.parse(json) as { roles?: unknown };
+    return Array.isArray(payload.roles) ? (payload.roles as string[]) : ['user'];
+  } catch {
+    return ['user'];
+  }
+}
+
 // Force all calls through the gateway to keep a single contract
 const envVars = (import.meta as any)?.env || {};
 const USE_DIRECT_SERVICES = false;
@@ -169,14 +182,18 @@ class ApiClient {
     }
   }
 
-  async login(userId: string, password: string, roles: string[] = ['clinician']) {
-    return this.request<{ access_token: string; token_type: string; expires_in: number }>(
+  async login(userId: string, password: string, tenantId?: string) {
+    const data = await this.request<{ access_token: string; token_type: string; expires_in: number }>(
       '/auth/login',
       {
         method: 'POST',
-        body: JSON.stringify({ userId, password, metadata: { roles } }),
+        body: JSON.stringify({ userId, password, ...(tenantId ? { tenantId } : {}) }),
       }
     );
+    // Decode roles from the returned JWT so the frontend always reflects
+    // what the server actually assigned — never trust caller-supplied roles.
+    const roles = decodeJwtRoles(data.access_token);
+    return { ...data, roles };
   }
 
   // ASR (Automatic Speech Recognition) Service

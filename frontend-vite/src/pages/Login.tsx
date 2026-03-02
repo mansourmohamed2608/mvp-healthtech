@@ -22,8 +22,8 @@ const Login = () => {
     setError('');
 
     try {
-      const data = await api.login(userId, password, ['clinician']);
-      setAuth(data.access_token, userId, ['clinician']);
+      const data = await api.login(userId, password);
+      setAuth(data.access_token, userId, data.roles);
       navigate('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Login failed. Please check your credentials.');
@@ -155,19 +155,45 @@ const Login = () => {
             {loading && <IconLoader2 size={20} className="animate-spin" />}
             {language === 'ar' ? 'تسجيل الدخول' : 'Sign In'}
           </button>
+
+          {/* OIDC SSO — shown only when the IdP is configured */}
+          {import.meta.env.VITE_OIDC_ENABLED === 'true' && (
+            <>
+              <div className="relative flex items-center gap-2">
+                <div className="flex-grow border-t border-gray-300 dark:border-gray-600" />
+                <span className={clsx('text-xs', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
+                  {language === 'ar' ? 'أو' : 'or'}
+                </span>
+                <div className="flex-grow border-t border-gray-300 dark:border-gray-600" />
+              </div>
+              <a
+                href="/auth/oidc/login"
+                className={clsx(
+                  'w-full py-3 rounded-xl font-medium transition-colors flex items-center justify-center gap-2 border',
+                  theme === 'dark'
+                    ? 'border-gray-600 text-gray-200 hover:bg-gray-700'
+                    : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                )}
+              >
+                {language === 'ar' ? 'الدخول عبر المؤسسة (SSO)' : 'Sign in with SSO'}
+              </a>
+            </>
+          )}
         </form>
 
-        {/* Demo Credentials Hint */}
-        <div className={clsx(
-          'mt-6 p-4 rounded-xl text-sm',
-          theme === 'dark' ? 'bg-gray-700/50 text-gray-400' : 'bg-gray-50 text-gray-500'
-        )}>
-          <p className="font-medium mb-2">
-            {language === 'ar' ? 'بيانات تجريبية:' : 'Demo credentials:'}
-          </p>
-          <p>User ID: <code className="px-1.5 py-0.5 rounded bg-black/10 dark:bg-white/10">demo@healthtech.com</code></p>
-          <p>Password: <code className="px-1.5 py-0.5 rounded bg-black/10 dark:bg-white/10">demo123</code></p>
-        </div>
+        {/* Demo Credentials Hint — development only */}
+        {import.meta.env.DEV && (
+          <div className={clsx(
+            'mt-6 p-4 rounded-xl text-sm',
+            theme === 'dark' ? 'bg-gray-700/50 text-gray-400' : 'bg-gray-50 text-gray-500'
+          )}>
+            <p className="font-medium mb-2">
+              {language === 'ar' ? 'بيانات تجريبية:' : 'Demo credentials:'}
+            </p>
+            <p>User ID: <code className="px-1.5 py-0.5 rounded bg-black/10 dark:bg-white/10">demo@healthtech.com</code></p>
+            <p>Password: <code className="px-1.5 py-0.5 rounded bg-black/10 dark:bg-white/10">demo123</code></p>
+          </div>
+        )}
       </div>
     </div>
   );
