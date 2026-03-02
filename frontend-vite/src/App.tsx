@@ -8,6 +8,8 @@ import ClinicalLayout from '@components/Layout/ClinicalLayout';
 
 // Pages
 import Login from '@pages/Login';
+import OidcCallback from '@pages/OidcCallback';
+import AuthError from '@pages/AuthError';
 import DashboardNew from '@pages/DashboardNew';
 import ClinicalNotes from '@pages/ClinicalNotes';
 import VoiceAgentClean from '@pages/VoiceAgentClean';
@@ -32,8 +34,10 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public route */}
+        {/* Public routes */}
         <Route path="/login" element={<Login />} />
+        <Route path="/auth/callback" element={<OidcCallback />} />
+        <Route path="/auth/error" element={<AuthError />} />
         
         {/* Protected routes with clinical layout */}
         <Route path="/" element={

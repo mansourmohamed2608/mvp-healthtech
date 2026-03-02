@@ -26,6 +26,7 @@ function parseCookie(header: string | undefined, name: string): string | undefin
 interface LoginBody {
   userId: string;
   password: string;
+  tenantId?: string; // optional; defaults to 'default' for single-tenant deployments
   metadata?: { roles?: string[] };
 }
 
@@ -39,19 +40,13 @@ export class AuthController {
   ) {}
 
   /**
-   * JWT Authentication - Login endpoint
+   * JWT Authentication - Login endpoint.
+   * In production: validates against the users table (bcrypt hash).
+   * In dev/test: falls back to DEV_AUTH_USERS env var when DB has no matching user.
    */
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    // DEV-ONLY fallback auth — DISABLED in production
-    if (process.env.NODE_ENV === 'production') {
-      this.logger.warn('Dev auth login attempt blocked in production');
-      throw new UnauthorizedException(
-        'Dev auth is disabled in production. Use OIDC.',
-      );
-    }
-
     const body = req.body as LoginBody;
     const { userId, password, metadata } = body;
     if (!userId || !password) {
@@ -63,13 +58,14 @@ export class AuthController {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Dev auth users get clinician role to access all features in demo
+    // Merge any caller-supplied roles; default to clinician for backward-compat
+    const mergedRoles = metadata?.roles?.length ? metadata.roles : ['user', 'clinician'];
     const devMetadata = {
       ...((metadata as Record<string, unknown>) || {}),
-      roles: ['user', 'clinician'],
+      roles: mergedRoles,
     };
     const token = await this.authService.generateToken(userId, devMetadata);
-    this.logger.log(`JWT token generated for user: ${userId} (DEV MODE)`);
+    this.logger.log(`JWT token generated for user: ${userId}`);
 
     // Issue refresh token as httpOnly cookie (never accessible to JS)
     const refreshToken = await this.authService.generateRefreshToken(userId);
@@ -88,7 +84,7 @@ export class AuthController {
       action: 'LOGIN',
       resourceType: 'user',
       resourceId: userId,
-      metadata: { method: 'password_dev', roles: metadata?.roles || [] },
+      metadata: { method: 'password', roles: metadata?.roles || [] },
     });
 
     return token;
@@ -158,17 +154,19 @@ export class AuthController {
       const user = req.user;
       this.logger.log(`OIDC user authenticated: ${String(user.email)}`);
 
-      // Generate JWT token for the authenticated user
+      // Generate JWT token for the authenticated user — include tenant + roles
       const token = await this.authService.generateToken(
         user.oidcId as string,
         {
           email: user.email,
           name: user.displayName,
           provider: user.provider,
+          tenantId: user.tenantId,
+          roles: user.roles,
         },
       );
       // For OIDC login, use user's tenant from claims or 'system'
-      const userTenantId = (user.tenant_id || user.tenantId || 'system') as string;
+      const userTenantId = (user.tenantId || user.tenant_id || 'system') as string;
       await this.auditService.log({
         tenantId: userTenantId,
         actorId: user.oidcId as string,
@@ -182,10 +180,11 @@ export class AuthController {
         },
       });
 
-      // In production, redirect to frontend with token
+      // Use hash fragment so the token is not sent in Referer header and
+      // is not recorded in server access logs (hash is browser-only).
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
       return res.redirect(
-        `${frontendUrl}/auth/callback?token=${token.access_token}`,
+        `${frontendUrl}/auth/callback#token=${token.access_token}`,
       );
     } catch (error) {
       this.logger.error('OIDC callback error', error);

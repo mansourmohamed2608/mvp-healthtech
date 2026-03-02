@@ -11,6 +11,7 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET}
+      - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET:?set REFRESH_TOKEN_SECRET}
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:?set TWILIO_AUTH_TOKEN}
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/healthtech
@@ -24,13 +25,23 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://your-domain.com}
+      - MULTI_TENANT=${MULTI_TENANT:-true}
+      - FRONTEND_URL=${FRONTEND_URL:-https://your-domain.com}
     depends_on:
-      - asr
-      - llm
-      - tts
-      - soap
-      - fhir
-      - redis
+      postgres:
+        condition: service_healthy
+      asr:
+        condition: service_started
+      llm:
+        condition: service_started
+      tts:
+        condition: service_started
+      soap:
+        condition: service_started
+      fhir:
+        condition: service_started
+      redis:
+        condition: service_started
 
   frontend-vite:
     build:
@@ -229,7 +240,32 @@ services:
       - POSTGRES_DB=healthtech
     volumes:
       - ../infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d healthtech"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     # NO ports exposed - internal only
+
+  # One-shot job: upserts the initial admin user on first deploy.
+  # Re-running is safe (ON CONFLICT DO UPDATE). Exits 0 on success.
+  # Set SEED_ADMIN_PASSWORD via environment or .env file.
+  seed-init:
+    build:
+      context: ../scripts
+      dockerfile: Dockerfile.seed
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/healthtech
+      - SEED_ADMIN_USER=${SEED_ADMIN_USER:-admin}
+      - SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD:?set SEED_ADMIN_PASSWORD}
+      - SEED_ADMIN_ROLES=${SEED_ADMIN_ROLES:-admin,clinician}
+      - SEED_ADMIN_TENANT=${SEED_ADMIN_TENANT:-default}
+      - NODE_ENV=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   huggingface_cache:

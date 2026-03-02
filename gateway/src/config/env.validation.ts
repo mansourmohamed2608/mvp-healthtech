@@ -1,6 +1,7 @@
 export function validateEnv() {
   const required = [
     'JWT_SECRET',
+    'REFRESH_TOKEN_SECRET',
     'INTERNAL_SECRET',
     'ASR_SERVICE_URL',
     'LLM_SERVICE_URL',

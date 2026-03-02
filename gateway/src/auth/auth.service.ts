@@ -8,9 +8,17 @@ export interface JwtPayload {
   username?: string;
   email?: string;
   roles?: string[];
+  tenant_id?: string;
   isClinician?: boolean;
   iat?: number;
   exp?: number;
+}
+
+/** Claims returned on successful credential validation */
+export interface UserClaims {
+  username: string;
+  tenantId: string;
+  roles: string[];
 }
 
 export interface TokenResponse {
@@ -29,26 +37,38 @@ export class AuthService {
   ) {}
 
   /**
-   * Validate credentials against the users table (bcrypt) first.
-   * Falls back to DEV_AUTH_USERS env var ONLY in non-production when the
-   * users table is empty (first boot before seeds are applied).
-   * Always returns false in production unless the DB has a matching user.
+   * Validate credentials and return user claims.
+   * Primary path: users table with bcrypt (works in all envs incl. production).
+   * Fallback: DEV_AUTH_USERS env var — non-production only, for first-boot before seed.
+   *
+   * @param tenantId   Tenant to scope the lookup (defaults to 'default' for single-tenant).
    */
-  async validateUser(username: string, password: string): Promise<boolean> {
+  async validateUser(
+    username: string,
+    password: string,
+    tenantId = 'default',
+  ): Promise<UserClaims | false> {
     if (!username || !password) return false;
 
     // --- Primary path: check the users table with bcrypt ---
     if (this.pool) {
       try {
         const result = await this.pool.query(
-          `SELECT password_hash, active FROM users
-           WHERE tenant_id = 'default' AND username = $1 LIMIT 1`,
-          [username],
+          `SELECT password_hash, active, tenant_id, roles FROM users
+           WHERE tenant_id = $1 AND username = $2 LIMIT 1`,
+          [tenantId, username],
         );
         if (result.rows.length > 0) {
-          const { password_hash, active } = result.rows[0] as { password_hash: string; active: boolean };
-          if (!active) return false;
-          return bcrypt.compare(password, password_hash);
+          const row = result.rows[0] as {
+            password_hash: string;
+            active: boolean;
+            tenant_id: string;
+            roles: string[];
+          };
+          if (!row.active) return false;
+          const valid = await bcrypt.compare(password, row.password_hash);
+          if (!valid) return false;
+          return { username, tenantId: row.tenant_id, roles: row.roles || ['user'] };
         }
       } catch (err) {
         this.logger.error('DB lookup in validateUser failed', (err as Error).message);
@@ -63,21 +83,21 @@ export class AuthService {
     const allowedUsers = (process.env.DEV_AUTH_USERS || 'dev:changeme')
       .split(',')
       .map((p) => p.trim());
-    return allowedUsers.some((pair) => {
+    const matched = allowedUsers.some((pair) => {
       const sep = pair.indexOf(':');
       if (sep < 0) return false;
       return pair.slice(0, sep) === username && pair.slice(sep + 1) === password;
     });
+    return matched ? { username, tenantId: 'default', roles: ['user', 'clinician'] } : false;
   }
 
   async validateJwtPayload(payload: JwtPayload): Promise<any> {
-    // In production, validate against user database
-    // For now, just return the payload
     return {
       userId: payload.sub,
       username: payload.username,
       email: payload.email,
       roles: payload.roles || [],
+      tenant_id: payload.tenant_id, // forwarded to req.user so TenantGuard can read it
     };
   }
 
@@ -95,6 +115,7 @@ export class AuthService {
       username: metadata?.username,
       email: metadata?.email,
       roles: metadata?.roles || ['user'],
+      tenant_id: metadata?.tenantId,
     };
 
     const expiresIn = process.env.JWT_EXPIRES_IN || '1h';
