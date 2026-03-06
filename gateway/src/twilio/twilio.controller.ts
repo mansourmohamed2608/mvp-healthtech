@@ -65,7 +65,11 @@ export class TwilioController {
   ) {
     const signature =
       headers['x-twilio-signature'] || headers['X-Twilio-Signature'];
-    const url = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    // Behind nginx the protocol is always https; trust x-forwarded-proto if present
+    const proto =
+      headers['x-forwarded-proto'] ||
+      (process.env.GATEWAY_PUBLIC_URL?.startsWith('wss') ? 'https' : req.protocol);
+    const url = `${proto}://${req.get('host')}${req.originalUrl}`;
 
     // Validate Twilio signature
     const isValid = this.twilioService.validateTwilioRequest(
