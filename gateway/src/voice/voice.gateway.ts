@@ -67,6 +67,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly audioBuffers = new Map<string, Buffer[]>();
   private readonly streamUsers = new Map<string, any>();
   private readonly rateLimit = new Map<string, { count: number; ts: number }>(); // per-callSid per second
+  private readonly streamSids = new Map<string, string>(); // callSid -> streamSid
   private readonly activeGauge = MetricsController.getActiveConversations();
 
   constructor(
@@ -224,6 +225,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // Initialize audio buffer for this call
     this.audioBuffers.set(callSid, []);
     this.activeStreams.set(callSid, client);
+    this.streamSids.set(callSid, streamSid);
 
     // Set up user context
     const user = { sub: `twilio:${callSid}`, roles: ['twilio'] };
@@ -318,6 +320,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.audioBuffers.delete(callSid);
     this.streamUsers.delete(callSid);
     this.rateLimit.delete(callSid);
+    this.streamSids.delete(callSid);
   }
 
   private async processAudioChunk(
@@ -376,10 +379,11 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     try {
       // Send audio back to Twilio as media message
-      // Twilio expects base64 mulaw audio
+      // Twilio requires the streamSid (MZ...), NOT the callSid (CA...)
+      const streamSid = this.streamSids.get(callSid) || callSid;
       const message = {
         event: 'media',
-        streamSid: callSid,
+        streamSid,
         media: {
           payload: audioData,
         },
