@@ -49,7 +49,7 @@ import { join } from 'path';
     }),
     ThrottlerModule.forRoot({
       throttlers: [
-        { name: 'global', ttl: 60_000, limit: 100 }, // 100 req/min per IP (general API)
+        { name: 'global', ttl: 60_000, limit: 600 }, // 600 req/min per IP (general API)
         { name: 'gpu',    ttl: 60_000, limit: 5 },   // 5 req/min per IP for GPU endpoints
       ],
     }),
