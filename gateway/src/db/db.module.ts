@@ -12,9 +12,10 @@
 import { Global, Module, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
-import { TenantDbService, TENANT_DB } from './tenant-db.service';
+import { TenantDbService } from './tenant-db.service';
+import { PG_POOL, TENANT_DB } from './db.constants';
 
-export const PG_POOL = 'PG_POOL';
+export { PG_POOL } from './db.constants';
 
 @Global()
 @Module({

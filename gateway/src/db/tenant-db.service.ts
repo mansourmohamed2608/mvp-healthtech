@@ -18,9 +18,9 @@
  */
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { Pool, PoolClient, QueryResultRow } from 'pg';
-import { PG_POOL } from './db.module';
+import { PG_POOL, TENANT_DB } from './db.constants';
 
-export const TENANT_DB = 'TENANT_DB';
+export { TENANT_DB } from './db.constants';
 
 @Injectable()
 export class TenantDbService {
