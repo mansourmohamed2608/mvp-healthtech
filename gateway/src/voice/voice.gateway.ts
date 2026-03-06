@@ -279,18 +279,17 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     buffer.push(audioChunk);
     this.audioBuffers.set(callSid, buffer);
 
-    // Process audio every ~300ms (approximately 2400-4800 bytes for mulaw at 8kHz)
+    // Process audio every ~1.2s (9600 bytes at 8kHz mulaw) so Whisper has
+    // enough speech to transcribe reliably.
     const totalBytes = buffer.reduce((sum, chunk) => sum + chunk.length, 0);
 
-    if (totalBytes >= 2400) {
-      // ~300ms of audio
-      // Combine all chunks
+    if (totalBytes >= 9600) {
+      // ~1.2s of audio
       const combinedAudio = Buffer.concat(buffer);
 
       // Clear buffer
       this.audioBuffers.set(callSid, []);
 
-      // Send to conversation service for transcription and processing
       try {
         await this.processAudioChunk(callSid, combinedAudio, false);
       } catch (error) {
@@ -331,43 +330,29 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Convert mulaw to base64 for ASR service
       const base64Audio = audioData.toString('base64');
 
-      const streamResp = await this.asrService.stream(
-        base64Audio,
+      // Directly run the full pipeline — silence-detection-based streaming
+      // is unreliable on 8-bit mulaw (audioop RMS misinterpretation).
+      const result = await this.conversationService.processVoiceInput({
         callSid,
-        isFinal,
-      );
+        audio: base64Audio,
+        format: 'mulaw',
+        sampleRate: 8000,
+        user,
+      });
 
-      if (streamResp.partial) {
-        this.server.emit('partial_transcript', {
+      if (result.transcript) {
+        safeLog(this.logger, 'log', 'Transcript received', {
           callSid,
-          text: streamResp.partial,
+          length: result.transcript.length,
+        });
+        this.server.emit('final_transcript', {
+          callSid,
+          text: result.transcript,
         });
       }
 
-      // If final or stream stop, run full pipeline
-      if (isFinal || streamResp.isFinal) {
-        const result = await this.conversationService.processVoiceInput({
-          callSid,
-          audio: base64Audio,
-          format: 'mulaw',
-          sampleRate: 8000,
-          user,
-        });
-
-        if (result.transcript) {
-          safeLog(this.logger, 'log', 'Transcript received', {
-            callSid,
-            length: result.transcript.length,
-          });
-          this.server.emit('final_transcript', {
-            callSid,
-            text: result.transcript,
-          });
-        }
-
-        if (result.audioResponse) {
-          await this.sendAudioToClient(callSid, result.audioResponse);
-        }
+      if (result.audioResponse) {
+        await this.sendAudioToClient(callSid, result.audioResponse);
       }
     } catch (error) {
       safeLog(this.logger, 'error', 'Error processing audio chunk', {
