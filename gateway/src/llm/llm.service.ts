@@ -39,6 +39,7 @@ export class LlmService {
   })();
   private readonly serviceUrl = process.env.LLM_SERVICE_URL || '';
   private readonly orchestratorUrl = process.env.ORCHESTRATOR_URL || '';
+  private readonly vaLlmUrl = process.env.VA_LLM_URL || '';
 
   constructor(private readonly http: InternalHttpClient) {}
 
@@ -75,7 +76,38 @@ export class LlmService {
 
   async orchestrate(payload: OrchestratePayload): Promise<OrchestrateResponse> {
     const corr = uuidv4();
-    const timeoutMs = payload.mode === 'voice_agent_va' ? 2000 : 20000;
+    const timeoutMs = 20000;
+
+    // Voice agent calls go directly to llm-va /chat (orchestrator not in demo stack)
+    if (payload.mode === 'voice_agent_va' && this.vaLlmUrl) {
+      const client = this.http.getClient({
+        baseUrl: this.vaLlmUrl,
+        serviceName: 'llm-va',
+        timeoutMs,
+      });
+      const { data } = await client.post<OrchestrateResponse>(
+        `/chat`,
+        {
+          message: payload.transcript,
+          history: payload.history || [],
+          sessionId: payload.sessionId,
+          mode: payload.mode,
+          slots: payload.slots || {},
+          dialect: payload.dialect,
+          tenantId: payload.tenantId,
+        },
+        {
+          headers: {
+            'x-correlation-id': corr,
+            'x-internal-secret': this.internalSecret,
+          },
+          timeout: timeoutMs,
+        },
+      );
+      return data;
+    }
+
+    // Non-VA calls go to orchestrator (or fall back to llm)
     const client = this.http.getClient({
       baseUrl: this.orchestratorUrl || this.serviceUrl,
       serviceName: 'orchestrator',
@@ -94,4 +126,3 @@ export class LlmService {
     );
     return data;
   }
-}
