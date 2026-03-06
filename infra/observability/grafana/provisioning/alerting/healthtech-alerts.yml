@@ -18,37 +18,19 @@ contactPoints:
           singleEmail: false
         disableResolveMessage: false
 
-  - orgId: 1
-    name: ops-slack
-    receivers:
-      - uid: ops-slack-receiver
-        type: slack
-        settings:
-          url: ${SLACK_WEBHOOK_URL}   # set in Grafana env or via Grafana Secrets
-          channel: "#alerts"
-          title: "HealthTech Alert: {{ .CommonLabels.alertname }}"
-          text: |
-            {{ range .Alerts }}
-            *Status:* {{ .Status | toUpper }}
-            *Summary:* {{ .Annotations.summary }}
-            *Detail:* {{ .Annotations.description }}
-            *Severity:* {{ .Labels.severity }}
-            {{ end }}
-        disableResolveMessage: false
-
 # ==========================================
 # NOTIFICATION POLICIES
 # ==========================================
 policies:
   - orgId: 1
-    receiver: ops-slack       # default receiver
+    receiver: ops-email       # default receiver
     group_by: [alertname, service]
     group_wait: 30s
     group_interval: 5m
     repeat_interval: 4h
     routes:
       # Critical alerts → immediate, shorter repeat
-      - receiver: ops-slack
+      - receiver: ops-email
         matchers:
           - severity = critical
         group_wait: 0s
