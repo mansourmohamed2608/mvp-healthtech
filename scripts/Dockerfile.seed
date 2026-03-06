@@ -1,0 +1,12 @@
+FROM node:20-alpine
+WORKDIR /app
+COPY package.json ./
+RUN npm install --production --silent
+COPY seed-user.js ./
+# SEED_ADMIN_USER, SEED_ADMIN_PASSWORD, SEED_ADMIN_ROLES, SEED_ADMIN_TENANT, DATABASE_URL
+ENTRYPOINT ["sh", "-c", \
+  "node seed-user.js \
+    --username \"$SEED_ADMIN_USER\" \
+    --password \"$SEED_ADMIN_PASSWORD\" \
+    --roles   \"$SEED_ADMIN_ROLES\" \
+    --tenant  \"$SEED_ADMIN_TENANT\""]
