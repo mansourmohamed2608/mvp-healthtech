@@ -53,8 +53,12 @@ def build_va_prompt(
     """Compose prompt for VA: system + short history + slot summary + user message."""
     history_lines = []
     for turn in history[-5:]:
-        role = turn.get("role", "")
-        content = turn.get("content", "")
+        if hasattr(turn, "role"):
+            role = turn.role
+            content = turn.content
+        else:
+            role = turn.get("role", "")
+            content = turn.get("content", "")
         history_lines.append(f"{role}: {content}")
     slot_summary = build_slot_summary(slots)
     dialect_hint = ""
