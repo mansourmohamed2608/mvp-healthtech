@@ -96,8 +96,15 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const user = (client as any).user || {};
     const pendingTwilioAuth = (client as any).pendingTwilioAuth;
 
-    if (pendingTwilioAuth) {
+    // WsJwtGuard runs on @SubscribeMessage handlers, NOT on handleConnection.
+    // Detect Twilio media streams by CallSid pattern (Twilio CallSids start with 'CA').
+    const isTwilioStream = !!urlCallSid?.startsWith('CA');
+
+    if (pendingTwilioAuth || isTwilioStream) {
       // Twilio stream - auth will be validated on 'start' message
+      (client as any).pendingTwilioAuth = true;
+      (client as any).user =
+        (client as any).user || { sub: 'twilio_pending', roles: ['twilio'] };
       safeLog(
         this.logger,
         'log',

@@ -76,13 +76,24 @@ export class TwilioWsAdapter extends AbstractWsAdapter {
   ): Observable<any> {
     try {
       const message = JSON.parse(buffer.data);
-      const messageHandler = handlers.find(
+
+      // Try specific handler for this event type first
+      const specificHandler = handlers.find(
         (handler) => handler.message === message.event,
+      );
+      if (specificHandler) {
+        return transform(specificHandler.callback(message));
+      }
+
+      // Fall back to generic 'message' handler; pass raw JSON string so the
+      // handler can JSON.parse() it and switch on message.event itself.
+      const messageHandler = handlers.find(
+        (handler) => handler.message === 'message',
       );
       if (!messageHandler) {
         return EMPTY;
       }
-      return transform(messageHandler.callback(message));
+      return transform(messageHandler.callback(buffer.data));
     } catch (error) {
       this.logger.error('Error parsing WebSocket message', error);
       return EMPTY;
