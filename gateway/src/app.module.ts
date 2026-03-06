@@ -49,8 +49,11 @@ import { join } from 'path';
     }),
     ThrottlerModule.forRoot({
       throttlers: [
-        { name: 'global', ttl: 60_000, limit: 600 }, // 600 req/min per IP (general API)
-        { name: 'gpu',    ttl: 60_000, limit: 5 },   // 5 req/min per IP for GPU endpoints
+        // All browser traffic arrives via nginx with a single internal IP, so
+        // we must set the limit high enough for the whole demo (voice call ASR
+        // stream chunks ≈200 req/min + frontend polls + Prometheus scrapes).
+        { name: 'global', ttl: 60_000, limit: 6000 }, // 6000 req/min per IP
+        { name: 'gpu',    ttl: 60_000, limit: 5 },    // 5 req/min per IP for GPU endpoints
       ],
     }),
     DbModule,
