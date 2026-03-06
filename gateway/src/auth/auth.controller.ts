@@ -11,6 +11,7 @@ import {
   HttpStatus,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import type { Request, Response } from 'express';
@@ -46,25 +47,24 @@ export class AuthController {
    */
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } }) // max 10 login attempts per IP per minute
   async login(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const body = req.body as LoginBody;
-    const { userId, password, metadata } = body;
+    const { userId, password, tenantId } = body;
     if (!userId || !password) {
       throw new UnauthorizedException('userId and password are required');
     }
 
-    const valid = await this.authService.validateUser(userId, password);
+    const valid = await this.authService.validateUser(userId, password, tenantId);
     if (!valid) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Merge any caller-supplied roles; default to clinician for backward-compat
-    const mergedRoles = metadata?.roles?.length ? metadata.roles : ['user', 'clinician'];
-    const devMetadata = {
-      ...((metadata as Record<string, unknown>) || {}),
-      roles: mergedRoles,
-    };
-    const token = await this.authService.generateToken(userId, devMetadata);
+    // Use DB-resolved claims — never trust caller-supplied roles
+    const token = await this.authService.generateToken(userId, {
+      tenantId: valid.tenantId,
+      roles: valid.roles,
+    });
     this.logger.log(`JWT token generated for user: ${userId}`);
 
     // Issue refresh token as httpOnly cookie (never accessible to JS)
@@ -79,12 +79,12 @@ export class AuthController {
 
     // For login events, use 'system' tenant since user is authenticating
     await this.auditService.log({
-      tenantId: 'system',
+      tenantId: valid.tenantId,
       actorId: userId,
       action: 'LOGIN',
       resourceType: 'user',
       resourceId: userId,
-      metadata: { method: 'password', roles: metadata?.roles || [] },
+      metadata: { method: 'password', roles: valid.roles },
     });
 
     return token;

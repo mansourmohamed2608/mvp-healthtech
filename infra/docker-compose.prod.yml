@@ -223,6 +223,10 @@ services:
     image: grafana/grafana:latest
     ports:
       - "3002:3000"  # Grafana exposed for monitoring
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
     volumes:
       - grafana_data:/var/lib/grafana
       - ../infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
