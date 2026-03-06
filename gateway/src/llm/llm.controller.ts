@@ -31,7 +31,7 @@ class ChatDto {
   intent?: string;
 }
 
-@Throttle({ gpu: { ttl: 60_000, limit: 5 } }) // 5 LLM inferences per IP per minute
+@Throttle({ default: { ttl: 60_000, limit: 5 } }) // 5 LLM inferences per IP per minute
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('llm')
 export class LlmController {

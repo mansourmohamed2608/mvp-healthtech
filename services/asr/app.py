@@ -84,6 +84,8 @@ except ImportError:
         LLM_CORRECTOR_AVAILABLE = False
         logger.warning("llm_corrector not found - LLM correction disabled")
 
+ENABLE_LLM_CORRECTION = os.getenv("ENABLE_LLM_CORRECTION", "false").lower() == "true"
+
 # Prefer shared functions from text_fix_ar.py to avoid duplication
 try:
     from services.asr.text_fix_ar import (

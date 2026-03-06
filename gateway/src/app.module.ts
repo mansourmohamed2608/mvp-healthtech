@@ -48,12 +48,12 @@ import { join } from 'path';
       ],
     }),
     ThrottlerModule.forRoot({
+      // Single throttler applied to all routes by default.
+      // All browser traffic arrives via nginx as a single IP, so the limit
+      // must accommodate the whole demo load.
+      // GPU-heavy routes override this with a lower per-route limit.
       throttlers: [
-        // All browser traffic arrives via nginx with a single internal IP, so
-        // we must set the limit high enough for the whole demo (voice call ASR
-        // stream chunks ≈200 req/min + frontend polls + Prometheus scrapes).
-        { name: 'global', ttl: 60_000, limit: 6000 }, // 6000 req/min per IP
-        { name: 'gpu',    ttl: 60_000, limit: 5 },    // 5 req/min per IP for GPU endpoints
+        { name: 'default', ttl: 60_000, limit: 6000 },
       ],
     }),
     DbModule,

@@ -27,7 +27,7 @@ class StreamDto {
   dialect?: string;
 }
 
-@Throttle({ gpu: { ttl: 60_000, limit: 5 } }) // 5 GPU transcriptions per IP per minute
+@Throttle({ default: { ttl: 60_000, limit: 5 } }) // 5 GPU transcriptions per IP per minute
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('asr')
 export class AsrController {
