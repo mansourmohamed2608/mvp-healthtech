@@ -30,8 +30,8 @@ const Navbar = () => {
   const handleLogin = async () => {
     try {
       setLoginError('');
-      const data = await api.login(loginUserId, loginPassword, ['clinician']);
-      setAuth(data.access_token, loginUserId || null, ['clinician']);
+      const data = await api.login(loginUserId, loginPassword);
+      setAuth(data.access_token, loginUserId || null, data.roles);
       setLoginOpen(false);
       setLoginPassword('');
     } catch (err: any) {
