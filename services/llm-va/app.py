@@ -380,33 +380,11 @@ async def chat(req: ChatRequest):
         reply = _canned_reply(dialect, extracted_slots)
         if _MODEL_AVAILABLE and _MODEL and _TOKENIZER:
             try:
-                raw = _generate_from_prompt(prompt, max_new_tokens=160, temperature=0.25)
+                raw = _generate_from_prompt(prompt, max_new_tokens=60, temperature=0.25)
                 reply = _strip_assistant_prefix(raw)
             except Exception as e:
                 import logging
                 logging.error(f"VA generation failed, using fallback: {e}")
-
-        if VA_DIALECT_ENFORCE and dialect in {"egypt", "saudi"}:
-            if not _is_dialect_ok(reply, dialect):
-                rewritten = ""
-                if VA_DIALECT_REWRITE:
-                    try:
-                        rewrite_msgs = _rewrite_prompt(dialect, reply)
-                        rewritten_raw = _generate_from_messages(
-                            rewrite_msgs,
-                            max_new_tokens=VA_DIALECT_REWRITE_TOKENS,
-                            temperature=0.2,
-                        )
-                        rewritten = _strip_assistant_prefix(rewritten_raw)
-                    except Exception:
-                        rewritten = ""
-                if rewritten and _is_dialect_ok(rewritten, dialect):
-                    reply = rewritten
-                else:
-                    reply = _canned_reply(dialect, extracted_slots)
-
-        if VA_DIALECT_ENFORCE and _contains_msa_marker(reply):
-            reply = _canned_reply(dialect, extracted_slots)
 
         updated_slots = extracted_slots
         duration = (time.time() - start) * 1000

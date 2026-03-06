@@ -76,7 +76,7 @@ export class LlmService {
 
   async orchestrate(payload: OrchestratePayload): Promise<OrchestrateResponse> {
     const corr = uuidv4();
-    const timeoutMs = 20000;
+    const timeoutMs = payload.mode === 'voice_agent_va' ? 60000 : 20000;
 
     // Voice agent calls go directly to llm-va /chat (orchestrator not in demo stack)
     if (payload.mode === 'voice_agent_va' && this.vaLlmUrl) {
