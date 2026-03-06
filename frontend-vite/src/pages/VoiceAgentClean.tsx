@@ -126,13 +126,16 @@ const VoiceAgentClean = () => {
           setIsThinking(false);
         }
       } catch (err: any) {
-        setError((prev) => prev || `Transcript sync failed: ${err.message}`);
+        // Silently swallow rate-limit errors — the next poll will succeed
+        if (!String(err.message).includes('429') && !String(err.message).toLowerCase().includes('too many')) {
+          setError((prev) => prev || `Transcript sync failed: ${err.message}`);
+        }
         setIsThinking(false);
       }
     };
 
     fetchHistory();
-    const intervalId = window.setInterval(fetchHistory, 2000);
+    const intervalId = window.setInterval(fetchHistory, 5000);
     return () => { cancelled = true; window.clearInterval(intervalId); };
   }, [callSid, callStatus, introMessage]);
 

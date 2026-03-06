@@ -141,14 +141,17 @@ const VoiceAgent = () => {
           setIsThinking(false);
         }
       } catch (err: any) {
-        console.error('Failed to fetch transcript history:', err);
-        setError((prev) => prev || `Transcript sync failed: ${err.message || 'unknown error'}`);
+        // Silently swallow rate-limit errors — the next poll will succeed
+        if (!String(err.message).includes('429') && !String(err.message).toLowerCase().includes('too many')) {
+          console.error('Failed to fetch transcript history:', err);
+          setError((prev) => prev || `Transcript sync failed: ${err.message || 'unknown error'}`);
+        }
         setIsThinking(false);
       }
     };
 
     fetchHistory();
-    const intervalId = window.setInterval(fetchHistory, 2000);
+    const intervalId = window.setInterval(fetchHistory, 5000);
 
     return () => {
       cancelled = true;
