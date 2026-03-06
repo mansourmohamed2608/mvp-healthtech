@@ -430,8 +430,8 @@ export class ConversationService {
         this.durationSeconds(asrStart),
       );
 
-      if (!transcript || transcript.trim() === '') {
-        // No speech detected, return empty
+      if (!transcript || transcript.trim().length < 5) {
+        // No speech detected or too short (ASR noise hallucination), return empty
         return { transcript: '', response: '', audioResponse: '' };
       }
 
