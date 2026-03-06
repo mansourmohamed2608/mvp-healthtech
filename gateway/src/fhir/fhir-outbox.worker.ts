@@ -67,11 +67,11 @@ export class FhirOutboxWorker implements OnModuleInit, OnModuleDestroy {
     let rows: any[];
     try {
       const result = await this.pool.query(
-        `SELECT id, tenant_id, soap_note_id, idempotency_key, payload, attempt_count, max_attempts
+        `SELECT id, tenant_id, soap_note_id, idempotency_key, payload, attempts, max_attempts
          FROM fhir_outbox
          WHERE status IN ('pending', 'failed')
-           AND next_retry_at <= now()
-         ORDER BY next_retry_at
+           AND (next_retry_at IS NULL OR next_retry_at <= now())
+         ORDER BY next_retry_at NULLS FIRST
          LIMIT $1
          FOR UPDATE SKIP LOCKED`,
         [BATCH_SIZE],
@@ -93,10 +93,10 @@ export class FhirOutboxWorker implements OnModuleInit, OnModuleDestroy {
     soap_note_id: string;
     idempotency_key: string;
     payload: Record<string, unknown>;
-    attempt_count: number;
+    attempts: number;
     max_attempts: number;
   }): Promise<void> {
-    const attempt = row.attempt_count + 1;
+    const attempt = row.attempts + 1;
     try {
       const internalSecret = process.env.INTERNAL_SECRET || '';
       await axios.post(`${this.fhirBaseUrl}/fhir`, row.payload, {
@@ -112,7 +112,7 @@ export class FhirOutboxWorker implements OnModuleInit, OnModuleDestroy {
       // Success
       await this.pool!.query(
         `UPDATE fhir_outbox
-         SET status = 'delivered', attempt_count = $1, delivered_at = now(), last_error = null
+         SET status = 'success', attempts = $1, processed_at = now(), last_error = null
          WHERE id = $2`,
         [attempt, row.id],
       );
@@ -139,12 +139,12 @@ export class FhirOutboxWorker implements OnModuleInit, OnModuleDestroy {
 
       await this.pool!.query(
         `UPDATE fhir_outbox
-         SET status       = $1,
-             attempt_count = $2,
-             last_error   = $3,
+         SET status        = $1,
+             attempts      = $2,
+             last_error    = $3,
              next_retry_at = $4
          WHERE id = $5`,
-        [isDead ? 'dead' : 'failed', attempt, lastError, nextRetry, row.id],
+        [isDead ? 'dead_letter' : 'failed', attempt, lastError, nextRetry, row.id],
       );
 
       if (isDead) {
