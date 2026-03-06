@@ -421,6 +421,8 @@ export class ConversationService {
           enableDiarization: false,
           diarizeFirst: false,
           enableAlignment: false,
+          format: input.format,
+          sampleRate: input.sampleRate,
         },
       );
       this.asrMetric.observe(
