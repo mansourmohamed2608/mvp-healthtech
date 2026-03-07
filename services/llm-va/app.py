@@ -151,10 +151,18 @@ def _is_dialect_ok(text: str, dialect: Optional[str]) -> bool:
 
 def _strip_assistant_prefix(text: str) -> str:
     cleaned = text.strip()
-    for token in ["المساعد:", "Assistant:", "assistant:"]:
-        if token in cleaned:
-            cleaned = cleaned.split(token)[-1].strip()
-    return cleaned
+    # Strip leading role prefix if the model echoed it at the start of its output
+    for token in ["المساعد:", "مساعد:", "Assistant:", "assistant:"]:
+        if cleaned.startswith(token):
+            cleaned = cleaned[len(token):].strip()
+            break
+    # Truncate any hallucinated continuation the model appended
+    for stop in ["\nuser:", "\n user:", "\nمستخدم:", "\nالمستخدم:",
+                  " user:", " مستخدم:", "\nassistant:", "\nAssistant:"]:
+        idx = cleaned.find(stop)
+        if idx != -1:
+            cleaned = cleaned[:idx]
+    return cleaned.strip()
 
 
 def _rewrite_prompt(dialect: str, text: str) -> list[dict]:
@@ -175,6 +183,7 @@ def _generate_from_prompt(prompt: str, max_new_tokens: int, temperature: float) 
     if not _MODEL_AVAILABLE or _MODEL is None or _TOKENIZER is None:
         return ""
     inputs = _TOKENIZER(prompt, return_tensors="pt").to(_MODEL.device)
+    input_len = inputs["input_ids"].shape[1]  # track prompt length to extract only new tokens
     with torch.no_grad():
         output = _MODEL.generate(
             **inputs,
@@ -183,7 +192,7 @@ def _generate_from_prompt(prompt: str, max_new_tokens: int, temperature: float) 
             top_p=0.9,
             do_sample=True,
         )
-    return _TOKENIZER.decode(output[0], skip_special_tokens=True)
+    return _TOKENIZER.decode(output[0][input_len:], skip_special_tokens=True)
 
 
 def _generate_from_messages(messages: list[dict], max_new_tokens: int, temperature: float) -> str:

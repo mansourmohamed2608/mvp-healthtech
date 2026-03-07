@@ -381,6 +381,21 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Send audio back to Twilio as media message
       // Twilio requires the streamSid (MZ...), NOT the callSid (CA...)
       const streamSid = this.streamSids.get(callSid) || callSid;
+
+      safeLog(this.logger, 'log', 'Sending audio to Twilio', {
+        callSid,
+        streamSid,
+        audioBytes: audioData.length,
+        clientReadyState: client.readyState,
+        hasMzSid: streamSid.startsWith('MZ'),
+      });
+
+      if (audioData.length < 500) {
+        this.logger.warn(
+          `Suspiciously small audio payload for ${callSid}: ${audioData.length} bytes — likely silence fallback`,
+        );
+      }
+
       const message = {
         event: 'media',
         streamSid,
@@ -390,6 +405,9 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
       };
 
       client.send(JSON.stringify(message));
+      safeLog(this.logger, 'log', 'Audio sent to Twilio successfully', {
+        callSid,
+      });
     } catch (error) {
       this.logger.error('Error sending audio to client', error);
     }
