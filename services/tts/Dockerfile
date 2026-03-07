@@ -18,6 +18,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install gTTS (lightweight, no conflicting deps)
 RUN pip install --no-cache-dir gTTS==2.5.3
 
+# Ensure click stays >=8.2 for typer/XTTS compatibility
+# (some transitive dep can downgrade it during the gTTS step above)
+RUN pip install --no-cache-dir "click>=8.2.0,<9.0"
+
 # Copy application code
 COPY . .
 
