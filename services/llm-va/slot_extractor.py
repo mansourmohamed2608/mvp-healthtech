@@ -1,11 +1,32 @@
 import re
 from typing import Dict, Any
 
-EGYPT_PHONE_RE = re.compile(r"\b01\d{9}\b")
-SAUDI_PHONE_RE = re.compile(r"\b05\d{8}\b")
-PHONE_RE = re.compile(r"(?:\+?\d{1,3})?\s?\d{9,12}")
+# Phone: accept digits with optional spaces between them (user may say "0 10 9 5 0")
+EGYPT_PHONE_RE = re.compile(r"\b0\s*1\s*\d[\s\d]{8,11}\b")
+SAUDI_PHONE_RE = re.compile(r"\b0\s*5\s*\d[\s\d]{7,9}\b")
+PHONE_RE = re.compile(r"(?:\+?\d{1,3}[\s-]?)?\d[\s\d]{8,12}")
 DOB_RE = re.compile(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b")
 DOCTOR_RE = re.compile(r"(?:دكتور|د\.|د\s)[\s\.:]*([\w\u0600-\u06FF]+)")
+
+# Name: "اسمي X" / "أنا X" / "اسمي X Y"
+NAME_RE = re.compile(r"(?:اسمي|أنا|انا|اسمى)\s+([\u0600-\u06FF][\u0600-\u06FF\s]{1,30}?)(?:\s*$|\s*[،,.])")
+
+# Arabic word-digits to integer map (for phone numbers spoken as words)
+ARABIC_DIGIT_MAP = {
+    "صفر": "0", "زيرو": "0", "واحد": "1", "اتنين": "2", "اثنين": "2",
+    "تلاتة": "3", "ثلاثة": "3", "أربعة": "4", "اربعة": "4", "خمسة": "5",
+    "ستة": "6", "سبعة": "7", "تمانية": "8", "ثمانية": "8", "تسعة": "9",
+    "عشرة": "10", "عشره": "10",
+}
+
+def _spoken_to_digits(text: str) -> str:
+    """Convert spoken Arabic digit-words to numeric digits (e.g. 'زيرو عشرة' → '010')."""
+    result = text
+    for word, digit in ARABIC_DIGIT_MAP.items():
+        result = result.replace(word, digit)
+    # After replacement, '10' in a phone context means the digit sequence '1','0' — keep as-is,
+    # the regex will handle the full match.
+    return result
 
 VISIT_MAP = {
     "كشف جديد": "كشف جديد",
@@ -40,12 +61,46 @@ def is_missing(slots: Dict[str, Any], key: str) -> bool:
 
 def extract_slots(user_text: str, slots: Dict[str, Any]) -> Dict[str, Any]:
     updated = dict(slots)
-    compact = user_text.replace(" ", "")
+    # Try word->digit conversion first (for spoken phone numbers like "زيرو عشرة ...")
+    spoken_converted = _spoken_to_digits(user_text)
+    compact = spoken_converted.replace(" ", "")
+    # Name — "اسمي منصور" / "أنا منصور"
+    if is_missing(updated, "name"):
+        # Try explicit pattern first
+        m = NAME_RE.search(user_text)
+        if m:
+            updated["name"] = m.group(1).strip()
+        else:
+            # Fallback: text is short and looks like just a name (no other slots)
+            stripped = user_text.strip()
+            words = stripped.split()
+            if (
+                1 <= len(words) <= 3
+                and all(re.match(r'^[\u0600-\u06FF]+$', w) for w in words)
+                and not any(k in stripped for k in ["رقم", "موبايل", "هاتف", "دكتور"])
+            ):
+                updated["name"] = stripped
     # Phone
     if is_missing(updated, "phone"):
-        m = EGYPT_PHONE_RE.search(compact) or SAUDI_PHONE_RE.search(compact) or PHONE_RE.search(compact)
+        # Try on original (digits with spaces) and spoken-converted
+        m = (EGYPT_PHONE_RE.search(user_text)
+             or SAUDI_PHONE_RE.search(user_text)
+             or EGYPT_PHONE_RE.search(spoken_converted)
+             or SAUDI_PHONE_RE.search(spoken_converted)
+             or PHONE_RE.search(compact))
         if m:
-            updated["phone"] = m.group(0)
+            # Normalize: strip spaces from matched group
+            updated["phone"] = re.sub(r'\s+', '', m.group(0))
+            # Clear any partial marker now that we have a full number
+            updated.pop("partial_phone", None)
+        else:
+            # Detect a partial phone attempt (3+ digits in a row) so the model
+            # can ask the user to give the complete number
+            partial_m = re.search(r'\d[\s\d]{2,}', spoken_converted)
+            if partial_m:
+                digits_only = re.sub(r'\s+', '', partial_m.group(0))
+                if len(digits_only) >= 3:
+                    updated["partial_phone"] = digits_only
     # DOB
     if is_missing(updated, "dob"):
         m = DOB_RE.search(user_text)

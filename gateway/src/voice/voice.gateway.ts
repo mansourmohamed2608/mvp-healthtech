@@ -385,7 +385,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
       safeLog(this.logger, 'log', 'Sending audio to Twilio', {
         callSid,
         streamSid,
-        audioBytes: audioData.length,
+        byteLen: audioData.length,
         clientReadyState: client.readyState,
         hasMzSid: streamSid.startsWith('MZ'),
       });

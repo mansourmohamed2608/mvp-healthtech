@@ -39,6 +39,10 @@ def build_slot_summary(slots: Dict[str, any]) -> str:
         parts.append("معلومات متوفرة: " + "; ".join(known))
     if missing:
         parts.append("مطلوب جمع: " + "; ".join(missing))
+    # Surface partial phone hint for the model
+    partial = slots.get("partial_phone")
+    if partial and is_missing(slots, "phone"):
+        parts.append(f"ملاحظة: المستخدم أعطى أرقاماً ناقصة ({partial}) — اطلبي رقم الـ ١١ رقماً كاملاً.")
     return "\n".join(parts)
 
 
@@ -114,7 +118,12 @@ def build_va_prompt(
         slot_summary or "لا توجد حقول معروفة بعد.",
         "",
         "التعليمات الحالية:",
-        "واصلي بصفتك ليان من مركز علاجك. استهدفي خانة ناقصة واحدة في هذا الدور، اجعلي الرد ١-٣ جمل قصيرة، وآخر جملة سؤال واضح ينتهي بـ \"؟\".",
+        (
+            "واصلي بصفتك ليان من مركز علاجك. استهدفي خانة ناقصة واحدة في هذا الدور، "
+            "اجعلي الرد ١-٣ جمل قصيرة، وآخر جملة سؤال واضح ينتهي بـ \"؟\". "
+            + ("لا تبدأي الرد بتحية أو تقديم نفسك لأن المحادثة قائمة بالفعل. " if history_lines else "")
+            + "لا تكرري سؤالاً عن خانة ذُكرت في «معلومات متوفرة»."
+        ),
         "",
         f"المستخدم: {user_message}",
         "المساعد:",
