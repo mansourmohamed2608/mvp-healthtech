@@ -105,6 +105,7 @@ MSA_REGEXES = [
 
 # Egyptian → Saudi substitutions applied to every LLM reply
 _EG_TO_SA: list[tuple[str, str]] = [
+    # Egyptian → Saudi
     ("عاوز ", "أبغى "), ("عاوزة ", "أبغى "),
     ("عايز ", "أبغى "), ("عايزة ", "أبغى "),
     ("دلوقتي", "الحين"), ("دلوقت", "الحين"),
@@ -114,14 +115,33 @@ _EG_TO_SA: list[tuple[str, str]] = [
     ("كده", "كذا"), ("حاجة", "شي"), ("حاجه", "شي"),
     ("مفيش", "ما فيه"), ("يا فندم", "أستاذ"),
     ("بتاع", "حق"),
+    # Levantine → Saudi
+    ("شو اللي", "وش اللي"), ("شو ال", "وش ال"),
+    (" شو ", " وش "), (" شو؟", " وش؟"),
+    (" بدي ", " أبغى "), (" بده ", " يبغى "), (" بدها ", " تبغى "),
+    (" بدنا ", " نبغى "), (" بدكم ", " تبغون "),
+    (" هيدا ", " هذا "), (" هيدي ", " هذي "),
+    (" كيفك", " كيف حالك"), (" منيح", " زين"),
+    ("مرحبا", "هلا"),
 ]
 
 
 def _saudi_post_filter(text: str) -> str:
-    """Replace common Egyptian dialect words with Saudi equivalents."""
+    """Replace Egyptian/Levantine dialect words with Saudi equivalents."""
     for eg, sa in _EG_TO_SA:
         text = text.replace(eg, sa)
     return text
+
+
+_LATIN_TOKEN_RE = re.compile(r'[a-zA-Z]')
+
+
+def _strip_english(text: str) -> str:
+    """Remove any Latin/English words that slip into the Arabic VA reply."""
+    tokens = text.split()
+    clean = [t for t in tokens if not _LATIN_TOKEN_RE.search(t)]
+    result = ' '.join(clean)
+    return re.sub(r'\s{2,}', ' ', result).strip()
 
 
 def _enforce_single_question(text: str) -> str:
@@ -494,6 +514,7 @@ async def chat(req: ChatRequest):
 
         # Post-process: fix Egyptian words, remove duplicate words, one question only
         reply = _saudi_post_filter(reply)
+        reply = _strip_english(reply)
         reply = _dedup_words(reply)
         reply = _enforce_single_question(reply)
 
