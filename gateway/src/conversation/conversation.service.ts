@@ -736,9 +736,9 @@ export class ConversationService {
     dialect: string,
     preferredVoice?: string,
   ): string | undefined {
-    if (preferredVoice) return preferredVoice;
-    if (dialect === 'saudi') return this.voiceSaudi;
-    return this.voiceEgypt;
+    if (preferredVoice && preferredVoice !== 'auto') return preferredVoice;
+    if (dialect === 'egypt') return this.voiceEgypt;
+    return this.voiceSaudi; // default to Saudi voice
   }
 
   private delay(ms: number): Promise<void> {
