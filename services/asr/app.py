@@ -482,6 +482,11 @@ _WHISPER_HALLUCINATION_PHRASES = [
     "اشترك في القناة", "اشتركوا في القناة",
     "لايك وشير", "لايك وسيبسكرايب",
     "للمشاهدة والمتابعة",
+    # Greeting phrases Whisper generates on silence or ambiguous Arabic noise
+    "مرحبا", "مرحباً",
+    "مرحبا مرحبا", "مرحباً مرحباً",
+    "أهلا", "أهلاً",
+    "أهلا وسهلا", "أهلاً وسهلاً",
 ]
 
 def _filter_whisper_hallucination(text: str) -> str:

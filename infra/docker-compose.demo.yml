@@ -188,6 +188,7 @@ services:
       - TTS_ENGINE=xtts
       - TTS_MODEL_DIR=/app/models
       - EDGE_TTS_ALLOWED=false
+      - TTS_TIMEOUT_SECONDS=45
     volumes:
       - tts_models:/app/models
     restart: unless-stopped

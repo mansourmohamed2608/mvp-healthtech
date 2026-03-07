@@ -445,6 +445,10 @@ export class ConversationService {
         'اشترك في القناة', 'اشتركوا في القناة',
         'لايك وشير', 'لايك وسيبسكرايب',
         'للمشاهدة والمتابعة',
+        // Whisper silence hallucinations — greeting phrases repeated on noise
+        'مرحبا', 'مرحباً', 'مرحبا مرحبا', 'مرحباً مرحباً',
+        'أهلا', 'أهلاً', 'أهلا وسهلا', 'أهلاً وسهلاً',
+        'صح', 'صح النوم', 'تمام', 'ماشي',
       ];
       const trimmedTranscript = transcript.trim();
       const isHallucination = WHISPER_HALLUCINATIONS.some(
