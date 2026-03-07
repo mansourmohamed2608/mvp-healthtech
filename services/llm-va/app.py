@@ -123,6 +123,12 @@ _EG_TO_SA: list[tuple[str, str]] = [
     (" هيدا ", " هذا "), (" هيدي ", " هذي "),
     (" كيفك", " كيف حالك"), (" منيح", " زين"),
     ("مرحبا", "هلا"),
+    # Greetings not in Saudi dialect
+    ("أهلاً", "هلا"), ("أهلا", "هلا"),
+    # Egyptian demonstrative pronoun
+    (" ده ", " هذا "), (" ده.", " هذا."), (" ده،", " هذا،"), (" ده؟", " هذا؟"),
+    # Egyptian affirmations
+    ("أيوه", "إيه"), ("ايوة", "إيه"),
 ]
 
 
@@ -528,6 +534,8 @@ async def chat(req: ChatRequest):
         if history_turns:
             cont_instruction += " لا تبدأي الرد بتحية أو تقديم نفسك لأن المحادثة قائمة بالفعل."
         full_system += "\n\nالتعليمات: " + cont_instruction
+        # Final hard-command appended LAST so the model sees it at max attention
+        full_system += f"\n\n===الأمر الإلزامي النهائي===\nاسألي عن هذه الخانة فقط ولا شيء غيرها: {next_step}"
 
         # Build messages list using proper Qwen chat template
         messages: list[dict] = [{"role": "system", "content": full_system}]
@@ -543,6 +551,14 @@ async def chat(req: ChatRequest):
             try:
                 raw = _generate_from_messages(messages, max_new_tokens=120, temperature=0.25)
                 reply = _strip_assistant_prefix(raw)
+                # Guard: if specialty is unknown but the LLM asked about a different slot, override
+                if _is_missing(extracted_slots, "specialty"):
+                    _off_track = ("جوال", "هاتف", "رقم جوال", "موبايل", "اسمك", "اسمكم", "ميلاد", "مواليد")
+                    if any(w in reply for w in _off_track):
+                        _n = extracted_slots.get("name", "")
+                        _first = _n.split()[0] if _n else ""
+                        _call = f" يا {_first}" if _first else ""
+                        reply = f"هلا{_call}! وش اللي جاك بيه اليوم؟ إيش التخصص اللي تبيه؟"
             except Exception as e:
                 import logging
                 logging.error(f"VA generation failed, using fallback: {e}")

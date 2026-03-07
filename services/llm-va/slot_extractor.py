@@ -71,7 +71,7 @@ def _parse_arabic_time(text: str) -> str | None:
 EGYPT_PHONE_RE = re.compile(r"\b0\s*1\s*\d[\s\d]{8,11}\b")
 SAUDI_PHONE_RE = re.compile(r"\b0\s*5\s*\d[\s\d]{7,9}\b")
 PHONE_RE = re.compile(r"(?:\+?\d{1,3}[\s-]?)?\d[\s\d]{8,12}")
-DOB_RE = re.compile(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b")
+DOB_RE = re.compile(r"\b(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4})\b")
 DOCTOR_RE = re.compile(r"(?:دكتور|د\.|د\s)[\s\.:]*([\w\u0600-\u06FF]+)")
 
 # Name: "أنا اسمي X" / "اسمي X" / "أنا X" / "انا X"
@@ -114,13 +114,119 @@ def _spoken_to_digits(text: str) -> str:
 
 VISIT_MAP = {
     "كشف جديد": "كشف جديد",
+    "زيارة جديدة": "كشف جديد",
     "جديد": "كشف جديد",
+    "كشف": "كشف جديد",
     "متابعة": "متابعة",
     "استشارة": "استشارة أونلاين",
     "أونلاين": "استشارة أونلاين",
 }
 
-SPECIALTIES = ["باطنة", "جلدية", "أسنان", "عظام", "قلب", "أنف", "أذن", "حنجرة", "نساء", "ولادة", "أطفال"]
+# Keyed longest-first so iteration matches more specific forms before shorter substrings
+SPECIALTY_MAP: dict[str, str] = {
+    "طب عام": "طب عام", "طب عائلي": "طب عام",
+    "باطنية": "باطنية", "باطنة": "باطنية", "باطني": "باطنية", "داخلية": "باطنية",
+    "جلدية": "جلدية", "جلدي": "جلدية",
+    "أسنان": "أسنان",
+    "عظام": "عظام", "عظمي": "عظام",
+    "قلب": "قلب", "قلبي": "قلب",
+    "أطفال": "أطفال",
+    "نساء": "نساء", "نسائي": "نساء", "ولادة": "نساء",
+    "عيون": "عيون", "عيني": "عيون",
+    "أنف": "أنف وأذن وحنجرة", "أذن": "أنف وأذن وحنجرة", "حنجرة": "أنف وأذن وحنجرة",
+}
+
+# Arabic compound ordinals used in spoken-DOB parsing
+_AR_ORDINALS: dict[str, int] = {
+    "واحد": 1, "وحده": 1,
+    "اثنين": 2, "اثنان": 2,
+    "ثلاثة": 3, "ثلاث": 3,
+    "أربعة": 4, "أربع": 4,
+    "خمسة": 5, "خمس": 5,
+    "ستة": 6, "ست": 6,
+    "سبعة": 7, "سبع": 7,
+    "تمانية": 8, "ثمانية": 8, "تمان": 8, "ثماني": 8,
+    "تسعة": 9, "تسع": 9,
+    "عشرة": 10, "عشر": 10,
+    "أحد عشر": 11, "احد عشر": 11, "إحدى عشر": 11,
+    "اثنا عشر": 12, "اثني عشر": 12,
+    "ثلاثة عشر": 13, "أربعة عشر": 14, "خمسة عشر": 15,
+    "ستة عشر": 16, "سبعة عشر": 17, "تمانية عشر": 18, "ثمانية عشر": 18,
+    "تسعة عشر": 19,
+    "عشرين": 20, "ثلاثين": 30,
+    "واحد وعشرين": 21, "اثنين وعشرين": 22, "ثلاثة وعشرين": 23,
+    "أربعة وعشرين": 24, "خمسة وعشرين": 25, "ستة وعشرين": 26,
+    "سبعة وعشرين": 27, "تمانية وعشرين": 28, "ثمانية وعشرين": 28,
+    "تسعة وعشرين": 29, "واحد وثلاثين": 31,
+}
+
+_AR_MONTH_NAMES: dict[str, int] = {
+    "يناير": 1, "فبراير": 2, "مارس": 3, "أبريل": 4, "ابريل": 4,
+    "مايو": 5, "يونيو": 6, "يوليو": 7,
+    "أغسطس": 8, "اغسطس": 8, "سبتمبر": 9,
+    "أكتوبر": 10, "اكتوبر": 10, "نوفمبر": 11, "ديسمبر": 12,
+}
+
+
+def _parse_spoken_dob(text: str) -> str | None:
+    """Parse spoken Arabic DOB e.g. 'ستة وعشرين تمانية الفين واحد' → '26/08/2001'."""
+    working = text
+
+    # Step 1: year — look for 'الفين'/'ألفين' (= 2000) + optional addend unit
+    year: int | None = None
+    for yr_word in ("الفين", "ألفين"):
+        if yr_word not in working:
+            continue
+        yr_idx = working.find(yr_word)
+        after = working[yr_idx + len(yr_word):].strip().lstrip("و").strip()
+        extra = 0
+        extra_word = ""
+        for nw, nv in sorted(_AR_ORDINALS.items(), key=lambda x: len(x[0]), reverse=True):
+            if after.startswith(nw):
+                extra = nv
+                extra_word = nw
+                break
+        year = 2000 + extra
+        # Erase consumed tokens so day/month search is unambiguous
+        end = yr_idx + len(yr_word)
+        if extra_word:
+            ex_idx = working.find(extra_word, end)
+            if ex_idx >= 0:
+                end = ex_idx + len(extra_word)
+        working = working[:yr_idx] + " " * (end - yr_idx) + working[end:]
+        break
+
+    if year is None:
+        return None
+
+    # Step 2: month — named month, then fallback to ordinal 1-12
+    month: int | None = None
+    for m_name, m_num in sorted(_AR_MONTH_NAMES.items(), key=lambda x: len(x[0]), reverse=True):
+        if m_name in working:
+            month = m_num
+            working = working.replace(m_name, " ", 1)
+            break
+    if month is None:
+        for nw, nv in sorted(_AR_ORDINALS.items(), key=lambda x: len(x[0]), reverse=True):
+            if nw in working and 1 <= nv <= 12:
+                month = nv
+                working = working.replace(nw, " ", 1)
+                break
+    if month is None:
+        return None
+
+    # Step 3: day — largest ordinal ≤ 31 remaining
+    day: int | None = None
+    for nw, nv in sorted(_AR_ORDINALS.items(), key=lambda x: len(x[0]), reverse=True):
+        if nw in working and 1 <= nv <= 31:
+            day = nv
+            break
+    if day is None:
+        return None
+
+    if 1 <= day <= 31 and 1 <= month <= 12 and 1900 <= year <= 2100:
+        return f"{day:02d}/{month:02d}/{year}"
+    return None
 CANONICAL_KEYS = {
     "name": "الاسم",
     "phone": "رقم الهاتف",
@@ -190,18 +296,25 @@ def extract_slots(user_text: str, slots: Dict[str, Any]) -> Dict[str, Any]:
         m = DOB_RE.search(user_text)
         if m:
             updated["dob"] = m.group(1)
+        else:
+            spoken = _parse_spoken_dob(user_text)
+            if spoken:
+                updated["dob"] = spoken
     # Visit type
     if is_missing(updated, "visit_type"):
         for k, v in VISIT_MAP.items():
             if k in user_text:
                 updated["visit_type"] = v
                 break
-    # Specialty
+    # Specialty — fuzzy match using SPECIALTY_MAP (adjective + noun forms, longest key first)
     if is_missing(updated, "specialty"):
-        for spec in SPECIALTIES:
-            if spec in user_text:
-                updated["specialty"] = spec
+        for key in sorted(SPECIALTY_MAP, key=len, reverse=True):
+            if key in user_text:
+                updated["specialty"] = SPECIALTY_MAP[key]
                 break
+    # Auto-fill visit_type once specialty is known (avoids an unnecessary question)
+    if not is_missing(updated, "specialty") and is_missing(updated, "visit_type"):
+        updated["visit_type"] = "كشف جديد"
     # Doctor name
     if is_missing(updated, "doctor_name"):
         m = DOCTOR_RE.search(user_text)
