@@ -8,8 +8,10 @@ PHONE_RE = re.compile(r"(?:\+?\d{1,3}[\s-]?)?\d[\s\d]{8,12}")
 DOB_RE = re.compile(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b")
 DOCTOR_RE = re.compile(r"(?:دكتور|د\.|د\s)[\s\.:]*([\w\u0600-\u06FF]+)")
 
-# Name: "اسمي X" / "أنا X" / "اسمي X Y"
-NAME_RE = re.compile(r"(?:اسمي|أنا|انا|اسمى)\s+([\u0600-\u06FF][\u0600-\u06FF\s]{1,30}?)(?:\s*$|\s*[،,.])")
+# Name: "أنا اسمي X" / "اسمي X" / "أنا X" / "انا X"
+# "أنا اسمي" must be listed FIRST so the regex engine prefers it over bare "أنا"
+# when both prefixes could match (avoids capturing "اسمي X" as the name value).
+NAME_RE = re.compile(r"(?:أنا اسمي|أنا انا|اسمي|أنا|انا|اسمى)\s+([\u0600-\u06FF][\u0600-\u06FF\s]{1,30}?)(?:\s*$|\s*[،,.])")
 
 # Arabic word-digits to integer map (for phone numbers spoken as words).
 # Both feminine (عشرة) and masculine (عشر) forms are included, as Arabic

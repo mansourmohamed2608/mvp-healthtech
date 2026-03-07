@@ -326,20 +326,25 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   /**
    * Returns true if the G.711 PCMU chunk contains audible speech.
    *
-   * Twilio sends PCMU silence as a constant repeat of the same byte
-   * (comfort-noise or 0xFF).  During speech the byte values change rapidly.
-   * We detect speech by counting "large" transitions between adjacent samples.
-   * This is codec-agnostic — no XOR needed — and never misidentifies silence
-   * as speech regardless of what byte Twilio uses for comfort noise.
+   * Twilio sends μ-law silence as 0xFF (silence code in G.711 μ-law,
+   * corresponding to near-zero PCM amplitude).  In the transmitted byte the
+   * chord field (bits 6-4) equals 0b111 (value 7) for the quietest amplitude
+   * segment.  That means all bytes where (byte & 0x70) === 0x70 represent
+   * near-silence (both 0x70-0x7F positive-zero and 0xF0-0xFF negative-zero
+   * quadrants).
+   *
+   * A chunk is "speech" if at least 10 % of its bytes are in louder amplitude
+   * segments (chord < 7).  This threshold is immune to accent, volume, and
+   * codec dialect — it only fails for truly inaudible sub-whisper audio.
    */
   private isSpeechChunk(chunk: Buffer): boolean {
     if (chunk.length < 4) return false;
-    let transitions = 0;
-    for (let i = 1; i < chunk.length; i++) {
-      if (Math.abs(chunk[i] - chunk[i - 1]) > 4) transitions++;
+    let silenceBytes = 0;
+    for (let i = 0; i < chunk.length; i++) {
+      if ((chunk[i] & 0x70) === 0x70) silenceBytes++;
     }
-    // Silence: ≈0 transitions.  Speech: >15 % of adjacent pairs differ by >4.
-    return transitions / (chunk.length - 1) > 0.15;
+    // Speech if fewer than 90 % of bytes are in the near-silence amplitude range.
+    return silenceBytes / chunk.length < 0.90;
   }
 
   /**
@@ -492,6 +497,17 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
           payload: audioData,
         },
       };
+
+      // Clear buffered caller-audio and cancel any pending silence timer before
+      // we play the VA response.  Without this, the 8-16s of Twilio silence
+      // fill that arrives while the VA is talking accumulates in the buffer and
+      // forces a spurious ASR call.
+      this.audioBuffers.set(callSid, []);
+      const pendingTimer = this.silenceTimers.get(callSid);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        this.silenceTimers.delete(callSid);
+      }
 
       client.send(JSON.stringify(message));
       safeLog(this.logger, 'log', 'Audio sent to Twilio successfully', {

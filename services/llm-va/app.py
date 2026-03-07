@@ -103,6 +103,39 @@ MSA_REGEXES = [
     r"\b(يرجى منك|نرجو منك)\b",
 ]
 
+# Egyptian → Saudi substitutions applied to every LLM reply
+_EG_TO_SA: list[tuple[str, str]] = [
+    ("عاوز ", "أبغى "), ("عاوزة ", "أبغى "),
+    ("عايز ", "أبغى "), ("عايزة ", "أبغى "),
+    ("دلوقتي", "الحين"), ("دلوقت", "الحين"),
+    (" مش ", " مو "), ("مشكلة", "مشكلة"),  # keep مشكلة
+    ("ازاي", "كيف"), ("إزاي", "كيف"),
+    ("إيه", "إيش"), (" ايه", " إيش"),
+    ("كده", "كذا"), ("حاجة", "شي"), ("حاجه", "شي"),
+    ("مفيش", "ما فيه"), ("يا فندم", "أستاذ"),
+    ("بتاع", "حق"),
+]
+
+
+def _saudi_post_filter(text: str) -> str:
+    """Replace common Egyptian dialect words with Saudi equivalents."""
+    for eg, sa in _EG_TO_SA:
+        text = text.replace(eg, sa)
+    return text
+
+
+def _enforce_single_question(text: str) -> str:
+    """If the reply has multiple question marks (؟), keep only up to the first."""
+    parts = text.split('؟')
+    if len(parts) > 2:  # More than one ؟
+        return parts[0].rstrip() + '؟'
+    return text
+
+
+def _dedup_words(text: str) -> str:
+    """Remove consecutive duplicate Arabic words like 'تفضل تفضل'."""
+    return re.sub(r'(\b[\u0600-\u06FF]+\b)\s+\1', r'\1', text)
+
 
 def _score_markers(text: str, markers: list[str]) -> int:
     lowered = text.lower()
@@ -439,6 +472,11 @@ async def chat(req: ChatRequest):
             except Exception as e:
                 import logging
                 logging.error(f"VA generation failed, using fallback: {e}")
+
+        # Post-process: fix Egyptian words, remove duplicate words, one question only
+        reply = _saudi_post_filter(reply)
+        reply = _dedup_words(reply)
+        reply = _enforce_single_question(reply)
 
         updated_slots = extracted_slots
         duration = (time.time() - start) * 1000
