@@ -281,12 +281,12 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     buffer.push(audioChunk);
     this.audioBuffers.set(callSid, buffer);
 
-    // Process audio every ~1.2s (9600 bytes at 8kHz mulaw) so Whisper has
-    // enough speech to transcribe reliably.
+    // Process audio every ~3s (24000 bytes at 8kHz mulaw) so Whisper has
+    // enough speech for full sentences.
     const totalBytes = buffer.reduce((sum, chunk) => sum + chunk.length, 0);
 
-    if (totalBytes >= 9600) {
-      // ~1.2s of audio
+    if (totalBytes >= 24000) {
+      // ~3s of audio
       const combinedAudio = Buffer.concat(buffer);
 
       // Clear buffer

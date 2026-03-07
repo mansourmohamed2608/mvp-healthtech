@@ -185,7 +185,7 @@ services:
     build: ../services/tts
     environment:
       - INTERNAL_SECRET=${INTERNAL_SECRET}
-      - TTS_ENGINE=edge
+      - TTS_ENGINE=gtts
       - EDGE_TTS_ALLOWED=true
       - TTS_EDGE_VOICE=ar-AE-FatimaNeural
       - TTS_VOICE=ar-AE-FatimaNeural

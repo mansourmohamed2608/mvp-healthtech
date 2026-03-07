@@ -71,6 +71,14 @@ except ImportError:
     EDGE_AVAILABLE = False
     logger.warning("edge-tts not available, will use silent fallback mulaw audio")
 
+GTTS_AVAILABLE = False
+try:
+    from gtts import gTTS as GTTSLib
+    GTTS_AVAILABLE = True
+    logger.info("gTTS available")
+except ImportError:
+    logger.warning("gTTS not available")
+
 # Configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Internal synthesis rate (Coqui); we downsample to 8kHz mulaw for Twilio media streams.
@@ -100,6 +108,8 @@ if TTS_ENGINE == "xtts" and not XTTS_AVAILABLE:
 if TTS_ENGINE == "coqui" and not CoquiTTS:
     TTS_ENGINE = "none"
 if TTS_ENGINE == "edge" and not EDGE_AVAILABLE:
+    TTS_ENGINE = "none"
+if TTS_ENGINE == "gtts" and not GTTS_AVAILABLE:
     TTS_ENGINE = "none"
 
 logger.info("TTS Service starting", extra={"device": DEVICE, "engine": TTS_ENGINE})
@@ -353,25 +363,73 @@ def _should_use_edge(voice: Optional[str]) -> bool:
     return False
 
 
+async def _gtts_generate(text: str) -> bytes:
+    """Generate Arabic speech using gTTS and convert MP3 -> 8kHz mulaw via ffmpeg."""
+    import io
+
+    def _sync_gtts() -> bytes:
+        buf = io.BytesIO()
+        GTTSLib(text=text, lang='ar', slow=False).write_to_fp(buf)
+        return buf.getvalue()
+
+    mp3_bytes = await asyncio.to_thread(_sync_gtts)
+    proc = await asyncio.create_subprocess_exec(
+        'ffmpeg', '-i', 'pipe:0', '-ar', '8000', '-ac', '1', '-f', 'mulaw', 'pipe:1', '-y',
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await asyncio.wait_for(proc.communicate(mp3_bytes), timeout=10)
+    return stdout if stdout else _silence_mulaw()
+
+
 async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
     voice_id = _normalize_voice_id(voice)
     if voice_id == EGTTS_VOICE_ID:
         try:
             return await asyncio.to_thread(_xtts_generate, text, "egtts", EGTTS_TEMPERATURE)
         except Exception:
-            if EDGE_AVAILABLE:
+            pass
+        if GTTS_AVAILABLE:
+            try:
+                return await _gtts_generate(text)
+            except Exception:
+                pass
+        if EDGE_AVAILABLE:
+            try:
                 return await _edge_generate(text, VOICE)
-            return _silence_mulaw()
+            except Exception:
+                pass
+        return _silence_mulaw()
     if voice_id == SAUDI_VOICE_ID:
         try:
             return await asyncio.to_thread(_xtts_generate, text, "saudi", SAUDI_TEMPERATURE)
         except Exception:
-            if EDGE_AVAILABLE:
+            pass
+        if GTTS_AVAILABLE:
+            try:
+                return await _gtts_generate(text)
+            except Exception:
+                pass
+        if EDGE_AVAILABLE:
+            try:
                 return await _edge_generate(text, VOICE)
-            return _silence_mulaw()
+            except Exception:
+                pass
+        return _silence_mulaw()
     if _should_use_edge(voice_id):
         try:
             return await _edge_generate(text, voice_id)
+        except Exception:
+            if GTTS_AVAILABLE:
+                try:
+                    return await _gtts_generate(text)
+                except Exception:
+                    pass
+            return _silence_mulaw()
+    if TTS_ENGINE == "gtts" and GTTS_AVAILABLE:
+        try:
+            return await _gtts_generate(text)
         except Exception:
             return _silence_mulaw()
     if TTS_ENGINE == "coqui" and tts_model:
@@ -463,14 +521,14 @@ async def synthesize(request: SynthesizeRequest):
         log_safe(logging.INFO, "TTS synthesized", request=None, session_id=request.sessionId, textLen=len(request.text))
         return payload
     except asyncio.TimeoutError:
-        tts_errors_total.inc({"reason": "timeout"})
+        tts_errors_total.labels(reason="timeout").inc()
         log_safe(logging.WARNING, "TTS timeout", request=None, session_id=request.sessionId, textLen=len(request.text))
         raise HTTPException(status_code=504, detail="TTS service unavailable")
     except HTTPException:
         raise
     except Exception as e:
-        tts_errors_total.inc({"reason": "synthesize_error"})
-        log_safe(logging.ERROR, "TTS synthesis failed", request=None, session_id=request.sessionId, error=str(type(e).__name__))
+        tts_errors_total.labels(reason="synthesize_error").inc()
+        log_safe(logging.ERROR, "TTS synthesis failed", request=None, session_id=request.sessionId, error=str(type(e).__name__), errorDetail=str(e)[:200])
         raise HTTPException(status_code=500, detail="TTS synthesis failed")
 
 @app.post("/synthesize/stream")

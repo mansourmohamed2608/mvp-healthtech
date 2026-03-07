@@ -15,8 +15,8 @@ COPY requirements.txt .
 # Install Python packages
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install edge-tts as a separate layer so base deps stay cached
-RUN pip install --no-cache-dir edge-tts==6.1.12
+# Install edge-tts and gTTS as separate layers so base deps stay cached
+RUN pip install --no-cache-dir edge-tts==6.1.12 gTTS==2.5.3
 
 # Copy application code
 COPY . .
