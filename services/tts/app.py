@@ -444,6 +444,29 @@ async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
         return await asyncio.to_thread(_coqui_generate, text)
     return _silence_mulaw()
 
+@app.on_event("startup")
+async def _prewarm_saudi_tts() -> None:
+    """Download and load the Saudi XTTS model in the background at startup.
+
+    The first TTS request arrives quickly after boot; by pre-warming we avoid
+    a timeout on that first call while the ~500 MB model is being fetched.
+    Falls through silently if XTTS is unavailable (gTTS remains the fallback).
+    """
+    if not XTTS_AVAILABLE:
+        logger.info("XTTS not available — skipping Saudi TTS pre-warm (gTTS fallback active)")
+        return
+
+    async def _load() -> None:
+        try:
+            logger.info("Pre-warming Saudi XTTS model (background)…")
+            await asyncio.to_thread(_load_xtts_state, "saudi")
+            logger.info("Saudi XTTS model ready")
+        except Exception as exc:
+            logger.warning("Saudi XTTS pre-warm failed — gTTS will be used as fallback", extra={"error": str(exc)})
+
+    asyncio.create_task(_load())
+
+
 @app.middleware("http")
 async def internal_auth(request: Request, call_next):
     if request.url.path.startswith("/health") or request.url.path.startswith("/ready") or request.url.path.startswith("/metrics"):

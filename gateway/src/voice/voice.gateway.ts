@@ -71,6 +71,13 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly activeGauge = MetricsController.getActiveConversations();
   /** Tracks calls whose pipeline (ASR→LLM→TTS) is currently running. */
   private readonly processingCalls = new Set<string>();
+  /** Debounce timers for silence-gap utterance detection (one per active call). */
+  private readonly silenceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // VAD constants
+  private static readonly MIN_BUFFER_BYTES = 8000;  // 1s minimum before trigger
+  private static readonly MAX_BUFFER_BYTES = 192000; // 24s safety cap
+  private static readonly SILENCE_GAP_MS = 800;     // 800ms silence = end of utterance
 
   constructor(
     private readonly conversationService: ConversationService,
@@ -138,6 +145,8 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     for (const [callSid, ws] of this.activeStreams.entries()) {
       if (ws === client) {
         safeLog(this.logger, 'log', 'WebSocket disconnected', { callSid });
+        const timer = this.silenceTimers.get(callSid);
+        if (timer) { clearTimeout(timer); this.silenceTimers.delete(callSid); }
         this.activeStreams.delete(callSid);
         this.audioBuffers.delete(callSid);
         this.streamUsers.delete(callSid);
@@ -283,38 +292,69 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     buffer.push(audioChunk);
     this.audioBuffers.set(callSid, buffer);
 
-    // Accumulate ~6s of speech (48000 bytes at 8kHz mulaw) before triggering
-    // the pipeline. If the pipeline is already running (LLM takes 15-20s on CPU),
-    // keep accumulating so the caller can finish their full phone number without
-    // having audio dropped by backpressure. Cap at 192000 bytes (~24s) as a
-    // safety valve against unbounded growth on very long pauses.
-    const TRIGGER_BYTES = 48000;
-    const MAX_BUFFER_BYTES = 192000;
-    const totalBytes = buffer.reduce((sum, chunk) => sum + chunk.length, 0);
+    const totalBytes = buffer.reduce((sum, c) => sum + c.length, 0);
 
-    if (totalBytes >= TRIGGER_BYTES) {
+    // Safety cap: drop buffer if we somehow exceed 24s of audio
+    if (totalBytes >= VoiceGateway.MAX_BUFFER_BYTES) {
+      this.audioBuffers.set(callSid, []);
+      this.logger.warn(`Buffer overflow for ${callSid}: dropped ${totalBytes} bytes`);
+      return;
+    }
+
+    // Only consider triggering once we have at least 1s of audio.
+    // Each detected speech chunk resets (extends) the silence-gap timer so the
+    // pipeline fires only after the caller has actually finished speaking.
+    if (totalBytes >= VoiceGateway.MIN_BUFFER_BYTES && this.isSpeechChunk(audioChunk)) {
+      this.scheduleSilenceTrigger(callSid);
+    }
+  }
+
+  /**
+   * Returns true if the G.711 PCMU chunk contains audible speech.
+   * After removing the μ-law bit-flip (XOR 0x55), the exponent field
+   * (bits 4-6) is 0 for near-silence and >0 for real audio energy.
+   */
+  private isSpeechChunk(chunk: Buffer): boolean {
+    let active = 0;
+    for (const b of chunk) {
+      const m = b ^ 0x55;
+      if (((m >> 4) & 0x7) > 0) active++;
+    }
+    return active / chunk.length > 0.20;
+  }
+
+  /**
+   * (Re-)arm the silence-gap debounce timer for a call.
+   * Fires SILENCE_GAP_MS after the last speech chunk is detected.
+   * If the pipeline is still running when the timer fires, re-arms once
+   * so the buffered audio is processed after the pipeline finishes.
+   */
+  private scheduleSilenceTrigger(callSid: string): void {
+    const existing = this.silenceTimers.get(callSid);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.silenceTimers.delete(callSid);
+
+      const buf = this.audioBuffers.get(callSid);
+      if (!buf?.length) return;
+      const totalBytes = buf.reduce((s, c) => s + c.length, 0);
+      if (totalBytes < VoiceGateway.MIN_BUFFER_BYTES) return;
+
       if (this.processingCalls.has(callSid)) {
-        // Pipeline is busy — keep accumulating up to the safety cap.
-        if (totalBytes >= MAX_BUFFER_BYTES) {
-          // Safety valve: clear the oldest audio to reclaim memory.
-          // This audio will be dropped, but it means the user has been
-          // speaking for >24s with no response, which shouldn't happen.
-          this.audioBuffers.set(callSid, []);
-          this.logger.warn(`Buffer overflow for ${callSid}: dropped ${totalBytes} bytes`);
-        }
+        // Pipeline still running — re-arm so buffered audio is caught when it finishes
+        this.scheduleSilenceTrigger(callSid);
         return;
       }
 
-      // Pipeline is free — trigger processing.
-      const combinedAudio = Buffer.concat(buffer);
+      const combinedAudio = Buffer.concat(buf);
       this.audioBuffers.set(callSid, []);
+      this.processAudioChunk(callSid, combinedAudio, false).catch((err) =>
+        this.logger.error(`Silence-triggered ASR error for ${callSid}`, err),
+      );
+    }, VoiceGateway.SILENCE_GAP_MS);
 
-      try {
-        await this.processAudioChunk(callSid, combinedAudio, false);
-      } catch (error) {
-        this.logger.error(`Error processing audio chunk for ${callSid}`, error);
-      }
-    }
+    this.silenceTimers.set(callSid, timer);
   }
 
   private async handleStreamStop(
@@ -324,6 +364,10 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const { callSid } = message.stop!;
 
     safeLog(this.logger, 'log', 'Stream stopped', { callSid });
+
+    // Cancel any pending silence timer — we'll flush the buffer explicitly below
+    const timer = this.silenceTimers.get(callSid);
+    if (timer) { clearTimeout(timer); this.silenceTimers.delete(callSid); }
 
     // Process any remaining audio
     const buffer = this.audioBuffers.get(callSid);

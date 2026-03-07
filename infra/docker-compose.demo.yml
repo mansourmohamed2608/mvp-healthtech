@@ -185,16 +185,19 @@ services:
     build: ../services/tts
     environment:
       - INTERNAL_SECRET=${INTERNAL_SECRET}
-      - TTS_ENGINE=gtts
+      - TTS_ENGINE=xtts
+      - TTS_MODEL_DIR=/app/models
       - EDGE_TTS_ALLOWED=true
       - TTS_EDGE_VOICE=ar-AE-FatimaNeural
       - TTS_VOICE=ar-AE-FatimaNeural
+    volumes:
+      - tts_models:/app/models
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5002/health')\""]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
 
   # ============ SOAP SERVICE (CPU) ============
   soap:
@@ -355,6 +358,7 @@ volumes:
   llm_data:
   grafana_data:
   prometheus_data:
+  tts_models:
 
 networks:
   default:
