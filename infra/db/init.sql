@@ -168,47 +168,47 @@ CREATE INDEX IF NOT EXISTS idx_conv_messages_session ON conversation_messages(se
 CREATE INDEX IF NOT EXISTS idx_conv_messages_session_ts ON conversation_messages(session_id, message_ts);
 
 -- Seed example doctor and schedule
-INSERT INTO doctors (id, name, specialty, clinic_name)
-SELECT '00000000-0000-0000-0000-000000000001', 'دكتور علي الغامدي', 'جلدية', 'علاجك'
+INSERT INTO doctors (id, name, specialty, clinic_name, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000001', 'دكتور علي الغامدي', 'جلدية', 'علاجك', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctors WHERE id = '00000000-0000-0000-0000-000000000001');
 
-INSERT INTO doctors (id, name, specialty, clinic_name)
-SELECT '00000000-0000-0000-0000-000000000002', 'دكتورة سارة الزهراني', 'طب عام', 'علاجك'
+INSERT INTO doctors (id, name, specialty, clinic_name, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000002', 'دكتورة سارة الزهراني', 'طب عام', 'علاجك', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctors WHERE id = '00000000-0000-0000-0000-000000000002');
 
-INSERT INTO doctors (id, name, specialty, clinic_name)
-SELECT '00000000-0000-0000-0000-000000000003', 'دكتور محمد المالكي', 'باطنية', 'علاجك'
+INSERT INTO doctors (id, name, specialty, clinic_name, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000003', 'دكتور محمد المالكي', 'باطنية', 'علاجك', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctors WHERE id = '00000000-0000-0000-0000-000000000003');
 
 -- دكتور علي الغامدي: الثلاثاء 14-16، الخميس 10-12
-INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
-SELECT '00000000-0000-0000-0000-000000000001', 2, '14:00', '16:00'
+INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000001', 2, '14:00', '16:00', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000001' AND day_of_week=2 AND start_time='14:00');
 
-INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
-SELECT '00000000-0000-0000-0000-000000000001', 4, '10:00', '12:00'
+INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000001', 4, '10:00', '12:00', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000001' AND day_of_week=4 AND start_time='10:00');
 
 -- دكتورة سارة الزهراني: الأحد 09-13، الثلاثاء 09-13
-INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
-SELECT '00000000-0000-0000-0000-000000000002', 0, '09:00', '13:00'
+INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000002', 0, '09:00', '13:00', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000002' AND day_of_week=0 AND start_time='09:00');
 
-INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
-SELECT '00000000-0000-0000-0000-000000000002', 2, '09:00', '13:00'
+INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000002', 2, '09:00', '13:00', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000002' AND day_of_week=2 AND start_time='09:00');
 
 -- دكتور محمد المالكي: الاثنين 15-18، الأربعاء 15-18، السبت 10-13
-INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
-SELECT '00000000-0000-0000-0000-000000000003', 1, '15:00', '18:00'
+INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000003', 1, '15:00', '18:00', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000003' AND day_of_week=1 AND start_time='15:00');
 
-INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
-SELECT '00000000-0000-0000-0000-000000000003', 3, '15:00', '18:00'
+INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000003', 3, '15:00', '18:00', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000003' AND day_of_week=3 AND start_time='15:00');
 
-INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time)
-SELECT '00000000-0000-0000-0000-000000000003', 6, '10:00', '13:00'
+INSERT INTO doctor_schedules (doctor_id, day_of_week, start_time, end_time, tenant_id)
+SELECT '00000000-0000-0000-0000-000000000003', 6, '10:00', '13:00', 'default'
 WHERE NOT EXISTS (SELECT 1 FROM doctor_schedules WHERE doctor_id='00000000-0000-0000-0000-000000000003' AND day_of_week=6 AND start_time='10:00');
 
 CREATE TABLE IF NOT EXISTS retention_policy (
