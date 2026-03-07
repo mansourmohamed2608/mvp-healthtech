@@ -408,7 +408,7 @@ export class ConversationService {
       const hintDialect =
         preferredDialect && preferredDialect !== 'auto'
           ? preferredDialect
-          : voiceDialect || storedDialect || 'egypt';
+          : voiceDialect || storedDialect || 'saudi';
 
       const asrStart = process.hrtime();
       // 1. Transcribe audio using ASR service (with timeout/error handling)
@@ -435,6 +435,27 @@ export class ConversationService {
         return { transcript: '', response: '', audioResponse: '' };
       }
 
+      // Filter out well-known Whisper Arabic hallucinations (YouTube sign-off phrases
+      // that Whisper generates when given near-silence or very short audio)
+      const WHISPER_HALLUCINATIONS = [
+        'شكرا لمشاهدة', 'شكراً لمشاهدة', 'شكرًا لمشاهدة',
+        'شكرا للمشاهدة', 'شكراً للمشاهدة', 'شكرًا للمشاهدة',
+        'شكرا على المشاهدة', 'شكراً على المشاهدة',
+        'لا تنسى الاشتراك', 'لا تنسوا الاشتراك',
+        'اشترك في القناة', 'اشتركوا في القناة',
+        'لايك وشير', 'لايك وسيبسكرايب',
+        'للمشاهدة والمتابعة',
+      ];
+      const trimmedTranscript = transcript.trim();
+      const isHallucination = WHISPER_HALLUCINATIONS.some(
+        (h) => trimmedTranscript === h ||
+               trimmedTranscript.includes(h) && trimmedTranscript.length < h.length + 10,
+      );
+      if (isHallucination) {
+        this.logger.warn(`Whisper hallucination filtered for ${input.callSid}: "${trimmedTranscript}"`);
+        return { transcript: '', response: '', audioResponse: '' };
+      }
+
       if (input.partialOnly) {
         // For partial streaming we only return transcript
         return { transcript, response: '', audioResponse: '' };
@@ -452,7 +473,7 @@ export class ConversationService {
       const resolvedDialect =
         preferredDialect && preferredDialect !== 'auto'
           ? preferredDialect
-          : voiceDialect || detectedDialect || storedDialect || 'egypt';
+          : voiceDialect || detectedDialect || storedDialect || 'saudi';
 
       if (resolvedDialect !== storedDialect || preferredDialect) {
         await this.updateContext(input.callSid, {

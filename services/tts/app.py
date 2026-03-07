@@ -89,7 +89,8 @@ VOICE = os.getenv("TTS_EDGE_VOICE", "ar-EG-SalmaNeural")  # Edge-TTS Arabic voic
 COQUI_MODEL = "tts_models/ar/css10/vits"  # Coqui Arabic model
 EGTTS_VOICE_ID = os.getenv("EGTTS_VOICE_ID", "egtts")
 SAUDI_VOICE_ID = os.getenv("SAUDI_VOICE_ID", "saudi-tts")
-DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", EGTTS_VOICE_ID)
+# Saudi is the default voice when dialect cannot be determined from context.
+DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", SAUDI_VOICE_ID)
 EGTTS_REPO_ID = os.getenv("EGTTS_REPO_ID", "OmarSamir/EGTTS-V0.1")
 EGTTS_REVISION = os.getenv("EGTTS_REVISION") or None
 EGTTS_SPEAKER_FILE = os.getenv("EGTTS_SPEAKER_FILE", "speaker_reference.wav")

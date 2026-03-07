@@ -472,6 +472,29 @@ def correct_segments_inplace(segments: List[Dict[str, Any]]) -> None:
         if txt:
             seg["text"] = post_process_text(txt)
 
+# Known Whisper hallucination phrases for Arabic — Whisper generates these when
+# transcribing near-silence or audio containing no speech.
+_WHISPER_HALLUCINATION_PHRASES = [
+    "شكرا لمشاهدة", "شكراً لمشاهدة", "شكرًا لمشاهدة",
+    "شكرا للمشاهدة", "شكراً للمشاهدة", "شكرًا للمشاهدة",
+    "شكرا على المشاهدة", "شكراً على المشاهدة",
+    "لا تنسى الاشتراك", "لا تنسوا الاشتراك",
+    "اشترك في القناة", "اشتركوا في القناة",
+    "لايك وشير", "لايك وسيبسكرايب",
+    "للمشاهدة والمتابعة",
+]
+
+def _filter_whisper_hallucination(text: str) -> str:
+    """Return empty string if text is (or is dominated by) a known Whisper hallucination."""
+    stripped = text.strip()
+    for phrase in _WHISPER_HALLUCINATION_PHRASES:
+        if stripped == phrase:
+            return ""
+        # Also catch cases where hallucination is appended to minimal real content
+        if phrase in stripped and len(stripped) < len(phrase) + 12:
+            return ""
+    return stripped
+
 def apply_arabart_gec(text: str) -> str:
     """Apply AraBART grammar error correction.
 
@@ -1129,6 +1152,7 @@ async def transcribe_audio(request: TranscriptionRequest):
             segments = identify_speaker_roles(segments)
 
             full_text = " ".join([(s.get("text") or "").strip() for s in segments])
+            full_text = _filter_whisper_hallucination(full_text)
             formatted_segments = format_segments_for_frontend(segments)
 
             total_time = time.time() - overall_start
@@ -1207,6 +1231,7 @@ async def transcribe_audio(request: TranscriptionRequest):
                     logger.warning("LLM correction failed", extra={"error": str(e)})
 
             full_text = " ".join([(s.get("text") or "").strip() for s in segments])
+            full_text = _filter_whisper_hallucination(full_text)
             formatted_segments = format_segments_for_frontend(segments)
 
             total_time = time.time() - overall_start
