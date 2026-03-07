@@ -149,6 +149,17 @@ def _is_dialect_ok(text: str, dialect: Optional[str]) -> bool:
     return not _is_msa_like(text)
 
 
+# Phrases that signal a YouTube/social-media sign-off hallucination from the model's
+# training data. Strip anything from these tokens to end-of-string.
+_HALLUCINATION_STOPS = [
+    "شكرا لمشاهدة", "شكراً لمشاهدة", "شكرًا لمشاهدة",
+    "شكرا على المشاهدة", "شكراً على المشاهدة",
+    "لا تنسى الاشتراك", "لا تنسوا الاشتراك",
+    "اشترك في القناة", "اشتركوا في القناة",
+    "لايك وشير", "لايك وسيبسكرايب",
+    "مع السلامة وإلى اللقاء", "ووداعاً",
+]
+
 def _strip_assistant_prefix(text: str) -> str:
     cleaned = text.strip()
     # Strip leading role prefix if the model echoed it at the start of its output
@@ -156,10 +167,15 @@ def _strip_assistant_prefix(text: str) -> str:
         if cleaned.startswith(token):
             cleaned = cleaned[len(token):].strip()
             break
-    # Truncate any hallucinated continuation the model appended
+    # Truncate any hallucinated continuation (turn separator or role switch)
     for stop in ["\nuser:", "\n user:", "\nمستخدم:", "\nالمستخدم:",
                   " user:", " مستخدم:", "\nassistant:", "\nAssistant:"]:
         idx = cleaned.find(stop)
+        if idx != -1:
+            cleaned = cleaned[:idx]
+    # Remove YouTube/social-media sign-off hallucinations anywhere in the text
+    for phrase in _HALLUCINATION_STOPS:
+        idx = cleaned.find(phrase)
         if idx != -1:
             cleaned = cleaned[:idx]
     return cleaned.strip()

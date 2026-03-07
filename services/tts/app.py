@@ -363,13 +363,17 @@ def _should_use_edge(voice: Optional[str]) -> bool:
     return False
 
 
-async def _gtts_generate(text: str) -> bytes:
-    """Generate Arabic speech using gTTS and convert MP3 -> 8kHz mulaw via ffmpeg."""
+async def _gtts_generate(text: str, tld: str = 'com.eg') -> bytes:
+    """Generate Arabic speech using gTTS and convert MP3 -> 8kHz mulaw via ffmpeg.
+
+    tld='com.eg' gives an Egyptian-Arabic-accented voice (Google Translate Egypt endpoint).
+    tld='com'    gives the default (MSA-ish) Arabic voice.
+    """
     import io
 
     def _sync_gtts() -> bytes:
         buf = io.BytesIO()
-        GTTSLib(text=text, lang='ar', slow=False).write_to_fp(buf)
+        GTTSLib(text=text, lang='ar', tld=tld, slow=False).write_to_fp(buf)
         return buf.getvalue()
 
     mp3_bytes = await asyncio.to_thread(_sync_gtts)
@@ -392,7 +396,7 @@ async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
             pass
         if GTTS_AVAILABLE:
             try:
-                return await _gtts_generate(text)
+                return await _gtts_generate(text, tld='com.eg')  # Egyptian-accented voice
             except Exception:
                 pass
         if EDGE_AVAILABLE:
@@ -408,9 +412,12 @@ async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
             pass
         if GTTS_AVAILABLE:
             try:
-                return await _gtts_generate(text)
+                return await _gtts_generate(text, tld='com.sa')  # Saudi-accented voice fallback
             except Exception:
-                pass
+                try:
+                    return await _gtts_generate(text, tld='com.eg')
+                except Exception:
+                    pass
         if EDGE_AVAILABLE:
             try:
                 return await _edge_generate(text, VOICE)
