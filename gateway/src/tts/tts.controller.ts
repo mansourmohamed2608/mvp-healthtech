@@ -24,7 +24,7 @@ export class TtsController {
     this.logger.log('TTS synthesize request');
     const start = process.hrtime();
     try {
-      const result = await this.ttsService.synthesize(dto.text);
+      const result = await this.ttsService.synthesize(dto.text, undefined, dto.voice);
       // Normalize response shape for clients (base64 audio payload)
       this.ttsLatency.observe(
         { endpoint: 'synthesize', status: 'ok' },

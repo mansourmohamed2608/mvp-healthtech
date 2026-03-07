@@ -55,8 +55,8 @@ const VoiceAgentClean = () => {
   const [demoMode, setDemoMode] = useState(false);
   // -1 = not started, 0..N = current step index
   const [demoStep, setDemoStep] = useState(-1);
-  // 'idle' | 'va' | 'listening' | 'done'
-  const [demoPhase, setDemoPhase] = useState<'idle' | 'va' | 'listening' | 'done'>('idle');
+  // 'idle' | 'thinking' | 'va' | 'listening' | 'done'
+  const [demoPhase, setDemoPhase] = useState<'idle' | 'thinking' | 'va' | 'listening' | 'done'>('idle');
   // Messages shown in left conversation panel
   const [demoConvo, setDemoConvo] = useState<{ role: 'va' | 'patient'; text: string }[]>([]);
   // Text currently being typed into the active VA bubble
@@ -68,44 +68,40 @@ const VoiceAgentClean = () => {
   const demoEndRef = useRef<HTMLDivElement>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
 
-  // ── Full scripted booking demo — ليان asks, presenter speaks patient lines ──
+  // ── Fully hardcoded demo script ─────────────────────────────────────────
+  // Both VA lines and patient cues are fixed.  No LLM call is made.
   const DEMO_SCRIPT = [
     {
-      va: 'أهلاً وسهلاً! أنا ليان، المساعدة الصوتية للاستقبال الطبي. كيف أقدر أساعدك اليوم؟',
-      patient: null as string | null,
-      listenMs: 3500,
+      va: 'أهلاً وسهلاً! أنا ليان، مساعدة مستشفى بيميدكس الذكية. كيف أقدر أساعدك اليوم؟',
+      patient: 'أبغى أحجز موعد في قسم الجلدية',
     },
     {
-      va: 'تمام! بأحجز لك موعد في قسم الجلدية. ما اسمك الكريم؟',
-      patient: 'أبغى أحجز موعد جلدية',
-      listenMs: 3500,
-    },
-    {
-      va: 'شكراً يا منصور. وش رقم جوالك؟',
+      va: 'بكل سرور! سأحجز لك موعد في قسم الجلدية. ما اسمك الكريم؟',
       patient: 'اسمي منصور محمد منصور',
-      listenMs: 3500,
     },
     {
-      va: 'ممتاز. وتاريخ ميلادك؟',
-      patient: '01095013536',
-      listenMs: 3500,
+      va: 'شكراً منصور. ما رقم جوالك من فضلك؟',
+      patient: '٠١٠٩٥٠١٣٥٣٦',
     },
     {
-      va: 'شكراً. أي يوم يناسبك للموعد؟',
-      patient: '26/08/2001',
-      listenMs: 3500,
+      va: 'تمام. وما تاريخ ميلادك؟',
+      patient: '٢٦ / ٠٨ / ٢٠٠١',
     },
     {
-      va: 'والوقت المناسب لك؟',
-      patient: 'يوم الثلاثاء',
-      listenMs: 3000,
+      va: 'ممتاز. أي يوم يناسبك للموعد؟',
+      patient: 'الثلاثاء',
     },
     {
-      va: 'ممتاز! تم تسجيل موعدك بنجاح ✓  يوم الثلاثاء الساعة الثالثة مساءً مع طبيب الجلدية. شكراً منصور محمد منصور!',
+      va: 'الثلاثاء متاح. أي وقت يناسبك؟',
       patient: 'الساعة الثالثة مساءً',
-      listenMs: 0,
     },
-  ];
+    {
+      va: 'تم تأكيد موعدك يوم الثلاثاء الساعة الثالثة مساءً في قسم الجلدية. شكراً لثقتك بمستشفى بيميدكس يا منصور!',
+      patient: null,
+    },
+  ] as const;
+  // How long the green listening bar stays per step (ms)
+  const LISTEN_MS = 3500;
 
   // G.711 μ-law → 16-bit PCM decoder (no external lib)
   function mulawDecode(byte: number): number {
@@ -148,12 +144,21 @@ const VoiceAgentClean = () => {
     demoEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [demoConvo, demoTypeText]);
 
-  // Type text character by character; TTS synthesis happens in parallel
+  // Typewriter helper
+  const typewrite = useCallback(async (text: string, abortRef: React.MutableRefObject<boolean>) => {
+    for (let c = 1; c <= text.length; c++) {
+      if (abortRef.current) return;
+      setDemoTypeText(text.slice(0, c));
+      await new Promise(r => setTimeout(r, 36));
+    }
+  }, []);
+
+  // ── Fully hardcoded scripted demo — no LLM calls ──────────────────────
   const runScriptedDemo = useCallback(async () => {
     demoAbortRef.current = false;
     setDemoConvo([]);
     setDemoTypeText('');
-    setDemoStep(0);
+    setDemoStep(-1);
     setDemoPhase('idle');
     setDemoListenPct(100);
 
@@ -162,32 +167,18 @@ const VoiceAgentClean = () => {
       const step = DEMO_SCRIPT[i];
       setDemoStep(i);
 
-      // 1. Show patient line (right-aligned blue bubble)
-      if (step.patient) {
-        setDemoConvo(prev => [...prev, { role: 'patient', text: step.patient! }]);
-        await new Promise(r => setTimeout(r, 1000));
-        if (demoAbortRef.current) break;
-      }
-
-      // 2. VA speaks — typewriter + TTS synthesis run in parallel
+      // 1. Typewrite VA line while TTS synthesises in background
       setDemoPhase('va');
       setDemoTypeText('');
-
       const ttsPromise = api.synthesizeSpeech(step.va, 'saudi-tts').catch(() => null);
-
-      // Typewriter: one char every 38ms
-      for (let c = 1; c <= step.va.length; c++) {
-        if (demoAbortRef.current) break;
-        setDemoTypeText(step.va.slice(0, c));
-        await new Promise(r => setTimeout(r, 38));
-      }
+      await typewrite(step.va, demoAbortRef);
       if (demoAbortRef.current) break;
 
-      // Commit VA bubble to conversation, clear typing cursor
+      // Commit VA bubble to conversation
       setDemoConvo(prev => [...prev, { role: 'va', text: step.va }]);
       setDemoTypeText('');
 
-      // Play TTS
+      // 2. Play Ahmed Saudi TTS
       try {
         const ttsRes = await ttsPromise;
         if (ttsRes && (ttsRes as any).audio) {
@@ -196,24 +187,29 @@ const VoiceAgentClean = () => {
       } catch { /* non-fatal */ }
       if (demoAbortRef.current) break;
 
-      // 3. Listening countdown — green bar depletes over listenMs
-      if (step.listenMs > 0) {
+      // 3. If there is a patient cue, run the listening countdown then show it
+      if (step.patient) {
         setDemoPhase('listening');
         setDemoListenPct(100);
-        const ticks = 50;
-        const interval = step.listenMs / ticks;
+        const ticks = 60;
+        const interval = LISTEN_MS / ticks;
         for (let t = ticks; t >= 0; t--) {
           if (demoAbortRef.current) break;
           setDemoListenPct((t / ticks) * 100);
           await new Promise(r => setTimeout(r, interval));
         }
+        if (demoAbortRef.current) break;
+
+        // Show patient bubble
+        setDemoConvo(prev => [...prev, { role: 'patient', text: step.patient as string }]);
+        await new Promise(r => setTimeout(r, 500));
       }
       if (demoAbortRef.current) break;
     }
 
     setDemoPhase('done');
     setDemoTypeText('');
-  }, [playMulawAudio]);
+  }, [playMulawAudio, typewrite]);
 
   const stopDemo = () => {
     demoAbortRef.current = true;
@@ -549,7 +545,7 @@ const VoiceAgentClean = () => {
               <div className="flex items-center gap-2">
                 {demoStep >= 0 && demoPhase !== 'idle' && demoPhase !== 'done' && (
                   <span className={clsx('text-xs', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
-                    {demoStep + 1} / {DEMO_SCRIPT.length}
+                    {demoStep + 1} / {PATIENT_TURNS.length}
                   </span>
                 )}
                 {demoPhase === 'done' && (
@@ -700,9 +696,8 @@ const VoiceAgentClean = () => {
             </div>
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
               {DEMO_SCRIPT.map((step, idx) => {
-                const isActive   = demoStep === idx && demoPhase !== 'idle';
-                const isDone     = demoStep > idx || demoPhase === 'done';
-                const isPending  = demoStep < idx && demoPhase !== 'done';
+                const isActive  = demoStep === idx && (demoPhase === 'va' || demoPhase === 'listening');
+                const isDone    = demoStep > idx || demoPhase === 'done';
 
                 return (
                   <div
@@ -716,11 +711,11 @@ const VoiceAgentClean = () => {
                           : theme === 'dark' ? 'border-gray-700/50 opacity-30' : 'border-gray-100 opacity-30'
                     )}
                   >
-                    {/* Step header */}
+                    {/* Step number + live status */}
                     <div className="flex items-center gap-1.5 mb-1.5">
                       <span className={clsx(
                         'text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0',
-                        isActive ? 'bg-emerald-500 text-white' :
+                        isActive ? 'bg-emerald-500 text-white animate-pulse' :
                         isDone   ? 'bg-emerald-600/30 text-emerald-500' :
                                    theme === 'dark' ? 'bg-gray-700 text-gray-500' : 'bg-gray-200 text-gray-400'
                       )}>
@@ -728,16 +723,29 @@ const VoiceAgentClean = () => {
                       </span>
                       {isActive && (
                         <span className="text-xs text-emerald-400 animate-pulse font-medium">
-                          {demoPhase === 'va' ? (language === 'ar' ? 'تتحدث...' : 'Speaking...') :
-                           demoPhase === 'listening' ? (language === 'ar' ? 'تستمع...' : 'Listening...') : ''}
+                          {demoPhase === 'va'
+                            ? (language === 'ar' ? 'يتحدث...' : 'Speaking...')
+                            : (language === 'ar' ? 'يستمع...' : 'Listening...')}
                         </span>
                       )}
                     </div>
 
-                    {/* Patient cue */}
+                    {/* VA line — shows typewriter cursor when active */}
+                    <div className={clsx(
+                      'text-xs px-2 py-1.5 rounded-lg mb-1 text-right',
+                      isDone || isActive
+                        ? 'bg-emerald-500/10 text-emerald-400'
+                        : theme === 'dark' ? 'bg-gray-700/40 text-gray-600' : 'bg-gray-100 text-gray-400'
+                    )} dir="rtl">
+                      {isActive && demoPhase === 'va' && demoTypeText
+                        ? <>{demoTypeText}<span className="inline-block w-0.5 h-3 bg-emerald-400 animate-pulse ml-0.5 align-middle" /></>
+                        : <>🤖 {step.va}</>}
+                    </div>
+
+                    {/* Patient cue — always shown if it exists */}
                     {step.patient && (
                       <div className={clsx(
-                        'text-xs px-2 py-1 rounded-lg mb-1.5 text-right',
+                        'text-xs px-2 py-1.5 rounded-lg text-right',
                         isDone || isActive
                           ? 'bg-blue-500/10 text-blue-400'
                           : theme === 'dark' ? 'bg-gray-700/40 text-gray-600' : 'bg-gray-100 text-gray-400'
@@ -745,22 +753,6 @@ const VoiceAgentClean = () => {
                         👤 {step.patient}
                       </div>
                     )}
-
-                    {/* VA line — shows live typing for active step */}
-                    <div className={clsx(
-                      'text-xs leading-relaxed',
-                      isActive ? 'text-emerald-300' :
-                      isDone   ? theme === 'dark' ? 'text-gray-400' : 'text-gray-600' :
-                                 theme === 'dark' ? 'text-gray-600' : 'text-gray-300'
-                    )} dir="rtl">
-                      {isActive && demoPhase === 'va' && demoTypeText
-                        ? <>
-                            {demoTypeText}
-                            <span className="inline-block w-0.5 h-3 bg-emerald-400 animate-pulse ml-0.5 align-middle" />
-                          </>
-                        : <>🤖 {step.va}</>
-                      }
-                    </div>
                   </div>
                 );
               })}
