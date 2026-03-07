@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useThemeStore } from '@store/themeStore';
 import { useAuthStore } from '@store/authStore';
 import {
@@ -12,7 +12,9 @@ import {
   IconSettings,
   IconEar,
   IconVolume,
-  IconMessage
+  IconMessage,
+  IconSend,
+  IconPlayerPlay,
 } from '@tabler/icons-react';
 import { Device, Call } from '@twilio/voice-sdk';
 import api from '../utils/api';
@@ -38,8 +40,8 @@ const VoiceAgentClean = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [deviceReady, setDeviceReady] = useState(false);
   const [callSid, setCallSid] = useState<string>('');
-  const [dialectPreference, setDialectPreference] = useState<'auto' | 'egypt' | 'saudi'>('auto');
-  const [voicePreference, setVoicePreference] = useState<'auto' | 'egypt' | 'saudi'>('auto');
+  const [dialectPreference, setDialectPreference] = useState<'auto' | 'egypt' | 'saudi'>('saudi');
+  const [voicePreference, setVoicePreference] = useState<'auto' | 'egypt' | 'saudi'>('saudi');
   const [prefsStatus, setPrefsStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [prefsError, setPrefsError] = useState<string>('');
   const [introMessage, setIntroMessage] = useState<Message | null>(null);
@@ -47,6 +49,184 @@ const VoiceAgentClean = () => {
   const [showSettings, setShowSettings] = useState(false);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const lastMessageRef = useRef<Message | null>(null);
+
+  // ── Scripted Presenter Demo Mode ─────────────────────────────────────────
+  // VA asks hardcoded questions → TTS speaks them → pause for presenter → repeat
+  const [demoMode, setDemoMode] = useState(false);
+  // -1 = not started, 0..N = current step index
+  const [demoStep, setDemoStep] = useState(-1);
+  // 'idle' | 'va' | 'listening' | 'done'
+  const [demoPhase, setDemoPhase] = useState<'idle' | 'va' | 'listening' | 'done'>('idle');
+  // Messages shown in left conversation panel
+  const [demoConvo, setDemoConvo] = useState<{ role: 'va' | 'patient'; text: string }[]>([]);
+  // Text currently being typed into the active VA bubble
+  const [demoTypeText, setDemoTypeText] = useState('');
+  // 0→100 countdown bar for the listening phase
+  const [demoListenPct, setDemoListenPct] = useState(100);
+  const [demoAudioPlaying, setDemoAudioPlaying] = useState(false);
+  const demoAbortRef = useRef(false);
+  const demoEndRef = useRef<HTMLDivElement>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  // ── Full scripted booking demo — ليان asks, presenter speaks patient lines ──
+  const DEMO_SCRIPT = [
+    {
+      va: 'أهلاً وسهلاً! أنا ليان، المساعدة الصوتية للاستقبال الطبي. كيف أقدر أساعدك اليوم؟',
+      patient: null as string | null,
+      listenMs: 3500,
+    },
+    {
+      va: 'تمام! بأحجز لك موعد في قسم الجلدية. ما اسمك الكريم؟',
+      patient: 'أبغى أحجز موعد جلدية',
+      listenMs: 3500,
+    },
+    {
+      va: 'شكراً يا منصور. وش رقم جوالك؟',
+      patient: 'اسمي منصور محمد منصور',
+      listenMs: 3500,
+    },
+    {
+      va: 'ممتاز. وتاريخ ميلادك؟',
+      patient: '01095013536',
+      listenMs: 3500,
+    },
+    {
+      va: 'شكراً. أي يوم يناسبك للموعد؟',
+      patient: '26/08/2001',
+      listenMs: 3500,
+    },
+    {
+      va: 'والوقت المناسب لك؟',
+      patient: 'يوم الثلاثاء',
+      listenMs: 3000,
+    },
+    {
+      va: 'ممتاز! تم تسجيل موعدك بنجاح ✓  يوم الثلاثاء الساعة الثالثة مساءً مع طبيب الجلدية. شكراً منصور محمد منصور!',
+      patient: 'الساعة الثالثة مساءً',
+      listenMs: 0,
+    },
+  ];
+
+  // G.711 μ-law → 16-bit PCM decoder (no external lib)
+  function mulawDecode(byte: number): number {
+    byte = ~byte & 0xff;
+    const sign = byte & 0x80;
+    const exp  = (byte >> 4) & 0x07;
+    const mant = byte & 0x0f;
+    let sample = ((mant << 3) + 33) << exp;
+    sample -= 33;
+    return sign ? -sample : sample;
+  }
+
+  const playMulawAudio = useCallback(async (base64: string, sampleRate = 8000) => {
+    if (!base64) return;
+    try {
+      if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+        audioCtxRef.current = new AudioContext();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') await ctx.resume();
+      const raw = atob(base64);
+      const samples = new Float32Array(raw.length);
+      for (let i = 0; i < raw.length; i++) {
+        samples[i] = mulawDecode(raw.charCodeAt(i)) / 32768.0;
+      }
+      const buf = ctx.createBuffer(1, samples.length, sampleRate);
+      buf.copyToChannel(samples, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      setDemoAudioPlaying(true);
+      src.start();
+      await new Promise<void>(r => { src.onended = () => r(); });
+    } catch { /* non-fatal */ }
+    finally { setDemoAudioPlaying(false); }
+  }, []);
+
+  // Auto-scroll conversation panel
+  useEffect(() => {
+    demoEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [demoConvo, demoTypeText]);
+
+  // Type text character by character; TTS synthesis happens in parallel
+  const runScriptedDemo = useCallback(async () => {
+    demoAbortRef.current = false;
+    setDemoConvo([]);
+    setDemoTypeText('');
+    setDemoStep(0);
+    setDemoPhase('idle');
+    setDemoListenPct(100);
+
+    for (let i = 0; i < DEMO_SCRIPT.length; i++) {
+      if (demoAbortRef.current) break;
+      const step = DEMO_SCRIPT[i];
+      setDemoStep(i);
+
+      // 1. Show patient line (right-aligned blue bubble)
+      if (step.patient) {
+        setDemoConvo(prev => [...prev, { role: 'patient', text: step.patient! }]);
+        await new Promise(r => setTimeout(r, 1000));
+        if (demoAbortRef.current) break;
+      }
+
+      // 2. VA speaks — typewriter + TTS synthesis run in parallel
+      setDemoPhase('va');
+      setDemoTypeText('');
+
+      const ttsPromise = api.synthesizeSpeech(step.va, 'saudi-tts').catch(() => null);
+
+      // Typewriter: one char every 38ms
+      for (let c = 1; c <= step.va.length; c++) {
+        if (demoAbortRef.current) break;
+        setDemoTypeText(step.va.slice(0, c));
+        await new Promise(r => setTimeout(r, 38));
+      }
+      if (demoAbortRef.current) break;
+
+      // Commit VA bubble to conversation, clear typing cursor
+      setDemoConvo(prev => [...prev, { role: 'va', text: step.va }]);
+      setDemoTypeText('');
+
+      // Play TTS
+      try {
+        const ttsRes = await ttsPromise;
+        if (ttsRes && (ttsRes as any).audio) {
+          await playMulawAudio((ttsRes as any).audio, (ttsRes as any).sampleRate || 8000);
+        }
+      } catch { /* non-fatal */ }
+      if (demoAbortRef.current) break;
+
+      // 3. Listening countdown — green bar depletes over listenMs
+      if (step.listenMs > 0) {
+        setDemoPhase('listening');
+        setDemoListenPct(100);
+        const ticks = 50;
+        const interval = step.listenMs / ticks;
+        for (let t = ticks; t >= 0; t--) {
+          if (demoAbortRef.current) break;
+          setDemoListenPct((t / ticks) * 100);
+          await new Promise(r => setTimeout(r, interval));
+        }
+      }
+      if (demoAbortRef.current) break;
+    }
+
+    setDemoPhase('done');
+    setDemoTypeText('');
+  }, [playMulawAudio]);
+
+  const stopDemo = () => {
+    demoAbortRef.current = true;
+    setDemoPhase('idle');
+    setDemoTypeText('');
+    setDemoStep(-1);
+    setDemoListenPct(100);
+  };
+
+  const resetDemo = () => {
+    stopDemo();
+    setDemoConvo([]);
+  };
 
   const resolveVoiceId = (pref: string) => {
     if (pref === 'egypt') return 'egtts';
@@ -295,15 +475,301 @@ const VoiceAgentClean = () => {
   return (
     <div className="max-w-4xl mx-auto">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl lg:text-3xl font-bold">
-          {language === 'ar' ? 'المساعد الصوتي' : 'Voice Agent'}
-        </h1>
-        <p className={clsx('mt-1', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
-          {language === 'ar' ? 'تحدث مع المساعد الطبي الذكي' : 'Talk to the AI medical assistant'}
-        </p>
+      <div className="mb-6 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-bold">
+            {language === 'ar' ? 'المساعد الصوتي' : 'Voice Agent'}
+          </h1>
+          <p className={clsx('mt-1', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
+            {language === 'ar' ? 'تحدث مع المساعد الطبي الذكي' : 'Talk to the AI medical assistant'}
+          </p>
+        </div>
+        {/* Mode Toggle */}
+        <div className={clsx(
+          'flex rounded-xl overflow-hidden border text-sm font-medium',
+          theme === 'dark' ? 'border-gray-700' : 'border-gray-200'
+        )}>
+          <button
+            onClick={() => setDemoMode(false)}
+            className={clsx(
+              'px-4 py-2 flex items-center gap-2 transition-colors',
+              !demoMode
+                ? 'bg-blue-600 text-white'
+                : theme === 'dark' ? 'bg-gray-800 text-gray-300 hover:bg-gray-700' : 'bg-white text-gray-600 hover:bg-gray-50'
+            )}
+          >
+            <IconPhone size={15} />
+            {language === 'ar' ? 'مكالمة' : 'Call'}
+          </button>
+          <button
+            onClick={() => setDemoMode(true)}
+            className={clsx(
+              'px-4 py-2 flex items-center gap-2 transition-colors',
+              demoMode
+                ? 'bg-emerald-600 text-white'
+                : theme === 'dark' ? 'bg-gray-800 text-gray-300 hover:bg-gray-700' : 'bg-white text-gray-600 hover:bg-gray-50'
+            )}
+          >
+            <IconPlayerPlay size={15} />
+            {language === 'ar' ? 'عرض تجريبي' : 'Live Demo'}
+          </button>
+        </div>
       </div>
 
+      {/* ── SCRIPTED PRESENTER DEMO MODE ─────────────────────────────────── */}
+      {demoMode ? (
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
+
+          {/* ── LEFT: Live conversation (3/5) ── */}
+          <div className={clsx(
+            'lg:col-span-3 rounded-2xl border flex flex-col overflow-hidden',
+            theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+          )}>
+            {/* Header */}
+            <div className={clsx(
+              'flex items-center justify-between px-5 py-3 border-b',
+              theme === 'dark' ? 'border-gray-700' : 'border-gray-200'
+            )}>
+              <div className="flex items-center gap-2">
+                <div className={clsx(
+                  'w-2.5 h-2.5 rounded-full',
+                  demoPhase === 'va' ? 'bg-emerald-400 animate-pulse' :
+                  demoPhase === 'listening' ? 'bg-green-400 animate-pulse' :
+                  demoPhase === 'done' ? 'bg-blue-400' : 'bg-gray-400'
+                )} />
+                <span className="font-semibold text-sm">
+                  {language === 'ar' ? 'ليان — المساعدة الصوتية' : 'Leyan — Voice Agent'}
+                </span>
+                {demoAudioPlaying && (
+                  <span className="flex items-center gap-1 text-xs text-emerald-400 animate-pulse">
+                    <IconVolume size={13} /> {language === 'ar' ? 'تتحدث...' : 'Speaking...'}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {demoStep >= 0 && demoPhase !== 'idle' && demoPhase !== 'done' && (
+                  <span className={clsx('text-xs', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
+                    {demoStep + 1} / {DEMO_SCRIPT.length}
+                  </span>
+                )}
+                {demoPhase === 'done' && (
+                  <span className="text-xs text-emerald-500 font-medium">
+                    {language === 'ar' ? 'اكتمل الحجز ✓' : 'Booking Done ✓'}
+                  </span>
+                )}
+                <button
+                  onClick={resetDemo}
+                  className={clsx(
+                    'text-xs px-3 py-1 rounded-lg transition-colors',
+                    theme === 'dark' ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
+                  )}
+                >
+                  {language === 'ar' ? 'إعادة' : 'Reset'}
+                </button>
+              </div>
+            </div>
+
+            {/* Conversation area */}
+            <div className={clsx(
+              'flex-1 overflow-y-auto px-4 py-4 space-y-3',
+              'h-[400px] lg:h-[450px]',
+              theme === 'dark' ? 'bg-gray-900/40' : 'bg-gray-50'
+            )}>
+              {demoConvo.length === 0 && demoPhase === 'idle' && (
+                <div className="flex flex-col items-center justify-center h-full gap-4 text-center">
+                  <div className="w-16 h-16 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                    <IconPlayerPlay size={30} className="text-emerald-500" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-base">
+                      {language === 'ar' ? 'عرض حجز موعد تجريبي' : 'Appointment Booking Demo'}
+                    </p>
+                    <p className={clsx('text-sm mt-1', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
+                      {language === 'ar'
+                        ? 'ليان ستسأل — أنت تجيب — الصوت سعودي'
+                        : 'Leyan asks · you answer · Ahmed Saudi voice'}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Committed conversation bubbles */}
+              {demoConvo.map((msg, idx) => (
+                <div
+                  key={idx}
+                  className={clsx(
+                    'flex',
+                    msg.role === 'patient' ? 'justify-end' : 'justify-start'
+                  )}
+                >
+                  {msg.role === 'va' && (
+                    <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold mr-2 mt-1 flex-shrink-0">
+                      ل
+                    </div>
+                  )}
+                  <div className={clsx(
+                    'max-w-[78%] rounded-2xl px-4 py-2.5',
+                    msg.role === 'va'
+                      ? 'bg-emerald-600 text-white rounded-tl-sm'
+                      : 'bg-blue-600 text-white rounded-tr-sm'
+                  )}>
+                    <p className="text-sm leading-relaxed" dir="rtl">{msg.text}</p>
+                  </div>
+                  {msg.role === 'patient' && (
+                    <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold ml-2 mt-1 flex-shrink-0">
+                      م
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {/* Live typewriting VA bubble */}
+              {demoTypeText && (
+                <div className="flex justify-start">
+                  <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold mr-2 mt-1 flex-shrink-0">
+                    ل
+                  </div>
+                  <div className="max-w-[78%] rounded-2xl rounded-tl-sm px-4 py-2.5 bg-emerald-600 text-white">
+                    <p className="text-sm leading-relaxed" dir="rtl">
+                      {demoTypeText}
+                      <span className="inline-block w-0.5 h-4 bg-white opacity-80 animate-pulse ml-0.5 align-middle" />
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Listening indicator */}
+              {demoPhase === 'listening' && (
+                <div className="flex justify-start">
+                  <div className="w-7 h-7 rounded-full bg-green-600 flex items-center justify-center text-white mr-2 flex-shrink-0">
+                    <IconEar size={14} />
+                  </div>
+                  <div className={clsx(
+                    'rounded-2xl rounded-tl-sm px-4 py-3 w-48',
+                    theme === 'dark' ? 'bg-gray-700' : 'bg-gray-200'
+                  )}>
+                    <p className={clsx('text-xs mb-2 font-medium', theme === 'dark' ? 'text-green-400' : 'text-green-600')} dir="rtl">
+                      {language === 'ar' ? 'يستمع إليك...' : 'Listening...'}
+                    </p>
+                    <div className={clsx('h-1.5 w-full rounded-full overflow-hidden', theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300')}>
+                      <div
+                        className="h-full bg-green-500 rounded-full transition-all duration-100"
+                        style={{ width: `${demoListenPct}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={demoEndRef} />
+            </div>
+
+            {/* Run / Stop button */}
+            <div className={clsx('p-4 border-t', theme === 'dark' ? 'border-gray-700' : 'border-gray-200')}>
+              {demoPhase === 'idle' || demoPhase === 'done' ? (
+                <button
+                  onClick={runScriptedDemo}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white transition-all"
+                >
+                  <IconPlayerPlay size={18} />
+                  {demoPhase === 'done'
+                    ? (language === 'ar' ? '↺ إعادة العرض' : '↺ Replay Demo')
+                    : (language === 'ar' ? '▶ تشغيل العرض التجريبي' : '▶ Start Demo')}
+                </button>
+              ) : (
+                <button
+                  onClick={stopDemo}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm bg-red-600 hover:bg-red-700 active:scale-95 text-white transition-all"
+                >
+                  ■ {language === 'ar' ? 'إيقاف العرض' : 'Stop Demo'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* ── RIGHT: Live script panel (2/5) ── */}
+          <div className={clsx(
+            'lg:col-span-2 rounded-2xl border flex flex-col overflow-hidden',
+            theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+          )}>
+            <div className={clsx('px-4 py-3 border-b flex items-center gap-2', theme === 'dark' ? 'border-gray-700' : 'border-gray-200')}>
+              <IconMessage size={15} className="text-emerald-500" />
+              <span className="font-semibold text-sm">
+                {language === 'ar' ? 'النص الحي' : 'Live Script'}
+              </span>
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+              {DEMO_SCRIPT.map((step, idx) => {
+                const isActive   = demoStep === idx && demoPhase !== 'idle';
+                const isDone     = demoStep > idx || demoPhase === 'done';
+                const isPending  = demoStep < idx && demoPhase !== 'done';
+
+                return (
+                  <div
+                    key={idx}
+                    className={clsx(
+                      'rounded-xl px-3 py-2.5 border transition-all duration-300',
+                      isActive
+                        ? 'border-emerald-500 bg-emerald-500/10 shadow-sm shadow-emerald-500/20'
+                        : isDone
+                          ? theme === 'dark' ? 'border-gray-700 bg-gray-900/30 opacity-60' : 'border-gray-100 bg-gray-50 opacity-60'
+                          : theme === 'dark' ? 'border-gray-700/50 opacity-30' : 'border-gray-100 opacity-30'
+                    )}
+                  >
+                    {/* Step header */}
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <span className={clsx(
+                        'text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0',
+                        isActive ? 'bg-emerald-500 text-white' :
+                        isDone   ? 'bg-emerald-600/30 text-emerald-500' :
+                                   theme === 'dark' ? 'bg-gray-700 text-gray-500' : 'bg-gray-200 text-gray-400'
+                      )}>
+                        {isDone ? '✓' : idx + 1}
+                      </span>
+                      {isActive && (
+                        <span className="text-xs text-emerald-400 animate-pulse font-medium">
+                          {demoPhase === 'va' ? (language === 'ar' ? 'تتحدث...' : 'Speaking...') :
+                           demoPhase === 'listening' ? (language === 'ar' ? 'تستمع...' : 'Listening...') : ''}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Patient cue */}
+                    {step.patient && (
+                      <div className={clsx(
+                        'text-xs px-2 py-1 rounded-lg mb-1.5 text-right',
+                        isDone || isActive
+                          ? 'bg-blue-500/10 text-blue-400'
+                          : theme === 'dark' ? 'bg-gray-700/40 text-gray-600' : 'bg-gray-100 text-gray-400'
+                      )} dir="rtl">
+                        👤 {step.patient}
+                      </div>
+                    )}
+
+                    {/* VA line — shows live typing for active step */}
+                    <div className={clsx(
+                      'text-xs leading-relaxed',
+                      isActive ? 'text-emerald-300' :
+                      isDone   ? theme === 'dark' ? 'text-gray-400' : 'text-gray-600' :
+                                 theme === 'dark' ? 'text-gray-600' : 'text-gray-300'
+                    )} dir="rtl">
+                      {isActive && demoPhase === 'va' && demoTypeText
+                        ? <>
+                            {demoTypeText}
+                            <span className="inline-block w-0.5 h-3 bg-emerald-400 animate-pulse ml-0.5 align-middle" />
+                          </>
+                        : <>🤖 {step.va}</>
+                      }
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+        </div>
+      ) : (
+      /* ── PHONE CALL MODE ────────────────────────────────────────────────── */
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main Call Panel */}
         <div className={clsx(
@@ -574,6 +1040,7 @@ const VoiceAgentClean = () => {
           </div>
         </div>
       </div>
+      )} {/* end phone call mode */}
     </div>
   );
 };
