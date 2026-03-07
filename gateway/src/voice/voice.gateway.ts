@@ -294,10 +294,24 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const totalBytes = buffer.reduce((sum, c) => sum + c.length, 0);
 
-    // Safety cap: drop buffer if we somehow exceed 24s of audio
+    // Safety cap: if buffer exceeds 24s, force-flush or trim rather than silently drop.
     if (totalBytes >= VoiceGateway.MAX_BUFFER_BYTES) {
-      this.audioBuffers.set(callSid, []);
-      this.logger.warn(`Buffer overflow for ${callSid}: dropped ${totalBytes} bytes`);
+      if (!this.processingCalls.has(callSid)) {
+        // Pipeline idle — process what we have now instead of discarding it
+        const combinedAudio = Buffer.concat(buffer);
+        this.audioBuffers.set(callSid, []);
+        this.logger.warn(`Buffer cap hit for ${callSid}: force-flushing ${totalBytes} bytes to ASR`);
+        this.processAudioChunk(callSid, combinedAudio, false).catch((err) =>
+          this.logger.error(`Force-flush ASR error for ${callSid}`, err),
+        );
+      } else {
+        // Pipeline busy — keep only the newest 4s to avoid total data loss
+        const keep = Math.floor(VoiceGateway.MIN_BUFFER_BYTES * 4);
+        const combined = Buffer.concat(buffer);
+        const trimmed = combined.slice(combined.length - keep);
+        this.audioBuffers.set(callSid, [trimmed]);
+        this.logger.warn(`Buffer cap hit for ${callSid}: pipeline busy, trimmed to ${keep} bytes`);
+      }
       return;
     }
 
@@ -311,16 +325,21 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   /**
    * Returns true if the G.711 PCMU chunk contains audible speech.
-   * After removing the μ-law bit-flip (XOR 0x55), the exponent field
-   * (bits 4-6) is 0 for near-silence and >0 for real audio energy.
+   *
+   * Twilio sends PCMU silence as a constant repeat of the same byte
+   * (comfort-noise or 0xFF).  During speech the byte values change rapidly.
+   * We detect speech by counting "large" transitions between adjacent samples.
+   * This is codec-agnostic — no XOR needed — and never misidentifies silence
+   * as speech regardless of what byte Twilio uses for comfort noise.
    */
   private isSpeechChunk(chunk: Buffer): boolean {
-    let active = 0;
-    for (const b of chunk) {
-      const m = b ^ 0x55;
-      if (((m >> 4) & 0x7) > 0) active++;
+    if (chunk.length < 4) return false;
+    let transitions = 0;
+    for (let i = 1; i < chunk.length; i++) {
+      if (Math.abs(chunk[i] - chunk[i - 1]) > 4) transitions++;
     }
-    return active / chunk.length > 0.20;
+    // Silence: ≈0 transitions.  Speech: >15 % of adjacent pairs differ by >4.
+    return transitions / (chunk.length - 1) > 0.15;
   }
 
   /**
@@ -430,6 +449,12 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     } finally {
       this.processingCalls.delete(callSid);
+      // If audio accumulated while the pipeline was running, schedule it now.
+      const pending = this.audioBuffers.get(callSid);
+      const pendingBytes = pending?.reduce((s, c) => s + c.length, 0) ?? 0;
+      if (pendingBytes >= VoiceGateway.MIN_BUFFER_BYTES) {
+        this.scheduleSilenceTrigger(callSid);
+      }
     }
   }
 
