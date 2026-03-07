@@ -9,6 +9,8 @@ aiofiles==23.2.1
 TTS==0.22.0
 # transformers 5.x removed BeamSearchScorer which TTS 0.22.0 / XTTS requires
 transformers==4.44.2
+# gTTS pins click<8.2 via CLI dep, but we only use Python API; typer needs >=8.2
+click>=8.2.0,<9.0
 huggingface_hub>=0.24.0
 soundfile==0.12.1
 torchcodec
