@@ -545,7 +545,7 @@ const VoiceAgentClean = () => {
               <div className="flex items-center gap-2">
                 {demoStep >= 0 && demoPhase !== 'idle' && demoPhase !== 'done' && (
                   <span className={clsx('text-xs', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
-                    {demoStep + 1} / {PATIENT_TURNS.length}
+                    {demoStep + 1} / {DEMO_SCRIPT.length}
                   </span>
                 )}
                 {demoPhase === 'done' && (
