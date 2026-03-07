@@ -427,6 +427,12 @@ async def chat(req: ChatRequest):
         rag_context = await fetch_rag_context(req.message, req.tenantId)
         system_prompt = load_system_prompt(dialect)
 
+        # Inject today's date so the LLM never hallucinates past years
+        from datetime import date as _date
+        _today = _date.today()
+        _day_ar = ["الاثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت","الأحد"][_today.weekday()]
+        _date_str = _today.strftime("%d/%m/%Y")
+
         # Build the system message: base prompt + dialect hint + slot state
         slot_block = build_slot_summary(extracted_slots)
         if dialect == "saudi":
@@ -442,14 +448,27 @@ async def chat(req: ChatRequest):
         else:
             dialect_hint = ""
         full_system = system_prompt.strip()
+        # Always inject current date/day so the model never hallucinates past years
+        full_system += f"\n\nتاريخ اليوم: {_day_ar} {_date_str} (السنة {_today.year}). جميع المواعيد المحجوزة يجب أن تكون في المستقبل."
         if dialect_hint:
             full_system += "\n\n" + dialect_hint
         full_system += "\n\nحالة الحقول:\n" + (slot_block or "لا توجد حقول بعد.")
         history_turns = req.history or []
+
+        # Build strong instruction that prevents re-asking filled slots
+        filled_keys = [k for k in ["name","phone","dob","specialty","doctor_name","date","time"]
+                       if not _is_missing(extracted_slots, k)]
+        filled_block = ""
+        if filled_keys:
+            from prompt_builder import CANONICAL_KEYS as _CK
+            filled_labels = "، ".join(_CK.get(k, k) for k in filled_keys)
+            filled_block = f" الخانات التالية مكتملة ولا تُسأل عنها أبداً: {filled_labels}."
+
         cont_instruction = (
-            "واصلي بصفتك ليان. استهدفي خانة ناقصة واحدة فقط في كل رد. "
-            "اجعلي الرد ٢-٣ جمل طبيعية وانتهي بسؤال واضح ينتهي بـ «؟». "
-            "لا تكرري سؤالاً عن خانة ذُكرت في «معلومات متوفرة»."
+            f"واصلي بصفتك ليان.{filled_block} "
+            "اتبعي ترتيب الحوار: اسأل عن سبب الزيارة أولاً، ثم اقترحي الطبيب المناسب وأوقاته، ثم اجمعي بيانات الحجز. "
+            "استهدفي خانة ناقصة واحدة فقط في كل رد. "
+            "اجعلي الرد ٢-٣ جمل طبيعية وانتهي بسؤال واضح ينتهي بـ «؟»."
         )
         if history_turns:
             cont_instruction += " لا تبدأي الرد بتحية أو تقديم نفسك لأن المحادثة قائمة بالفعل."

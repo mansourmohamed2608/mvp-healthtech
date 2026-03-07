@@ -392,35 +392,44 @@ async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
     voice_id = _normalize_voice_id(voice)
     if voice_id == EGTTS_VOICE_ID:
         try:
-            return await asyncio.to_thread(_xtts_generate, text, "egtts", EGTTS_TEMPERATURE)
-        except Exception:
-            pass
+            result = await asyncio.to_thread(_xtts_generate, text, "egtts", EGTTS_TEMPERATURE)
+            logger.info("TTS engine used: xtts-egtts")
+            return result
+        except Exception as e:
+            logger.warning(f"XTTS egtts failed, falling back: {e}")
         if GTTS_AVAILABLE:
             try:
-                return await _gtts_generate(text, tld='com.eg')  # Egyptian-accented voice
+                logger.info("TTS engine used: gtts-egypt")
+                return await _gtts_generate(text, tld='com.eg')
             except Exception:
                 pass
         if EDGE_AVAILABLE:
             try:
+                logger.info("TTS engine used: edge")
                 return await _edge_generate(text, VOICE)
             except Exception:
                 pass
         return _silence_mulaw()
     if voice_id == SAUDI_VOICE_ID:
         try:
-            return await asyncio.to_thread(_xtts_generate, text, "saudi", SAUDI_TEMPERATURE)
-        except Exception:
-            pass
+            result = await asyncio.to_thread(_xtts_generate, text, "saudi", SAUDI_TEMPERATURE)
+            logger.info("TTS engine used: xtts-saudi")
+            return result
+        except Exception as e:
+            logger.warning(f"XTTS saudi failed, falling back: {e}")
         if GTTS_AVAILABLE:
             try:
-                return await _gtts_generate(text, tld='com.sa')  # Saudi-accented voice fallback
+                logger.info("TTS engine used: gtts-saudi")
+                return await _gtts_generate(text, tld='com.sa')
             except Exception:
                 try:
+                    logger.info("TTS engine used: gtts-egypt-fallback")
                     return await _gtts_generate(text, tld='com.eg')
                 except Exception:
                     pass
         if EDGE_AVAILABLE:
             try:
+                logger.info("TTS engine used: edge-fallback")
                 return await _edge_generate(text, VOICE)
             except Exception:
                 pass
