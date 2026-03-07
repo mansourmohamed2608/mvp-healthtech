@@ -1,5 +1,71 @@
 import re
 from typing import Dict, Any
+from datetime import date as _date, timedelta as _timedelta
+
+# Arabic day names → Python weekday (Mon=0 … Sun=6)
+_AR_DAY_WD: dict[str, int] = {
+    "الاثنين": 0,
+    "الثلاثاء": 1,
+    "الأربعاء": 2, "الاربعاء": 2, "الأربعا": 2,
+    "الخميس": 3,
+    "الجمعة": 4, "الجمعه": 4,
+    "السبت": 5,
+    "الأحد": 6, "الاحد": 6,
+}
+
+_AR_HOUR_MAP: dict[str, int] = {
+    "الواحدة": 1, "الواحد": 1,
+    "الثانية": 2, "الثاني": 2,
+    "الثالثة": 3, "الثالث": 3,
+    "الرابعة": 4, "الرابع": 4,
+    "الخامسة": 5, "الخامس": 5,
+    "السادسة": 6, "السادس": 6,
+    "السابعة": 7, "السابع": 7,
+    "الثامنة": 8, "الثامن": 8,
+    "التاسعة": 9, "التاسع": 9,
+    "العاشرة": 10, "العاشر": 10,
+    "الحادية عشرة": 11, "الحادي عشر": 11,
+    "الثانية عشرة": 12, "الثاني عشر": 12,
+}
+
+
+def _next_date_for_day(day_name: str) -> str | None:
+    """Return the next occurrence of an Arabic weekday name as DD/MM/YYYY."""
+    target_wd = _AR_DAY_WD.get(day_name)
+    if target_wd is None:
+        return None
+    today = _date.today()
+    days_ahead = (target_wd - today.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7  # always a future date
+    return (today + _timedelta(days=days_ahead)).strftime("%d/%m/%Y")
+
+
+def _parse_arabic_time(text: str) -> str | None:
+    """Extract a time string (HH:00) from Arabic speech."""
+    pm = any(w in text for w in ["مساء", "مساءً", "عصر", "عصرً", "ظهر"])
+    am = any(w in text for w in ["صباح", "صباحً"])
+    # Named hours (longest first to avoid partial matches)
+    for name in sorted(_AR_HOUR_MAP, key=len, reverse=True):
+        if name in text:
+            h = _AR_HOUR_MAP[name]
+            if pm and h < 12:
+                h += 12
+            elif not am and h <= 6:
+                h += 12  # small hour with no AM context → assume PM
+            return f"{h:02d}:00"
+    # Numeric: "الساعة 5" or "5 مساءً"
+    m = re.search(r'(?:الساعة\s+)?(\d{1,2})', text)
+    if m:
+        h = int(m.group(1))
+        if 1 <= h <= 12:
+            if pm and h < 12:
+                h += 12
+            elif not am and h <= 6:
+                h += 12
+            return f"{h:02d}:00"
+    return None
+
 
 # Phone: accept digits with optional spaces between them (user may say "0 10 9 5 0")
 EGYPT_PHONE_RE = re.compile(r"\b0\s*1\s*\d[\s\d]{8,11}\b")
@@ -141,6 +207,25 @@ def extract_slots(user_text: str, slots: Dict[str, Any]) -> Dict[str, Any]:
         m = DOCTOR_RE.search(user_text)
         if m:
             updated["doctor_name"] = m.group(1)
+    # Date from Arabic day name (e.g. "يوم الثلاثاء", "الخميس")
+    if is_missing(updated, "date"):
+        # Try explicit DD/MM/YYYY first (already handled by DOB_RE above, but for date slot)
+        m = DOB_RE.search(user_text)
+        if m:
+            updated["date"] = m.group(1)
+        else:
+            # Try Arabic day names (longest first to avoid partial matches)
+            for day_name in sorted(_AR_DAY_WD, key=len, reverse=True):
+                if day_name in user_text:
+                    d = _next_date_for_day(day_name)
+                    if d:
+                        updated["date"] = d
+                    break
+    # Time from Arabic hour name or "الساعة N"
+    if is_missing(updated, "time") and ("ساعة" in user_text or any(h in user_text for h in _AR_HOUR_MAP)):
+        t = _parse_arabic_time(user_text)
+        if t:
+            updated["time"] = t
     # No marketing
     if (
         "لا أريد مكالمات دعائية" in user_text

@@ -475,6 +475,40 @@ async def chat(req: ChatRequest):
         full_system += "\n\nحالة الحقول:\n" + (slot_block or "لا توجد حقول بعد.")
         history_turns = req.history or []
 
+        # Doctor schedule reference for next-step guidance
+        _DR_SCHEDULE = {
+            "جلدية":  "دكتور علي الغامدي – الثلاثاء ٢–٤ عصراً والخميس ١٠–١٢",
+            "طب عام": "دكتورة سارة الزهراني – الأحد والثلاثاء ٩ صباحاً–١ ظهراً",
+            "باطنية": "دكتور محمد المالكي – الاثنين والأربعاء ٣–٦ والسبت ١٠–١",
+        }
+
+        def _next_step(slots: dict) -> str:
+            if _is_missing(slots, "specialty"):
+                return "اسألي: «وش لي عندنا اليوم؟ كشف ولا متابعة؟»"
+            spec = slots.get("specialty", "")
+            if _is_missing(slots, "doctor_name"):
+                dr = _DR_SCHEDULE.get(spec, "")
+                dr_short = dr.split(" –")[0] if " –" in dr else dr
+                return (
+                    f"عرّفي الطبيب المتاح لـ{spec}: {dr}. "
+                    f"ثم اسألي: «تبي نحجز مع {dr_short}؟» — لا تسألي عن تاريخ أو وقت قبل الموافقة."
+                )
+            if _is_missing(slots, "name"):
+                return "اسألي فقط: «وش اسمك الكريم؟»"
+            if _is_missing(slots, "phone"):
+                return "اسألي فقط: «ما رقم جوالك؟»"
+            if _is_missing(slots, "dob"):
+                return "اسألي فقط: «ما تاريخ ميلادك؟»"
+            if _is_missing(slots, "date"):
+                dr = _DR_SCHEDULE.get(spec, "")
+                avail = dr.split(" – ")[1] if " – " in dr else ""
+                return f"اسألي عن التاريخ وذكّريه بالأيام المتاحة: {avail}."
+            if _is_missing(slots, "time"):
+                dr = _DR_SCHEDULE.get(spec, "")
+                avail = dr.split(" – ")[1] if " – " in dr else ""
+                return f"اسألي عن الوقت ضمن دوام الطبيب ({avail})."
+            return "أكدي الحجز: الاسم والتاريخ والوقت واسم الطبيب."
+
         # Build strong instruction that prevents re-asking filled slots
         filled_keys = [k for k in ["name","phone","dob","specialty","doctor_name","date","time"]
                        if not _is_missing(extracted_slots, k)]
@@ -484,10 +518,11 @@ async def chat(req: ChatRequest):
             filled_labels = "، ".join(_CK.get(k, k) for k in filled_keys)
             filled_block = f" الخانات التالية مكتملة ولا تُسأل عنها أبداً: {filled_labels}."
 
+        next_step = _next_step(extracted_slots)
         cont_instruction = (
             f"واصلي بصفتك ليان.{filled_block} "
-            "اتبعي ترتيب الحوار: اسأل عن سبب الزيارة أولاً، ثم اقترحي الطبيب المناسب وأوقاته، ثم اجمعي بيانات الحجز. "
-            "استهدفي خانة ناقصة واحدة فقط في كل رد. "
+            f"الخطوة التالية الآن: {next_step} "
+            "استهدفي خانة واحدة فقط في كل رد. "
             "اجعلي الرد ٢-٣ جمل طبيعية وانتهي بسؤال واضح ينتهي بـ «؟»."
         )
         if history_turns:

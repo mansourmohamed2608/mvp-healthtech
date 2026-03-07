@@ -276,8 +276,9 @@ def _xtts_generate(text: str, kind: str, temperature: float) -> bytes:
         speaker_embedding=speaker_embedding,
         temperature=temperature,
     )
-    wav = out.get("wav", [])
-    if not wav:
+    wav = out.get("wav")
+    # Use explicit length check — numpy arrays raise ValueError on `not array`
+    if wav is None or (hasattr(wav, "__len__") and len(wav) == 0):
         return _silence_mulaw()
     audio_np = np.array(wav)
     audio_int16 = (audio_np * 32767).astype(np.int16)

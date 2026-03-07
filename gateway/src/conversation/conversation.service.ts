@@ -567,7 +567,8 @@ export class ConversationService {
 
       // 3. Synthesize voice response using TTS
       const ttsStart = process.hrtime();
-      const voice = this.selectVoice(resolvedDialect, preferences.voice);
+      // Always use Saudi voice for this clinic — dialect detection is ASR-only
+      const voice = this.selectVoice('saudi', preferences.voice);
       const ttsResult = await this.ttsService.synthesize(
         response,
         input.callSid,
