@@ -490,7 +490,7 @@ async def chat(req: ChatRequest):
 
         def _next_step(slots: dict) -> str:
             if _is_missing(slots, "specialty"):
-                return "اسألي: «وش لي عندنا اليوم؟ كشف ولا متابعة؟»"
+                return "اسألي فقط: «وش التخصص اللي تبيه؟ — مثلاً جلدية، طب عام، أسنان، أطفال، وغيرها»"
             spec = slots.get("specialty", "")
             if _is_missing(slots, "doctor_name"):
                 dr = _DR_SCHEDULE.get(spec, "")
