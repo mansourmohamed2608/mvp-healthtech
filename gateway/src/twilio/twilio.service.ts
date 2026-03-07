@@ -53,7 +53,7 @@ export class TwilioService {
   generateStreamTwiML(streamUrl: string, callSid: string): string {
     const response = new twilio.twiml.VoiceResponse();
 
-    // Say a greeting
+    // Say a greeting before handing off to our stream
     response.say(
       {
         voice: 'Polly.Zeina',
@@ -62,16 +62,17 @@ export class TwilioService {
       'مرحبا بك في النظام الصحي',
     );
 
-    // Start media streaming — pass HMAC auth via Custom Parameters (NOT query string)
-    const start = response.start();
+    // <Connect><Stream> creates a BIDIRECTIONAL media stream so audio we send
+    // back through the WebSocket is actually played to the caller.
+    // (The old <Start><Stream> was one-directional and silently ignored our TTS.)
+    const connect = response.connect();
     const { sig, ts } = this.generateStreamAuth(callSid);
-    const stream = start.stream({ url: streamUrl });
+    const stream = connect.stream({ url: streamUrl });
     stream.parameter({ name: 'callSid', value: callSid });
     stream.parameter({ name: 'sig', value: sig });
     stream.parameter({ name: 'ts', value: ts.toString() });
 
-    // Pause to keep the stream open (10 minutes = 600 seconds)
-    response.pause({ length: 600 });
+    // No <Pause> needed — <Connect> blocks until the stream WebSocket closes.
 
     return response.toString();
   }

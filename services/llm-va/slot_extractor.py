@@ -11,17 +11,33 @@ DOCTOR_RE = re.compile(r"(?:دكتور|د\.|د\s)[\s\.:]*([\w\u0600-\u06FF]+)")
 # Name: "اسمي X" / "أنا X" / "اسمي X Y"
 NAME_RE = re.compile(r"(?:اسمي|أنا|انا|اسمى)\s+([\u0600-\u06FF][\u0600-\u06FF\s]{1,30}?)(?:\s*$|\s*[،,.])")
 
-# Arabic word-digits to integer map (for phone numbers spoken as words)
+# Arabic word-digits to integer map (for phone numbers spoken as words).
+# Both feminine (عشرة) and masculine (عشر) forms are included, as Arabic
+# speakers use either depending on grammatical context.
 ARABIC_DIGIT_MAP = {
-    "صفر": "0", "زيرو": "0", "واحد": "1", "اتنين": "2", "اثنين": "2",
-    "تلاتة": "3", "ثلاثة": "3", "أربعة": "4", "اربعة": "4", "خمسة": "5",
-    "ستة": "6", "سبعة": "7", "تمانية": "8", "ثمانية": "8", "تسعة": "9",
-    "عشرة": "10", "عشره": "10",
+    "صفر": "0", "زيرو": "0",
+    "واحد": "1", "وحده": "1",
+    "اتنين": "2", "اثنين": "2", "تنين": "2", "اثنان": "2", "اثنتين": "2",
+    "تلاتة": "3", "ثلاثة": "3", "تلاتا": "3", "ثلاث": "3",
+    "أربعة": "4", "اربعة": "4", "أربع": "4", "اربع": "4",
+    "خمسة": "5", "خمس": "5",
+    "ستة": "6", "ست": "6",
+    "سبعة": "7", "سبع": "7",
+    "تمانية": "8", "ثمانية": "8", "تمان": "8", "ثماني": "8", "ثمان": "8",
+    "تسعة": "9", "تسع": "9",
+    "عشرة": "10", "عشره": "10", "عشر": "10",
 }
 
 def _spoken_to_digits(text: str) -> str:
-    """Convert spoken Arabic digit-words to numeric digits (e.g. 'زيرو عشرة' → '010')."""
+    """Convert spoken Arabic digit-words to numeric digits (e.g. 'زيرو عشر' → '010').
+
+    Also strips the Arabic conjunction 'و' (and) when it appears directly
+    before a digit word — e.g. 'وتسع' → 'تسع' → '9'.
+    """
     result = text
+    # Strip leading Arabic conjunction 'و' glued to a digit word (e.g. 'وتسع' → ' تسع')
+    for word in list(ARABIC_DIGIT_MAP.keys()):
+        result = result.replace('و' + word, ' ' + word)
     for word, digit in ARABIC_DIGIT_MAP.items():
         result = result.replace(word, digit)
     # After replacement, '10' in a phone context means the digit sequence '1','0' — keep as-is,

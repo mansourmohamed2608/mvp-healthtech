@@ -69,6 +69,8 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly rateLimit = new Map<string, { count: number; ts: number }>(); // per-callSid per second
   private readonly streamSids = new Map<string, string>(); // callSid -> streamSid
   private readonly activeGauge = MetricsController.getActiveConversations();
+  /** Tracks calls whose pipeline (ASR→LLM→TTS) is currently running. */
+  private readonly processingCalls = new Set<string>();
 
   constructor(
     private readonly conversationService: ConversationService,
@@ -281,15 +283,30 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     buffer.push(audioChunk);
     this.audioBuffers.set(callSid, buffer);
 
-    // Process audio every ~3s (24000 bytes at 8kHz mulaw) so Whisper has
-    // enough speech for full sentences.
+    // Accumulate ~6s of speech (48000 bytes at 8kHz mulaw) before triggering
+    // the pipeline. If the pipeline is already running (LLM takes 15-20s on CPU),
+    // keep accumulating so the caller can finish their full phone number without
+    // having audio dropped by backpressure. Cap at 192000 bytes (~24s) as a
+    // safety valve against unbounded growth on very long pauses.
+    const TRIGGER_BYTES = 48000;
+    const MAX_BUFFER_BYTES = 192000;
     const totalBytes = buffer.reduce((sum, chunk) => sum + chunk.length, 0);
 
-    if (totalBytes >= 24000) {
-      // ~3s of audio
-      const combinedAudio = Buffer.concat(buffer);
+    if (totalBytes >= TRIGGER_BYTES) {
+      if (this.processingCalls.has(callSid)) {
+        // Pipeline is busy — keep accumulating up to the safety cap.
+        if (totalBytes >= MAX_BUFFER_BYTES) {
+          // Safety valve: clear the oldest audio to reclaim memory.
+          // This audio will be dropped, but it means the user has been
+          // speaking for >24s with no response, which shouldn't happen.
+          this.audioBuffers.set(callSid, []);
+          this.logger.warn(`Buffer overflow for ${callSid}: dropped ${totalBytes} bytes`);
+        }
+        return;
+      }
 
-      // Clear buffer
+      // Pipeline is free — trigger processing.
+      const combinedAudio = Buffer.concat(buffer);
       this.audioBuffers.set(callSid, []);
 
       try {
@@ -329,6 +346,7 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
     isFinal: boolean,
   ) {
     const user = this.streamUsers.get(callSid);
+    this.processingCalls.add(callSid);
     try {
       // Convert mulaw to base64 for ASR service
       const base64Audio = audioData.toString('base64');
@@ -366,6 +384,8 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
         callSid,
         message: 'ASR unavailable',
       });
+    } finally {
+      this.processingCalls.delete(callSid);
     }
   }
 
