@@ -187,9 +187,7 @@ services:
       - INTERNAL_SECRET=${INTERNAL_SECRET}
       - TTS_ENGINE=xtts
       - TTS_MODEL_DIR=/app/models
-      - EDGE_TTS_ALLOWED=true
-      - TTS_EDGE_VOICE=ar-AE-FatimaNeural
-      - TTS_VOICE=ar-AE-FatimaNeural
+      - EDGE_TTS_ALLOWED=false
     volumes:
       - tts_models:/app/models
     restart: unless-stopped
