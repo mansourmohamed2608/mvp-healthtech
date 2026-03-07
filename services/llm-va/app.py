@@ -16,7 +16,7 @@ from pathlib import Path
 import asyncio
 import httpx
 
-from prompt_builder import build_va_prompt
+from prompt_builder import build_va_prompt, build_slot_summary
 from slot_extractor import extract_slots
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -393,19 +393,48 @@ async def chat(req: ChatRequest):
         extracted_slots = extract_slots(req.message, current_slots)
         rag_context = await fetch_rag_context(req.message, req.tenantId)
         system_prompt = load_system_prompt(dialect)
-        prompt = build_va_prompt(
-            system_prompt=system_prompt,
-            history=req.history or [],
-            slots=extracted_slots,
-            user_message=req.message,
-            dialect=dialect,
-            rag_context=rag_context,
+
+        # Build the system message: base prompt + dialect hint + slot state
+        slot_block = build_slot_summary(extracted_slots)
+        if dialect == "saudi":
+            dialect_hint = (
+                "استخدمي لهجة سعودية محكية دافئة فقط (خليجية سعودية بسيطة). ممنوع الفصحى. "
+                "أمثلة: \"هلا والله، يسعدنا نخدمك!\"، \"وش اسمك الكريم؟\"، \"تفضل، رقم جوالك؟\"."
+            )
+        elif dialect == "egypt":
+            dialect_hint = (
+                "استخدمي لهجة مصرية عامية دافئة فقط. ممنوع الفصحى. "
+                "أمثلة: \"أهلاً وسهلاً بيك!\"، \"ممكن نعرف اسمك الكريم؟\"."
+            )
+        else:
+            dialect_hint = ""
+        full_system = system_prompt.strip()
+        if dialect_hint:
+            full_system += "\n\n" + dialect_hint
+        full_system += "\n\nحالة الحقول:\n" + (slot_block or "لا توجد حقول بعد.")
+        history_turns = req.history or []
+        cont_instruction = (
+            "واصلي بصفتك ليان. استهدفي خانة ناقصة واحدة فقط في كل رد. "
+            "اجعلي الرد ٢-٣ جمل طبيعية وانتهي بسؤال واضح ينتهي بـ «؟». "
+            "لا تكرري سؤالاً عن خانة ذُكرت في «معلومات متوفرة»."
         )
+        if history_turns:
+            cont_instruction += " لا تبدأي الرد بتحية أو تقديم نفسك لأن المحادثة قائمة بالفعل."
+        full_system += "\n\nالتعليمات: " + cont_instruction
+
+        # Build messages list using proper Qwen chat template
+        messages: list[dict] = [{"role": "system", "content": full_system}]
+        for turn in history_turns[-6:]:
+            r = turn.role if hasattr(turn, "role") else turn.get("role", "")
+            c = turn.content if hasattr(turn, "content") else turn.get("content", "")
+            if r in ("user", "assistant"):
+                messages.append({"role": r, "content": c})
+        messages.append({"role": "user", "content": req.message})
 
         reply = _canned_reply(dialect, extracted_slots)
         if _MODEL_AVAILABLE and _MODEL and _TOKENIZER:
             try:
-                raw = _generate_from_prompt(prompt, max_new_tokens=60, temperature=0.25)
+                raw = _generate_from_messages(messages, max_new_tokens=120, temperature=0.25)
                 reply = _strip_assistant_prefix(raw)
             except Exception as e:
                 import logging

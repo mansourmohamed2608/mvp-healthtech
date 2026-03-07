@@ -466,8 +466,10 @@ export class ConversationService {
         `Transcribed (${input.callSid}): ${transcript.length} chars`,
       );
 
-      // Save user message to conversation
-      await this.appendMessage(input.callSid, 'user', transcript);
+      // NOTE: user message is appended AFTER the LLM call (below) so that
+      // the history passed to the LLM does not already contain the current
+      // turn (which would make it appear twice — once in history, once in
+      // the transcript field).
 
       const detectedDialect = this.detectDialect(transcript);
       const resolvedDialect =
@@ -555,7 +557,8 @@ export class ConversationService {
         );
       }
 
-      // Save assistant message to conversation
+      // Save user then assistant message (user first, then assistant, in order)
+      await this.appendMessage(input.callSid, 'user', transcript);
       await this.appendMessage(input.callSid, 'assistant', response);
 
       // 3. Synthesize voice response using TTS
