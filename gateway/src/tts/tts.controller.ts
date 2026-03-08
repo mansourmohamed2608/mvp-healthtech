@@ -1,5 +1,6 @@
 // gateway/src/tts/tts.controller.ts
 import { Controller, Post, Body, Logger, UseGuards, Req } from '@nestjs/common';
+import { IsString, IsOptional } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { TtsService } from './tts.service';
@@ -8,7 +9,11 @@ import { Request } from 'express';
 import { MetricsController } from '../metrics/metrics.controller';
 
 class SynthesizeDto {
+  @IsString()
   text: string;
+
+  @IsOptional()
+  @IsString()
   voice?: string;
 }
 
