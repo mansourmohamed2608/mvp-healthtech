@@ -96,15 +96,16 @@ const VoiceAgentClean = () => {
   // How long the green listening bar stays per step (ms)
   const LISTEN_MS = 3500;
 
-  // G.711 μ-law → 16-bit PCM decoder (no external lib)
+  // G.711 μ-law → 16-bit PCM decoder — matches Python audioop.ulaw2lin exactly
   function mulawDecode(byte: number): number {
+    // Lookup table matches CPython audioop exp_lut[8]
+    const expLut = [0, 132, 396, 924, 1980, 4092, 8316, 16764];
     byte = ~byte & 0xff;
-    const sign = byte & 0x80;
-    const exp  = (byte >> 4) & 0x07;
-    const mant = byte & 0x0f;
-    let sample = ((mant << 3) + 33) << exp;
-    sample -= 33;
-    return sign ? -sample : sample;
+    const sign  = byte & 0x80;
+    const exp   = (byte >> 4) & 0x07;
+    const mant  = byte & 0x0f;
+    const sample = expLut[exp] + (mant << (exp + 3));
+    return sign ? sample : -sample;
   }
 
   const playMulawAudio = useCallback(async (base64: string, sampleRate = 8000) => {

@@ -267,8 +267,9 @@ def _xtts_generate(text: str, kind: str, temperature: float) -> bytes:
     model = state["model"]
     gpt_cond_latent = state["latents"]
     speaker_embedding = state["embedding"]
+    # Raise so the caller's except clause triggers the gTTS/edge-tts fallback chain.
     if model is None or gpt_cond_latent is None or speaker_embedding is None:
-        return _silence_mulaw()
+        raise RuntimeError(f"XTTS {kind!r} model not loaded — triggering fallback")
     out = model.inference(
         text=text,
         language="ar",
