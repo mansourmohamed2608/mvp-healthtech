@@ -1,19 +1,28 @@
+// gateway/src/pages/ClinicalNotes.tsx — Full Redesign
+// 3-panel workflow: Setup | Audio + Transcript | SOAP Editor
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  IconMicrophone, 
-  IconPlayerStop, 
-  IconUpload, 
+import {
+  IconMicrophone,
+  IconPlayerStop,
+  IconUpload,
   IconFileText,
   IconCheck,
   IconX,
   IconChartBar,
   IconClock,
   IconFileDownload,
-  IconLoader2
+  IconLoader2,
+  IconChevronDown,
+  IconChevronUp,
+  IconUser,
+  IconPlus,
+  IconStethoscope,
 } from '@tabler/icons-react';
 import api from '../utils/api';
 import { useAuthStore } from '@store/authStore';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface AudioRecording {
   id: string;
@@ -25,12 +34,16 @@ interface AudioRecording {
   soapNote?: string;
   soapJson?: any;
   noteId?: string;
-  templateId?: string;
   error?: string;
   reviewStartTime?: number;
-  editDistance?: number;
   dialect?: string;
-  autoDetected?: boolean;
+}
+
+interface SoapSections {
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
 }
 
 interface MetricsDashboard {
@@ -42,76 +55,194 @@ interface MetricsDashboard {
   };
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const getSupportedMimeType = (): string => {
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+  ];
+  for (const type of candidates) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type))
+      return type;
+  }
+  return '';
+};
+
+const fileToBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      resolve((String(reader.result || '')).split(',')[1] || '');
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+
+const formatTime = (s: number) =>
+  `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+
+const mapDialect = (d: string) => {
+  if (d === 'egyptian') return 'egypt';
+  if (d === 'levantine') return 'levant';
+  if (d === 'gulf') return 'gulf';
+  if (d === 'msa') return 'msa';
+  return undefined;
+};
+
+const buildSoapText = (s: { subjective?: any; objective?: any; assessment?: any; plan?: any }) =>
+  [
+    `Subjective:\n${s.subjective || ''}`,
+    `Objective:\n${s.objective || ''}`,
+    `Assessment:\n${s.assessment || ''}`,
+    `Plan:\n${s.plan || ''}`,
+  ].join('\n\n');
+
+const parseSoapSections = (soapJson: any, soapNote: string): SoapSections => {
+  if (soapJson) {
+    const src = soapJson.soap_note || soapJson;
+    return {
+      subjective: src.subjective || src.S || '',
+      objective: src.objective || src.O || '',
+      assessment: src.assessment || src.A || '',
+      plan: src.plan || src.P || '',
+    };
+  }
+  const text = soapNote || '';
+  const getSection = (label: string, next: string) => {
+    const start = text.indexOf(`${label}:\n`);
+    if (start === -1) return '';
+    const body = text.slice(start + label.length + 2);
+    const end = next ? body.indexOf(`${next}:\n`) : body.length;
+    return (end === -1 ? body : body.slice(0, end)).trim();
+  };
+  return {
+    subjective: getSection('Subjective', 'Objective'),
+    objective: getSection('Objective', 'Assessment'),
+    assessment: getSection('Assessment', 'Plan'),
+    plan: getSection('Plan', ''),
+  };
+};
+
+// ─── SOAP Section Config ──────────────────────────────────────────────────────
+
+const SOAP_SECTIONS = [
+  {
+    key: 'subjective' as const,
+    label: 'S — ذاتي',
+    desc: 'شكوى المريض وأعراضه',
+    border: 'border-blue-500/40',
+    bg: 'bg-blue-500/[0.07]',
+    header: 'bg-blue-500/20',
+    ring: 'focus:ring-blue-500',
+    dot: 'bg-blue-400',
+    badge: 'text-blue-300',
+    placeholder: 'شكوى المريض الرئيسية، بداية الأعراض ومدتها...',
+  },
+  {
+    key: 'objective' as const,
+    label: 'O — موضوعي',
+    desc: 'الفحص والعلامات الحيوية',
+    border: 'border-emerald-500/40',
+    bg: 'bg-emerald-500/[0.07]',
+    header: 'bg-emerald-500/20',
+    ring: 'focus:ring-emerald-500',
+    dot: 'bg-emerald-400',
+    badge: 'text-emerald-300',
+    placeholder: 'الفحص السريري، العلامات الحيوية، نتائج الفحوصات...',
+  },
+  {
+    key: 'assessment' as const,
+    label: 'A — تقييم',
+    desc: 'التشخيص والتفسير',
+    border: 'border-amber-500/40',
+    bg: 'bg-amber-500/[0.07]',
+    header: 'bg-amber-500/20',
+    ring: 'focus:ring-amber-500',
+    dot: 'bg-amber-400',
+    badge: 'text-amber-300',
+    placeholder: 'التشخيص الرئيسي، التشخيص التفريقي...',
+  },
+  {
+    key: 'plan' as const,
+    label: 'P — خطة',
+    desc: 'العلاج والمتابعة',
+    border: 'border-rose-500/40',
+    bg: 'bg-rose-500/[0.07]',
+    header: 'bg-rose-500/20',
+    ring: 'focus:ring-rose-500',
+    dot: 'bg-rose-400',
+    badge: 'text-rose-300',
+    placeholder: 'الأدوية الموصوفة، الإحالات، موعد المتابعة...',
+  },
+] as const;
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
 export default function ClinicalNotes() {
   const { userId, token } = useAuthStore();
+
+  // Visit setup
+  const [patients, setPatients] = useState<Array<{ id: string; displayName?: string; externalId?: string }>>([]);
+  const [patientId, setPatientId] = useState('');
+  const [patientName, setPatientName] = useState('');
+  const [practitionerId, setPractitionerId] = useState('');
+  const [providerName, setProviderName] = useState('');
+  const [dateOfVisit, setDateOfVisit] = useState(() => new Date().toISOString().split('T')[0]);
+  const [templates, setTemplates] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [selectedDialect, setSelectedDialect] = useState('auto');
+
+  // Add patient
+  const [showAddPatient, setShowAddPatient] = useState(false);
+  const [newPatientName, setNewPatientName] = useState('');
+  const [newPatientExternalId, setNewPatientExternalId] = useState('');
+  const [patientStatus, setPatientStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [patientError, setPatientError] = useState('');
+
+  // Recordings
   const [recordings, setRecordings] = useState<AudioRecording[]>([]);
+  const [selectedRecording, setSelectedRecording] = useState<AudioRecording | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [selectedRecording, setSelectedRecording] = useState<AudioRecording | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
+
+  // SOAP editing
+  const [soapSections, setSoapSections] = useState<SoapSections>({
+    subjective: '', objective: '', assessment: '', plan: '',
+  });
+  const [sectionRecording, setSectionRecording] = useState<keyof SoapSections | null>(null);
+  const [sectionRecordingTime, setSectionRecordingTime] = useState(0);
+  const [sectionUpdating, setSectionUpdating] = useState<keyof SoapSections | null>(null);
+
+  // Patient files
+  const [showPatientFiles, setShowPatientFiles] = useState(false);
+  const [patientDocs, setPatientDocs] = useState<any[]>([]);
+
+  // Metrics
   const [showMetrics, setShowMetrics] = useState(false);
-  const [editedSoapNote, setEditedSoapNote] = useState<string>('');
-  const [selectedDialect, setSelectedDialect] = useState<string>('auto');
   const [metrics, setMetrics] = useState<MetricsDashboard | null>(null);
-  const [patientId, setPatientId] = useState<string>('');
-  const [practitionerId, setPractitionerId] = useState<string>('');
-  const [patientName, setPatientName] = useState<string>('');
-  const [providerName, setProviderName] = useState<string>('');
-  const [dateOfVisit, setDateOfVisit] = useState<string>('');
-  const [patients, setPatients] = useState<Array<{ id: string; displayName?: string; externalId?: string }>>([]);
-  const [patientStatus, setPatientStatus] = useState<'idle' | 'loading' | 'error'>('idle');
-  const [patientError, setPatientError] = useState<string>('');
-  const [newPatientName, setNewPatientName] = useState<string>('');
-  const [newPatientExternalId, setNewPatientExternalId] = useState<string>('');
-  const [patientDocs, setPatientDocs] = useState<Array<any>>([]);
-  const [docTitle, setDocTitle] = useState<string>('');
-  const [docText, setDocText] = useState<string>('');
-  const [docFileName, setDocFileName] = useState<string>('');
-  const [docFileType, setDocFileType] = useState<string>('');
-  const [docFileBase64, setDocFileBase64] = useState<string>('');
-  const [docStatus, setDocStatus] = useState<'idle' | 'processing' | 'done' | 'error'>('idle');
-  const [docError, setDocError] = useState<string>('');
-  const [patientContext, setPatientContext] = useState<any>(null);
-  const [patientRagItems, setPatientRagItems] = useState<Array<any>>([]);
-  const [ragItemsStatus, setRagItemsStatus] = useState<'idle' | 'loading' | 'error'>('idle');
-  const [ragItemsError, setRagItemsError] = useState<string>('');
-  const [summarizeDoc, setSummarizeDoc] = useState(true);
-  const [templates, setTemplates] = useState<Array<{ id: string; name: string }>>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
-  const [templateName, setTemplateName] = useState<string>('');
-  const [templateError, setTemplateError] = useState<string>('');
-  const [fieldOptions, setFieldOptions] = useState<Array<{ path: string; valueType: 'string' | 'list' }>>([]);
-  const [selectedFieldPath, setSelectedFieldPath] = useState<string>('');
-  const [fieldUpdateMode, setFieldUpdateMode] = useState<'append' | 'replace'>('append');
-  const [fieldUpdateStatus, setFieldUpdateStatus] = useState<string>('');
-  const [fieldUpdateError, setFieldUpdateError] = useState<string>('');
-  const [isFieldRecording, setIsFieldRecording] = useState(false);
-  const [fieldRecordingTime, setFieldRecordingTime] = useState(0);
-  const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({});
-  const [fieldUpdateText, setFieldUpdateText] = useState<string>('');
-  const [ragTitle, setRagTitle] = useState<string>('');
-  const [ragText, setRagText] = useState<string>('');
-  const [ragStatus, setRagStatus] = useState<string>('');
-  const [ragError, setRagError] = useState<string>('');
-  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
 
+  // UI
+  const [isSaving, setIsSaving] = useState(false);
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const templateInputRef = useRef<HTMLInputElement>(null);
-  const docInputRef = useRef<HTMLInputElement>(null);
-  const fieldRecorderRef = useRef<MediaRecorder | null>(null);
-  const fieldAudioChunksRef = useRef<Blob[]>([]);
-  const fieldTimerRef = useRef<number | null>(null);
+  const sectionRecorderRef = useRef<MediaRecorder | null>(null);
+  const sectionAudioChunksRef = useRef<Blob[]>([]);
+  const sectionTimerRef = useRef<number | null>(null);
   const recordingDurationRef = useRef(0);
 
+  // ─── Effects ─────────────────────────────────────────────────────────────
+
   useEffect(() => {
-    if (userId && !practitionerId) {
-      setPractitionerId(userId);
-    }
-  }, [userId, practitionerId]);
+    if (userId) setPractitionerId(userId);
+  }, [userId]);
 
   useEffect(() => {
     if (token) {
@@ -121,131 +252,37 @@ export default function ClinicalNotes() {
   }, [token]);
 
   useEffect(() => {
-    if (patientId) {
-      loadPatientDocuments(patientId);
-      loadPatientContext(patientId);
-      loadPatientRagItems(patientId);
+    if (selectedRecording?.status === 'completed') {
+      setSoapSections(parseSoapSections(
+        selectedRecording.soapJson,
+        selectedRecording.soapNote || '',
+      ));
     } else {
-      setPatientDocs([]);
-      setPatientContext(null);
-      setPatientRagItems([]);
+      setSoapSections({ subjective: '', objective: '', assessment: '', plan: '' });
     }
-  }, [patientId]);
+  }, [selectedRecording?.id, selectedRecording?.status]);
 
   useEffect(() => {
-    setEditedSoapNote('');
-    setFieldUpdateStatus('');
-    setFieldUpdateError('');
-    setFieldUpdateText('');
-    if (selectedRecording?.soapJson) {
-      const options = collectFieldOptions(selectedRecording.soapJson);
-      setFieldOptions(options);
-      if (!selectedFieldPath || !options.find((opt) => opt.path === selectedFieldPath)) {
-        setSelectedFieldPath(options[0]?.path || '');
-      }
-    } else {
-      setFieldOptions([]);
-      setSelectedFieldPath('');
-    }
-  }, [selectedRecording?.id, selectedRecording?.soapJson]);
+    if (patientId) loadPatientDocuments(patientId);
+    else setPatientDocs([]);
+  }, [patientId]);
 
-  // Calculate edit distance (Levenshtein distance approximation)
-  const calculateEditDistance = (original: string, edited: string): number => {
-    return Math.abs(original.length - edited.length) + 
-      (original !== edited ? Math.min(original.length, edited.length) / 10 : 0);
-  };
-
-  const buildSoapNoteText = (note: {
-    subjective?: string;
-    objective?: string;
-    assessment?: string;
-    plan?: string;
-  }) => [
-    `Subjective:\n${note.subjective || ''}`,
-    `Objective:\n${note.objective || ''}`,
-    `Assessment:\n${note.assessment || ''}`,
-    `Plan:\n${note.plan || ''}`,
-  ].join('\n\n');
-
-  const mapDialect = (dialect: string) => {
-    if (dialect === 'egyptian') return 'egypt';
-    if (dialect === 'levantine') return 'levant';
-    if (dialect === 'gulf') return 'gulf';
-    if (dialect === 'msa') return 'msa';
-    return undefined;
-  };
-
-  // Returns the best supported audio MIME type for the current browser
-  const getSupportedMimeType = (): string => {
-    const candidates = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/ogg;codecs=opus',
-      'audio/mp4',
-    ];
-    for (const type of candidates) {
-      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) {
-        return type;
-      }
-    }
-    return '';
-  };
+  // ─── Toast ────────────────────────────────────────────────────────────────
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
     setTimeout(() => setToast(null), 4000);
   };
 
-  // Record review metrics
-  const recordReviewMetrics = async (
-    recording: AudioRecording,
-    accepted: boolean,
-    editedText: string
-  ) => {
-    const reviewEndTime = Date.now();
-    const reviewStartTime = recording.reviewStartTime || reviewEndTime;
-    const timeToReview = Math.round((reviewEndTime - reviewStartTime) / 1000); // seconds
-    const editDistance = calculateEditDistance(recording.soapNote || '', editedText);
-
-    try {
-      await api.recordClinicalReview({
-        recordingId: recording.id,
-        accepted,
-        editDistance,
-        timeToReview,
-        clinicianId: practitionerId || 'unknown',
-      });
-      loadMetrics();
-    } catch (err) {
-      console.error('Failed to record metrics:', err);
-    }
-  };
-
-  // Load metrics dashboard
-  const loadMetrics = async () => {
-    try {
-      setMetricsLoading(true);
-      const data = await api.getClinicalMetricsDashboard();
-      setMetrics(data);
-    } catch (err) {
-      console.error('Failed to load metrics:', err);
-    } finally {
-      setMetricsLoading(false);
-    }
-  };
+  // ─── Load data ────────────────────────────────────────────────────────────
 
   const loadTemplates = async () => {
     try {
       const data = await api.listSoapTemplates();
       const list = data.templates || [];
       setTemplates(list);
-      if (!selectedTemplateId && list.length > 0) {
-        setSelectedTemplateId(list[0].id);
-      }
-    } catch (err) {
-      console.error('Failed to load templates:', err);
-      setTemplateError('تعذر تحميل القوالب');
-    }
+      if (list.length > 0 && !selectedTemplateId) setSelectedTemplateId(list[0].id);
+    } catch { /* silent */ }
   };
 
   const loadPatients = async () => {
@@ -254,44 +291,15 @@ export default function ClinicalNotes() {
       const data = await api.listPatients();
       const list = data.patients || [];
       setPatients(list);
-      if (!patientId && list.length > 0) {
+      if (list.length > 0) {
         setPatientId(list[0].id);
-        if (list[0].displayName) {
-          setPatientName(list[0].displayName);
-        }
+        if (list[0].displayName) setPatientName(list[0].displayName);
       }
       setPatientStatus('idle');
       setPatientError('');
-    } catch (err: any) {
-      console.error('Failed to load patients:', err);
+    } catch {
       setPatientStatus('error');
       setPatientError('تعذر تحميل قائمة المرضى');
-    }
-  };
-
-  const createPatient = async () => {
-    if (!newPatientName.trim()) {
-      setPatientError('يرجى إدخال اسم المريض');
-      return;
-    }
-    try {
-      setPatientStatus('loading');
-      const created = await api.createPatient({
-        displayName: newPatientName.trim(),
-        externalId: newPatientExternalId.trim() || undefined,
-      });
-      const updatedList = [{ id: created.id, displayName: created.displayName, externalId: created.externalId }, ...patients];
-      setPatients(updatedList);
-      setPatientId(created.id);
-      setPatientName(created.displayName || newPatientName.trim());
-      setNewPatientName('');
-      setNewPatientExternalId('');
-      setPatientStatus('idle');
-      setPatientError('');
-    } catch (err: any) {
-      console.error('Create patient failed:', err);
-      setPatientStatus('error');
-      setPatientError(err.message || 'فشل إنشاء المريض');
     }
   };
 
@@ -299,541 +307,120 @@ export default function ClinicalNotes() {
     try {
       const data = await api.listPatientDocuments(id);
       setPatientDocs(data.documents || []);
-    } catch (err) {
-      console.error('Failed to load patient documents:', err);
-      setPatientDocs([]);
+    } catch { setPatientDocs([]); }
+  };
+
+  const loadMetrics = async () => {
+    try {
+      setMetricsLoading(true);
+      const data = await api.getClinicalMetricsDashboard();
+      setMetrics(data);
+    } catch { /* silent */ } finally {
+      setMetricsLoading(false);
     }
   };
 
-  const loadPatientContext = async (id: string) => {
-    try {
-      const data = await api.getPatientContext(id);
-      setPatientContext(data);
-    } catch (err) {
-      console.error('Failed to load patient context:', err);
-      setPatientContext(null);
-    }
-  };
+  // ─── Patient ──────────────────────────────────────────────────────────────
 
-  const loadPatientRagItems = async (id: string) => {
+  const createPatient = async () => {
+    if (!newPatientName.trim()) { setPatientError('أدخل اسم المريض'); return; }
     try {
-      setRagItemsStatus('loading');
-      const data = await api.listPatientRagItems(id);
-      setPatientRagItems(data.items || []);
-      setRagItemsStatus('idle');
-      setRagItemsError('');
-    } catch (err) {
-      console.error('Failed to load patient RAG items:', err);
-      setPatientRagItems([]);
-      setRagItemsStatus('error');
-      setRagItemsError('تعذر تحميل سجل المريض');
-    }
-  };
-
-  const handleDocFile = async (file: File) => {
-    try {
-      setDocError('');
-      setDocStatus('idle');
-      setDocFileName(file.name);
-      setDocFileType(file.type || '');
-      const base64 = await fileToBase64(file);
-      setDocFileBase64(base64);
-      if (!docTitle) {
-        setDocTitle(file.name.replace(/\.[^.]+$/, ''));
-      }
-      if (file.type.startsWith('text/') || /\.(txt|csv|json)$/i.test(file.name)) {
-        const content = await fileToText(file);
-        setDocText(content);
-      } else {
-        setDocText('');
-      }
+      setPatientStatus('loading');
+      const created = await api.createPatient({
+        displayName: newPatientName.trim(),
+        externalId: newPatientExternalId.trim() || undefined,
+      });
+      setPatients((p) => [{ id: created.id, displayName: created.displayName, externalId: created.externalId }, ...p]);
+      setPatientId(created.id);
+      setPatientName(created.displayName || newPatientName.trim());
+      setNewPatientName('');
+      setNewPatientExternalId('');
+      setShowAddPatient(false);
+      setPatientStatus('idle');
+      setPatientError('');
     } catch (err: any) {
-      console.error('Doc file read failed:', err);
-      setDocError('تعذر قراءة الملف');
+      setPatientStatus('error');
+      setPatientError(err.message || 'فشل إنشاء المريض');
     }
   };
 
-  const uploadPatientDocument = async () => {
-    if (!patientId) {
-      setDocError('اختر المريض أولاً');
-      return;
-    }
-    const trimmedText = docText.trim();
-    const hasFile = Boolean(docFileBase64);
-    if (!trimmedText && !hasFile) {
-      setDocError('أدخل نص الوثيقة أو ارفع ملفاً');
-      return;
-    }
-    try {
-      setDocStatus('processing');
-      setDocError('');
-      const uploaded = await api.uploadPatientDocument(patientId, {
-        title: docTitle.trim() || undefined,
-        content: trimmedText || undefined,
-        contentBase64: hasFile ? docFileBase64 : undefined,
-        fileName: docFileName || undefined,
-        contentType: docFileType || (trimmedText ? 'text/plain' : undefined),
-        source: 'ui',
-        summarize: summarizeDoc,
-      });
-      setPatientDocs((prev) => [uploaded, ...prev]);
-      setDocTitle('');
-      setDocText('');
-      setDocFileName('');
-      setDocFileType('');
-      setDocFileBase64('');
-      setDocStatus('done');
-      await loadPatientContext(patientId);
-      await loadPatientRagItems(patientId);
-    } catch (err: any) {
-      console.error('Upload document failed:', err);
-      setDocStatus('error');
-      setDocError(err.message || 'فشل رفع الوثيقة');
-    }
-  };
+  // ─── Recording ────────────────────────────────────────────────────────────
 
-  const fileToText = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsText(file);
-    });
-
-  const fileToBase64 = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = String(reader.result || '');
-        const base64 = result.split(',')[1] || '';
-        resolve(base64);
-      };
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsDataURL(file);
-    });
-
-  const formatRagDate = (value: any) => {
-    if (!value) return '';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return '';
-    return parsed.toLocaleString('ar-EG');
-  };
-
-  const ragTypeLabel = (type: string) => {
-    switch (type) {
-      case 'soap_note':
-        return 'SOAP';
-      case 'transcript':
-        return 'تفريغ';
-      case 'doc_summary':
-        return 'ملخص وثيقة';
-      case 'document':
-        return 'وثيقة';
-      default:
-        return type || 'عنصر';
-    }
-  };
-
-  const truncateSnippet = (text: string, limit = 140) => {
-    if (!text) return '';
-    if (text.length <= limit) return text;
-    return `${text.slice(0, limit).trim()}...`;
-  };
-
-  const collectFieldOptions = (value: any, prefix = ''): Array<{ path: string; valueType: 'string' | 'list' }> => {
-    const results: Array<{ path: string; valueType: 'string' | 'list' }> = [];
-    if (typeof value === 'string') {
-      if (prefix) {
-        results.push({ path: prefix, valueType: 'string' });
-      }
-      return results;
-    }
-    if (Array.isArray(value)) {
-      const stringItems = value.filter((item) => typeof item === 'string');
-      if (stringItems.length === value.length) {
-        if (prefix) {
-          results.push({ path: prefix, valueType: 'list' });
-        }
-        return results;
-      }
-      value.forEach((item, index) => {
-        const nextPrefix = `${prefix}[${index}]`;
-        results.push(...collectFieldOptions(item, nextPrefix));
-      });
-      return results;
-    }
-    if (value && typeof value === 'object') {
-      Object.entries(value).forEach(([key, child]) => {
-        const nextPrefix = prefix ? `${prefix}.${key}` : key;
-        results.push(...collectFieldOptions(child, nextPrefix));
-      });
-    }
-    return results;
-  };
-
-  const toggleExpanded = (path: string) => {
-    setExpandedPaths((prev) => ({
-      ...prev,
-      [path]: !prev[path],
-    }));
-  };
-
-  const renderJsonTree = (value: any, path = '', depth = 0): JSX.Element[] => {
-    const nodes: JSX.Element[] = [];
-    const indent = Math.min(depth * 12, 48);
-    const selectablePaths = new Set(fieldOptions.map((opt) => opt.path));
-
-    const renderNode = (label: string, child: any, childPath: string) => {
-      const isArray = Array.isArray(child);
-      const isStringList = isArray && child.every((item) => typeof item === 'string');
-      const isLeaf = typeof child === 'string' || isStringList;
-      const isExpanded = expandedPaths[childPath];
-      const selectable = selectablePaths.has(childPath);
-      const preview = typeof child === 'string'
-        ? child.slice(0, 40)
-        : isStringList
-          ? `${child.length} عناصر`
-          : '';
-
-      nodes.push(
-        <button
-          key={childPath}
-          type="button"
-          onClick={() => {
-            if (isLeaf && selectable) {
-              setSelectedFieldPath(childPath);
-            } else {
-              toggleExpanded(childPath);
-            }
-          }}
-          className={`w-full text-right flex items-center justify-between gap-2 px-3 py-2 rounded-lg border ${
-            selectedFieldPath === childPath && selectable
-              ? 'border-purple-400 bg-purple-500/20'
-              : 'border-white/10 bg-white/5 hover:bg-white/10'
-          }`}
-          style={{ paddingRight: indent + 12 }}
-        >
-          <span className="text-sm text-purple-100">
-            {label}
-            {selectable && (
-              <span className="text-xs text-purple-300 ml-2">قابل للتحديث</span>
-            )}
-          </span>
-          <span className="text-xs text-purple-300">
-            {isLeaf ? preview || 'نص' : isExpanded ? '−' : '+'}
-          </span>
-        </button>
-      );
-
-      if (!isLeaf && isExpanded) {
-        if (isArray) {
-          child.forEach((item: any, index: number) => {
-            renderNode(`[${index}]`, item, `${childPath}[${index}]`);
-          });
-        } else if (child && typeof child === 'object') {
-          Object.entries(child).forEach(([key, val]) => {
-            renderNode(key, val, childPath ? `${childPath}.${key}` : key);
-          });
-        }
-      }
-    };
-
-    if (value && typeof value === 'object') {
-      Object.entries(value).forEach(([key, val]) => {
-        const childPath = path ? `${path}.${key}` : key;
-        renderNode(key, val, childPath);
-      });
-    }
-
-    return nodes;
-  };
-
-  const handleTemplateUpload = async (file: File) => {
-    try {
-      setTemplateError('');
-      const raw = await fileToText(file);
-      const parsed = JSON.parse(raw);
-      const name = templateName.trim() || file.name.replace(/\.[^.]+$/, '');
-      const result = await api.createSoapTemplate({ name, template: parsed });
-      setTemplateName('');
-      await loadTemplates();
-      setSelectedTemplateId(result.id);
-    } catch (err: any) {
-      console.error('Template upload failed:', err);
-      setTemplateError('قالب غير صالح أو فشل التحميل');
-    }
-  };
-
-  const submitRagNote = async () => {
-    if (!ragText.trim()) {
-      setRagError('يرجى إدخال نص المعرفة');
-      return;
-    }
-    try {
-      setRagError('');
-      setRagStatus('processing');
-      await api.addRagNote({
-        title: ragTitle.trim() || undefined,
-        text: ragText.trim(),
-        metadata: { source: 'ui', clinicianId: practitionerId || undefined },
-      });
-      setRagStatus('done');
-      setRagTitle('');
-      setRagText('');
-    } catch (err: any) {
-      console.error('RAG note failed:', err);
-      setRagStatus('error');
-      setRagError(err.message || 'فشل إضافة المعرفة');
-    }
-  };
-
-  // Start live recording
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const supportedMime = getSupportedMimeType();
-      const mediaRecorder = new MediaRecorder(stream, supportedMime ? { mimeType: supportedMime } : {});
-
-      mediaRecorderRef.current = mediaRecorder;
+      const mime = getSupportedMimeType();
+      const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+      mediaRecorderRef.current = mr;
       audioChunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const audioFile = new File(
-          [audioBlob],
-          `recording-${Date.now()}.webm`,
-          { type: 'audio/webm' }
-        );
-
-        const newRecording: AudioRecording = {
-          id: `rec-${Date.now()}`,
-          file: audioFile,
+      mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const file = new File([blob], `recording-${Date.now()}.webm`, { type: 'audio/webm' });
+        const rec: AudioRecording = {
+          id: `rec-${Date.now()}`, file,
           duration: recordingDurationRef.current,
-          timestamp: new Date(),
-          status: 'pending',
+          timestamp: new Date(), status: 'pending',
         };
-
-        setRecordings((prev) => [newRecording, ...prev]);
+        setRecordings((p) => [rec, ...p]);
         setRecordingTime(0);
         recordingDurationRef.current = 0;
-
-        // Auto-process the recording
-        await processRecording(newRecording);
+        await processRecording(rec);
       };
-
-      mediaRecorder.start();
+      mr.start();
       setIsRecording(true);
-
-      // Start timer
       timerRef.current = window.setInterval(() => {
-        setRecordingTime((prev) => {
-          recordingDurationRef.current = prev + 1;
-          return prev + 1;
-        });
+        setRecordingTime((p) => { recordingDurationRef.current = p + 1; return p + 1; });
       }, 1000);
-    } catch (error: any) {
-      console.error('Failed to start recording:', error);
-      alert(`خطأ: ${error.message}`);
+    } catch (err: any) {
+      showToast('error', `خطأ في التسجيل: ${err.message}`);
     }
   };
 
-  // Stop recording
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
       setIsRecording(false);
-
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     }
   };
 
-  const startFieldRecording = async () => {
-    if (!selectedRecording?.noteId) {
-      setFieldUpdateError('يرجى اختيار ملاحظة أولاً');
-      return;
-    }
-    if (!selectedFieldPath) {
-      setFieldUpdateError('يرجى اختيار الحقل المراد تحديثه');
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const supportedMime = getSupportedMimeType();
-      const mediaRecorder = new MediaRecorder(stream, supportedMime ? { mimeType: supportedMime } : {});
-
-      fieldRecorderRef.current = mediaRecorder;
-      fieldAudioChunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          fieldAudioChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(fieldAudioChunksRef.current, { type: 'audio/webm' });
-        const audioFile = new File([audioBlob], `field-${Date.now()}.webm`, { type: 'audio/webm' });
-        setFieldRecordingTime(0);
-        await processFieldRecording(audioFile);
-      };
-
-      mediaRecorder.start();
-      setIsFieldRecording(true);
-      setFieldUpdateStatus('');
-      setFieldUpdateError('');
-
-      fieldTimerRef.current = window.setInterval(() => {
-        setFieldRecordingTime((prev) => prev + 1);
-      }, 1000);
-    } catch (error: any) {
-      console.error('Failed to start field recording:', error);
-      setFieldUpdateError(error.message || 'فشل التسجيل');
-    }
-  };
-
-  const stopFieldRecording = () => {
-    if (fieldRecorderRef.current && isFieldRecording) {
-      fieldRecorderRef.current.stop();
-      fieldRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
-      setIsFieldRecording(false);
-      if (fieldTimerRef.current) {
-        clearInterval(fieldTimerRef.current);
-        fieldTimerRef.current = null;
-      }
-    }
-  };
-
-  const processFieldRecording = async (audioFile: File) => {
-    if (!selectedRecording?.noteId) return;
-    try {
-      setFieldUpdateStatus('processing');
-      const audioBase64 = await fileToBase64(audioFile);
-      const selectedMeta = fieldOptions.find((opt) => opt.path === selectedFieldPath);
-      const valueType = selectedMeta?.valueType;
-      const mappedDialect = mapDialect(selectedDialect);
-      const updated = await api.updateSOAPNoteField(selectedRecording.noteId, {
-        fieldPath: selectedFieldPath,
-        audio: audioBase64,
-        mode: fieldUpdateMode,
-        valueType,
-        dialect: mappedDialect,
-        language: 'ar',
-      });
-      const updatedNote = {
-        ...selectedRecording,
-        soapJson: updated.soapJson ?? updated.soap_json ?? selectedRecording.soapJson,
-        soapNote: buildSoapNoteText(updated),
-      };
-      setRecordings((prev) =>
-        prev.map((r) => (r.id === selectedRecording.id ? { ...r, ...updatedNote } : r))
-      );
-      setSelectedRecording(updatedNote);
-      setFieldUpdateStatus('done');
-    } catch (error: any) {
-      console.error('Field update error:', error);
-      setFieldUpdateStatus('error');
-      setFieldUpdateError(error.message || 'فشل تحديث الحقل');
-    }
-  };
-
-  const submitFieldTextUpdate = async () => {
-    if (!selectedRecording?.noteId) return;
-    if (!selectedFieldPath || !fieldUpdateText.trim()) {
-      setFieldUpdateError('يرجى كتابة النص المطلوب إضافته');
-      return;
-    }
-    try {
-      setFieldUpdateStatus('processing');
-      setFieldUpdateError('');
-      const selectedMeta = fieldOptions.find((opt) => opt.path === selectedFieldPath);
-      const valueType = selectedMeta?.valueType;
-      const updated = await api.updateSOAPNoteField(selectedRecording.noteId, {
-        fieldPath: selectedFieldPath,
-        transcript: fieldUpdateText.trim(),
-        mode: fieldUpdateMode,
-        valueType,
-      });
-      const updatedNote = {
-        ...selectedRecording,
-        soapJson: updated.soapJson ?? updated.soap_json ?? selectedRecording.soapJson,
-        soapNote: buildSoapNoteText(updated),
-      };
-      setRecordings((prev) =>
-        prev.map((r) => (r.id === selectedRecording.id ? { ...r, ...updatedNote } : r))
-      );
-      setSelectedRecording(updatedNote);
-      setFieldUpdateStatus('done');
-      setFieldUpdateText('');
-    } catch (error: any) {
-      console.error('Field update error:', error);
-      setFieldUpdateStatus('error');
-      setFieldUpdateError(error.message || 'فشل تحديث الحقل');
-    }
-  };
-
-  // Upload audio file
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) return;
-
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files?.length) return;
     for (const file of Array.from(files)) {
-      const newRecording: AudioRecording = {
-        id: `upload-${Date.now()}-${Math.random()}`,
-        file,
-        duration: 0,
-        timestamp: new Date(),
-        status: 'pending',
+      const rec: AudioRecording = {
+        id: `upload-${Date.now()}-${Math.random()}`, file,
+        duration: 0, timestamp: new Date(), status: 'pending',
       };
-
-      setRecordings((prev) => [newRecording, ...prev]);
-      await processRecording(newRecording);
+      setRecordings((p) => [rec, ...p]);
+      await processRecording(rec);
     }
-
-    // Reset input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Process recording (ASR + SOAP generation)
+  // ─── Process ──────────────────────────────────────────────────────────────
+
   const processRecording = async (recording: AudioRecording) => {
     try {
-      if (!patientId || !practitionerId) {
-        throw new Error('الرجاء إدخال معرف المريض والطبيب');
-      }
-      // Update status to processing
-      setRecordings((prev) =>
-        prev.map((r) =>
-          r.id === recording.id ? { ...r, status: 'processing' } : r
-        )
-      );
+      if (!patientId || !practitionerId) throw new Error('اختر المريض وتأكد من إدخال معرف الطبيب');
 
-      // Step 1: Transcribe audio
+      const setStatus = (patch: Partial<AudioRecording>) => {
+        setRecordings((p) => p.map((r) => r.id === recording.id ? { ...r, ...patch } : r));
+        setSelectedRecording((p) => p?.id === recording.id ? { ...(p ?? recording), ...patch } as AudioRecording : p);
+      };
+
+      setStatus({ status: 'processing' });
+      setSelectedRecording({ ...recording, status: 'processing' });
+
       const audioBase64 = await fileToBase64(recording.file);
-      const mappedDialect = mapDialect(selectedDialect);
-
-      const transcriptResponse: any = await api.transcribeAudio(
-        audioBase64,
-        recording.id,
-        mappedDialect,
-        'ar',
-        true,
-        false
+      const transcriptRes: any = await api.transcribeAudio(
+        audioBase64, recording.id, mapDialect(selectedDialect), 'ar', true, false,
       );
-      const transcript = transcriptResponse.text || '';
+      const transcript = transcriptRes.text || '';
 
-      // Step 2: Generate SOAP note
-      const soapResponse = await api.createSOAPNote({
+      const soapRes = await api.createSOAPNote({
         transcript,
         sessionId: recording.id,
         patientId,
@@ -844,526 +431,348 @@ export default function ClinicalNotes() {
         dateOfVisit,
       });
 
-      const soapNote = buildSoapNoteText(soapResponse);
-
-      // Update recording with results
-      setRecordings((prev) =>
-        prev.map((r) =>
-          r.id === recording.id
-            ? {
-                ...r,
-                status: 'completed',
-                transcript,
-                soapNote,
-                soapJson: (soapResponse as any).soapJson ?? (soapResponse as any).soap_json,
-                noteId: soapResponse.id,
-                templateId: (soapResponse as any).templateId ?? (soapResponse as any).template_id,
-                dialect: selectedDialect,
-                autoDetected: selectedDialect === 'auto',
-              }
-            : r
-        )
-      );
-    } catch (error: any) {
-      console.error('Processing error:', error);
-      setRecordings((prev) =>
-        prev.map((r) =>
-          r.id === recording.id
-            ? { ...r, status: 'error', error: error.message }
-            : r
-        )
-      );
+      const patch: Partial<AudioRecording> = {
+        status: 'completed',
+        transcript,
+        soapNote: buildSoapText(soapRes),
+        soapJson: (soapRes as any).soapJson ?? (soapRes as any).soap_json,
+        noteId: soapRes.id,
+        dialect: selectedDialect,
+      };
+      setStatus(patch);
+      setSelectedRecording({ ...recording, ...patch } as AudioRecording);
+    } catch (err: any) {
+      const patch = { status: 'error' as const, error: err.message };
+      setRecordings((p) => p.map((r) => r.id === recording.id ? { ...r, ...patch } : r));
+      if (selectedRecording?.id === recording.id || !selectedRecording) {
+        setSelectedRecording({ ...recording, ...patch });
+      }
     }
   };
 
-  // Format time (seconds to MM:SS)
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  // ─── Section voice update ─────────────────────────────────────────────────
+
+  const startSectionRecording = async (section: keyof SoapSections) => {
+    if (!selectedRecording?.noteId) { showToast('error', 'لا توجد ملاحظة نشطة'); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = getSupportedMimeType();
+      const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+      sectionRecorderRef.current = mr;
+      sectionAudioChunksRef.current = [];
+      mr.ondataavailable = (e) => { if (e.data.size > 0) sectionAudioChunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        const blob = new Blob(sectionAudioChunksRef.current, { type: 'audio/webm' });
+        const file = new File([blob], `section-${Date.now()}.webm`, { type: 'audio/webm' });
+        setSectionRecordingTime(0);
+        await updateSectionByVoice(section, file);
+      };
+      mr.start();
+      setSectionRecording(section);
+      setSectionRecordingTime(0);
+      sectionTimerRef.current = window.setInterval(
+        () => setSectionRecordingTime((p) => p + 1), 1000,
+      );
+    } catch (err: any) {
+      showToast('error', `خطأ في التسجيل: ${err.message}`);
+    }
   };
 
-  // Save SOAP note to EHR (Week 5 Day 29)
-  const saveToEHR = async () => {
-    if (!selectedRecording || !selectedRecording.noteId) return;
+  const stopSectionRecording = () => {
+    if (sectionRecorderRef.current && sectionRecording) {
+      sectionRecorderRef.current.stop();
+      sectionRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
+      setSectionRecording(null);
+      if (sectionTimerRef.current) {
+        clearInterval(sectionTimerRef.current);
+        sectionTimerRef.current = null;
+      }
+    }
+  };
 
+  const updateSectionByVoice = async (section: keyof SoapSections, audioFile: File) => {
+    if (!selectedRecording?.noteId) return;
+    try {
+      setSectionUpdating(section);
+      const audioBase64 = await fileToBase64(audioFile);
+      const updated = await api.updateSOAPNoteField(selectedRecording.noteId, {
+        fieldPath: section,
+        audio: audioBase64,
+        mode: 'replace',
+        valueType: 'string',
+        dialect: mapDialect(selectedDialect),
+        language: 'ar',
+      });
+      const newJson = updated.soapJson ?? updated.soap_json ?? selectedRecording.soapJson;
+      const newSections = parseSoapSections(newJson, '');
+      setSoapSections(newSections);
+      const fullUpdated = {
+        ...selectedRecording,
+        soapJson: newJson,
+        soapNote: buildSoapText(newSections),
+      };
+      setRecordings((p) => p.map((r) => r.id === selectedRecording.id ? fullUpdated : r));
+      setSelectedRecording(fullUpdated);
+      showToast('success', 'تم تحديث القسم');
+    } catch (err: any) {
+      showToast('error', `فشل التحديث: ${err.message}`);
+    } finally {
+      setSectionUpdating(null);
+    }
+  };
+
+  // ─── Save / Approve ───────────────────────────────────────────────────────
+
+  const saveToEHR = async () => {
+    if (!selectedRecording?.noteId) return;
     setIsSaving(true);
     try {
-      const finalText = editedSoapNote || selectedRecording.soapNote || '';
-      if (finalText && finalText !== selectedRecording.soapNote) {
-        const updated = await api.updateSOAPNoteSections(selectedRecording.noteId, {
-          soapText: finalText,
-        });
-        const updatedNote = {
-          ...selectedRecording,
-          soapNote: buildSoapNoteText(updated),
-          soapJson: updated.soapJson ?? updated.soap_json ?? selectedRecording.soapJson,
-        };
-        setRecordings((prev) =>
-          prev.map((r) => (r.id === selectedRecording.id ? { ...r, ...updatedNote } : r))
-        );
-        setSelectedRecording(updatedNote);
-        setEditedSoapNote('');
-      }
+      await api.updateSOAPNoteSections(selectedRecording.noteId, {
+        subjective: soapSections.subjective,
+        objective: soapSections.objective,
+        assessment: soapSections.assessment,
+        plan: soapSections.plan,
+      });
       await api.approveSOAPNote(selectedRecording.noteId);
-      showToast('success', 'تم الحفظ بنجاح!');
-    } catch (error: any) {
-      showToast('error', `خطأ في الحفظ: ${error.message}`);
+      const timeToReview = selectedRecording.reviewStartTime
+        ? Math.round((Date.now() - selectedRecording.reviewStartTime) / 1000)
+        : 0;
+      await api.recordClinicalReview({
+        recordingId: selectedRecording.id,
+        accepted: true,
+        editDistance: 0,
+        timeToReview,
+        clinicianId: practitionerId || 'unknown',
+      }).catch(() => {});
+      showToast('success', 'تم الحفظ وإرسال السجل الصحي ✓');
+    } catch (err: any) {
+      showToast('error', `خطأ في الحفظ: ${err.message}`);
     } finally {
       setIsSaving(false);
     }
   };
 
-  const statsCards = [
-    { label: 'إجمالي التسجيلات', value: recordings.length, color: 'from-purple-500 to-purple-600' },
-    { label: 'مكتمل', value: recordings.filter((r) => r.status === 'completed').length, color: 'from-green-500 to-green-600' },
-    { label: 'قيد المعالجة', value: recordings.filter((r) => r.status === 'processing').length, color: 'from-yellow-500 to-yellow-600' },
-    { label: 'خطأ', value: recordings.filter((r) => r.status === 'error').length, color: 'from-red-500 to-red-600' },
-  ];
+  const rejectNote = async () => {
+    if (!selectedRecording?.noteId) return;
+    try {
+      await api.rejectSOAPNote(selectedRecording.noteId);
+      await api.recordClinicalReview({
+        recordingId: selectedRecording.id,
+        accepted: false,
+        editDistance: 0,
+        timeToReview: 0,
+        clinicianId: practitionerId || 'unknown',
+      }).catch(() => {});
+      showToast('success', 'تم رفض الملاحظة');
+    } catch (err: any) {
+      showToast('error', err.message);
+    }
+  };
+
+  const downloadNote = () => {
+    const text = buildSoapText(soapSections);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `soap-${selectedRecording?.id || 'note'}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ─── Derived ──────────────────────────────────────────────────────────────
+
+  const hasNote = selectedRecording?.status === 'completed';
+  const canSave = hasNote && !!selectedRecording?.noteId;
+
+  // ─── JSX ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-8 font-['Tajawal',sans-serif]" dir="rtl">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 mb-8 shadow-2xl"
-        >
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-5xl font-bold bg-gradient-to-r from-purple-200 via-pink-200 to-purple-200 bg-clip-text text-transparent mb-3">
-                توثيق السجلات الطبية
-              </h1>
-              <p className="text-purple-200 text-lg">
-                نظام تحويل التسجيلات الصوتية إلى ملاحظات SOAP
-              </p>
+    <div
+      className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white font-['Tajawal',sans-serif]"
+      dir="rtl"
+    >
+      {/* ── Sticky Header ── */}
+      <div className="sticky top-0 z-30 border-b border-white/10 bg-slate-900/80 backdrop-blur-md">
+        <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-purple-500/20 flex items-center justify-center">
+              <IconStethoscope className="w-5 h-5 text-purple-400" />
             </div>
-            <button
-              onClick={() => {
-                setShowMetrics(!showMetrics);
-                if (!showMetrics && !metrics) loadMetrics();
-              }}
-              className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-xl font-bold transition-all shadow-lg hover:shadow-blue-500/50 hover:scale-105"
-            >
-              <IconChartBar className="w-5 h-5" />
-              {showMetrics ? 'إخفاء المقاييس' : 'عرض المقاييس'}
-            </button>
+            <div>
+              <h1 className="text-xl font-bold text-white leading-tight">توثيق الملاحظات السريرية</h1>
+              <p className="text-xs text-slate-500">تحويل التسجيلات الصوتية إلى ملاحظات SOAP</p>
+            </div>
           </div>
-        </motion.div>
+          <button
+            onClick={() => { setShowMetrics((p) => !p); if (!metrics) loadMetrics(); }}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium border transition-all ${
+              showMetrics
+                ? 'bg-purple-500/20 border-purple-500/40 text-purple-300'
+                : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white'
+            }`}
+          >
+            <IconChartBar className="w-4 h-4" />
+            مقاييس الجودة
+          </button>
+        </div>
 
-        {/* Metrics Dashboard */}
+        {/* Metrics row */}
         <AnimatePresence>
-          {showMetrics && metricsLoading && (
+          {showMetrics && (
             <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 mb-8 shadow-2xl flex items-center justify-center gap-4"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden border-t border-white/10"
             >
-              <IconLoader2 className="w-6 h-6 text-purple-300 animate-spin" />
-              <p className="text-purple-200">جارٍ تحميل المقاييس...</p>
-            </motion.div>
-          )}
-          {showMetrics && !metricsLoading && metrics && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 mb-8 shadow-2xl"
-            >
-              <h2 className="text-2xl font-bold text-white mb-6">لوحة المقاييس</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <div className="bg-gradient-to-br from-purple-500/20 to-purple-600/20 border border-purple-500/30 rounded-2xl p-6">
-                  <p className="text-purple-200 text-sm mb-2">إجمالي الملاحظات</p>
-                  <p className="text-4xl font-bold text-white">{metrics.overview.totalNotes}</p>
-                </div>
-                <div className="bg-gradient-to-br from-green-500/20 to-green-600/20 border border-green-500/30 rounded-2xl p-6">
-                  <p className="text-green-200 text-sm mb-2">معدل القبول</p>
-                  <p className="text-4xl font-bold text-white">{(metrics.overview.acceptanceRate * 100).toFixed(1)}%</p>
-                </div>
-                <div className="bg-gradient-to-br from-blue-500/20 to-blue-600/20 border border-blue-500/30 rounded-2xl p-6">
-                  <p className="text-blue-200 text-sm mb-2">متوسط التعديل</p>
-                  <p className="text-4xl font-bold text-white">{metrics.overview.avgEditDistance.toFixed(1)}</p>
-                </div>
-                <div className="bg-gradient-to-br from-yellow-500/20 to-yellow-600/20 border border-yellow-500/30 rounded-2xl p-6">
-                  <p className="text-yellow-200 text-sm mb-2">وقت المراجعة (ثانية)</p>
-                  <p className="text-4xl font-bold text-white">{metrics.overview.avgReviewTime.toFixed(0)}</p>
-                </div>
+              <div className="max-w-[1600px] mx-auto px-6 py-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+                {metricsLoading ? (
+                  <div className="col-span-4 flex items-center gap-2 text-slate-400 text-sm py-1">
+                    <IconLoader2 className="w-4 h-4 animate-spin" /> جارٍ التحميل...
+                  </div>
+                ) : metrics ? (
+                  <>
+                    <MetricCard label="إجمالي الملاحظات" value={metrics.overview.totalNotes} color="purple" />
+                    <MetricCard label="معدل القبول" value={`${(metrics.overview.acceptanceRate * 100).toFixed(1)}%`} color="emerald" />
+                    <MetricCard label="متوسط التعديل" value={metrics.overview.avgEditDistance.toFixed(1)} color="blue" />
+                    <MetricCard label="وقت المراجعة" value={`${metrics.overview.avgReviewTime.toFixed(0)}ث`} color="amber" />
+                  </>
+                ) : (
+                  <p className="col-span-4 text-sm text-slate-500 py-1">لا توجد مقاييس بعد</p>
+                )}
               </div>
             </motion.div>
           )}
         </AnimatePresence>
+      </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Left Panel - Recording Controls */}
-          <div className="lg:col-span-1 space-y-6">
-            {/* Note Settings */}
-            <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.05 }}
-              className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 shadow-2xl"
-            >
-              <h2 className="text-2xl font-bold text-white mb-6">إعدادات الملاحظة</h2>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-2">اختيار المريض</label>
+      {/* ── Main 3-Column Layout ── */}
+      <div className="max-w-[1600px] mx-auto px-4 py-5 grid grid-cols-1 lg:grid-cols-[290px_1fr_1fr] gap-4 items-start">
+
+        {/* ══════════════════════════════════════════════
+            LEFT PANEL — Visit Setup
+            ══════════════════════════════════════════════ */}
+        <div className="space-y-3">
+
+          {/* Visit Setup Card */}
+          <div className="bg-white/[0.04] border border-white/10 rounded-2xl overflow-hidden">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10">
+              <IconUser className="w-4 h-4 text-slate-400" />
+              <span className="text-sm font-semibold text-slate-200">إعداد الزيارة</span>
+            </div>
+            <div className="p-4 space-y-3">
+
+              {/* Patient selector */}
+              <FormField label="المريض">
+                <div className="flex gap-2">
                   <select
                     value={patientId}
                     onChange={(e) => {
-                      const nextId = e.target.value;
-                      setPatientId(nextId);
-                      const selected = patients.find((p) => p.id === nextId);
-                      if (selected?.displayName) {
-                        setPatientName(selected.displayName);
-                      }
+                      const id = e.target.value;
+                      setPatientId(id);
+                      const p = patients.find((pt) => pt.id === id);
+                      if (p?.displayName) setPatientName(p.displayName);
                     }}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    dir="rtl"
+                    className="inp flex-1"
                   >
-                    <option value="">-- اختر مريضاً --</option>
-                    {patients.map((patient) => (
-                      <option key={patient.id} value={patient.id}>
-                        {patient.displayName || patient.id}
-                      </option>
+                    <option value="">— اختر مريضاً —</option>
+                    {patients.map((p) => (
+                      <option key={p.id} value={p.id}>{p.displayName || p.id}</option>
                     ))}
                   </select>
-                  {patientStatus === 'loading' && (
-                    <p className="text-xs text-purple-200 mt-2">جارٍ تحميل المرضى...</p>
-                  )}
-                  {patientError && (
-                    <p className="text-xs text-red-300 mt-2">{patientError}</p>
-                  )}
-                  {patientId && (
-                    <p className="text-xs text-purple-200 mt-2" dir="ltr">
-                      ID: {patientId}
-                    </p>
-                  )}
-                </div>
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
-                  <p className="text-sm text-purple-200 mb-3">إضافة مريض جديد</p>
-                  <input
-                    value={newPatientName}
-                    onChange={(e) => setNewPatientName(e.target.value)}
-                    className="w-full px-4 py-3 mb-2 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    placeholder="اسم المريض"
-                  />
-                  <input
-                    value={newPatientExternalId}
-                    onChange={(e) => setNewPatientExternalId(e.target.value)}
-                    className="w-full px-4 py-3 mb-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    placeholder="رقم ملف خارجي (اختياري)"
-                    dir="ltr"
-                  />
                   <button
-                    onClick={createPatient}
-                    className="w-full px-4 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl font-bold shadow-lg hover:shadow-emerald-500/50 transition-all"
+                    onClick={() => setShowAddPatient((p) => !p)}
+                    title={showAddPatient ? 'إلغاء' : 'مريض جديد'}
+                    className="p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-slate-400 hover:text-white transition-all"
                   >
-                    إضافة المريض
+                    <IconPlus className="w-4 h-4" />
                   </button>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-2">معرف الطبيب</label>
-                  <input
-                    value={practitionerId}
-                    onChange={(e) => setPractitionerId(e.target.value)}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    placeholder="clinician-456"
-                    dir="ltr"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-2">اسم المريض</label>
-                  <input
-                    value={patientName}
-                    onChange={(e) => setPatientName(e.target.value)}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    placeholder="اسم المريض"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-2">اسم الطبيب</label>
-                  <input
-                    value={providerName}
-                    onChange={(e) => setProviderName(e.target.value)}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    placeholder="اسم الطبيب"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-2">تاريخ الزيارة</label>
-                  <input
-                    type="date"
-                    value={dateOfVisit}
-                    onChange={(e) => setDateOfVisit(e.target.value)}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    dir="ltr"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-2">قالب الملاحظة</label>
+                {patientStatus === 'error' && (
+                  <p className="text-xs text-red-400 mt-1">{patientError}</p>
+                )}
+              </FormField>
+
+              {/* Add patient form */}
+              <AnimatePresence>
+                {showAddPatient && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="space-y-2 pt-1 pb-1">
+                      <input
+                        value={newPatientName}
+                        onChange={(e) => setNewPatientName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && createPatient()}
+                        className="inp"
+                        placeholder="اسم المريض *"
+                      />
+                      <input
+                        value={newPatientExternalId}
+                        onChange={(e) => setNewPatientExternalId(e.target.value)}
+                        className="inp"
+                        placeholder="رقم الملف (اختياري)"
+                        dir="ltr"
+                      />
+                      {patientError && <p className="text-xs text-red-400">{patientError}</p>}
+                      <button
+                        onClick={createPatient}
+                        disabled={patientStatus === 'loading'}
+                        className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 rounded-xl text-sm font-bold transition-colors disabled:opacity-50"
+                      >
+                        {patientStatus === 'loading' ? 'جارٍ الإضافة...' : 'إضافة المريض'}
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Date of visit */}
+              <FormField label="تاريخ الزيارة">
+                <input
+                  type="date"
+                  value={dateOfVisit}
+                  onChange={(e) => setDateOfVisit(e.target.value)}
+                  className="inp"
+                  dir="ltr"
+                />
+              </FormField>
+
+              {/* Provider */}
+              <FormField label="اسم الطبيب">
+                <input
+                  value={providerName}
+                  onChange={(e) => setProviderName(e.target.value)}
+                  className="inp"
+                  placeholder="د. محمد أحمد"
+                />
+              </FormField>
+
+              {/* Template */}
+              {templates.length > 0 && (
+                <FormField label="قالب الملاحظة">
                   <select
                     value={selectedTemplateId}
                     onChange={(e) => setSelectedTemplateId(e.target.value)}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    dir="rtl"
+                    className="inp"
                   >
-                    {templates.map((tpl) => (
-                      <option key={tpl.id} value={tpl.id}>
-                        {tpl.name}
-                      </option>
+                    {templates.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-2">رفع قالب JSON</label>
-                  <input
-                    ref={templateInputRef}
-                    type="file"
-                    accept="application/json"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleTemplateUpload(file);
-                      if (templateInputRef.current) templateInputRef.current.value = '';
-                    }}
-                    className="hidden"
-                  />
-                  <div className="flex gap-2">
-                    <input
-                      value={templateName}
-                      onChange={(e) => setTemplateName(e.target.value)}
-                      className="flex-1 px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                      placeholder="اسم القالب (اختياري)"
-                    />
-                    <button
-                      onClick={() => templateInputRef.current?.click()}
-                      className="px-4 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl font-bold shadow-lg hover:shadow-blue-500/50 transition-all"
-                    >
-                      رفع
-                    </button>
-                  </div>
-                  {templateError && (
-                    <p className="text-sm text-red-300 mt-2">{templateError}</p>
-                  )}
-                </div>
-                <div className="border-t border-white/10 pt-4">
-                  <label className="block text-sm font-medium text-purple-200 mb-2">معرفة العيادة (RAG)</label>
-                  <input
-                    value={ragTitle}
-                    onChange={(e) => setRagTitle(e.target.value)}
-                    className="w-full px-4 py-3 mb-2 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    placeholder="عنوان مختصر (اختياري)"
-                  />
-                  <textarea
-                    value={ragText}
-                    onChange={(e) => setRagText(e.target.value)}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-                    placeholder="سياسات، تعليمات، جداول أو معلومات تريد أن يستخدمها النظام"
-                    rows={4}
-                  />
-                  <div className="flex items-center gap-3 mt-3">
-                    <button
-                      onClick={submitRagNote}
-                      className="px-4 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl font-bold shadow-lg hover:shadow-emerald-500/50 transition-all"
-                    >
-                      إضافة للمعرفة
-                    </button>
-                    {ragStatus === 'processing' && (
-                      <span className="text-xs text-purple-200 flex items-center gap-2">
-                        <IconLoader2 className="w-4 h-4 animate-spin" />
-                        جارٍ الحفظ...
-                      </span>
-                    )}
-                    {ragStatus === 'done' && (
-                      <span className="text-xs text-green-300 flex items-center gap-2">
-                        <IconCheck className="w-4 h-4" />
-                        تم الحفظ
-                      </span>
-                    )}
-                  </div>
-                  {ragError && (
-                    <p className="text-sm text-red-300 mt-2">{ragError}</p>
-                  )}
-                </div>
-                <div className="border-t border-white/10 pt-4">
-                  <label className="block text-sm font-medium text-purple-200 mb-2">ملفات المريض</label>
-                  <input
-                    ref={docInputRef}
-                    type="file"
-                    accept=".txt,.json,.csv,.pdf,.docx"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleDocFile(file);
-                      if (docInputRef.current) docInputRef.current.value = '';
-                    }}
-                    className="hidden"
-                  />
-                  <div className="flex gap-2 mb-2">
-                    <input
-                      value={docTitle}
-                      onChange={(e) => setDocTitle(e.target.value)}
-                      className="flex-1 px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                      placeholder="عنوان الوثيقة (اختياري)"
-                    />
-                    <button
-                      onClick={() => docInputRef.current?.click()}
-                      className="px-4 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl font-bold shadow-lg hover:shadow-blue-500/50 transition-all"
-                    >
-                      رفع ملف
-                    </button>
-                  </div>
-                  <textarea
-                    value={docText}
-                    onChange={(e) => setDocText(e.target.value)}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-                    placeholder="الصق بيانات أو تاريخ المريض هنا"
-                    rows={4}
-                  />
-                  {docFileName && (
-                    <p className="text-xs text-purple-200 mt-2">الملف المرفوع: {docFileName}</p>
-                  )}
-                  <div className="flex items-center justify-between mt-3">
-                    <label className="flex items-center gap-2 text-xs text-purple-200">
-                      <input
-                        type="checkbox"
-                        checked={summarizeDoc}
-                        onChange={(e) => setSummarizeDoc(e.target.checked)}
-                      />
-                      تلخيص الوثيقة تلقائياً
-                    </label>
-                    <button
-                      onClick={uploadPatientDocument}
-                      className="px-4 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl font-bold shadow-lg hover:shadow-emerald-500/50 transition-all"
-                    >
-                      حفظ للملف
-                    </button>
-                  </div>
-                  {docStatus === 'processing' && (
-                    <p className="text-xs text-purple-200 mt-2 flex items-center gap-2">
-                      <IconLoader2 className="w-4 h-4 animate-spin" />
-                      جارٍ الحفظ...
-                    </p>
-                  )}
-                  {docStatus === 'done' && (
-                    <p className="text-xs text-green-300 mt-2 flex items-center gap-2">
-                      <IconCheck className="w-4 h-4" />
-                      تم حفظ الوثيقة
-                    </p>
-                  )}
-                  {docError && (
-                    <p className="text-xs text-red-300 mt-2">{docError}</p>
-                  )}
-                  {patientDocs.length > 0 && (
-                    <div className="mt-4 bg-black/20 border border-white/10 rounded-xl p-3 max-h-48 overflow-y-auto custom-scrollbar">
-                      {patientDocs.slice(0, 5).map((doc) => (
-                        <div key={doc.id} className="mb-3 text-xs text-purple-100">
-                          <p className="font-semibold">{doc.title || 'وثيقة'}</p>
-                          {doc.summaryText || doc.summary_text ? (
-                            <p className="text-purple-200 mt-1">{doc.summaryText || doc.summary_text}</p>
-                          ) : (
-                            <p className="text-purple-300 mt-1">لا يوجد ملخص</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {patientRagItems.length > 0 && (
-                    <div className="mt-4 bg-black/20 border border-white/10 rounded-xl p-3 max-h-56 overflow-y-auto custom-scrollbar">
-                      <p className="text-xs text-purple-200 mb-2">سجل المريض (RAG)</p>
-                      {patientRagItems.slice(0, 8).map((item) => (
-                        <div key={item.id} className="mb-3 text-xs text-purple-100">
-                          <div className="flex items-center justify-between text-[10px] text-purple-300">
-                            <span>{ragTypeLabel(item.itemType || item.item_type)}</span>
-                            <span>{formatRagDate(item.createdAt || item.created_at)}</span>
-                          </div>
-                          <p className="font-semibold text-white mt-1">{item.title || 'عنصر'}</p>
-                          <p className="text-purple-200 mt-1">
-                            {truncateSnippet(item.contentText || item.content_text || '')}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {ragItemsStatus === 'loading' && (
-                    <p className="text-xs text-purple-200 mt-2 flex items-center gap-2">
-                      <IconLoader2 className="w-4 h-4 animate-spin" />
-                      جارٍ تحميل سجل المريض...
-                    </p>
-                  )}
-                  {ragItemsError && (
-                    <p className="text-xs text-red-300 mt-2">{ragItemsError}</p>
-                  )}
-                  {patientContext && (
-                    <div className="mt-3 text-xs text-purple-200">
-                      <p className="mb-2">ملخص سياق المريض المتاح للنظام:</p>
-                      <pre className="bg-black/30 border border-white/10 rounded-xl p-3 text-[10px] text-purple-100 overflow-auto max-h-40">
-                        {JSON.stringify(patientContext, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </motion.div>
+                </FormField>
+              )}
 
-            {/* Live Recording */}
-            <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.1 }}
-              className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 shadow-2xl"
-            >
-              <h2 className="text-2xl font-bold text-white mb-6">تسجيل مباشر</h2>
-              <div className="text-center">
-                {!isRecording ? (
-                  <motion.button
-                    onClick={startRecording}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    className="w-24 h-24 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-full flex items-center justify-center mx-auto mb-6 transition-all shadow-2xl shadow-red-500/50"
-                  >
-                    <IconMicrophone className="w-12 h-12" />
-                  </motion.button>
-                ) : (
-                  <>
-                    <motion.button
-                      onClick={stopRecording}
-                      animate={{ scale: [1, 1.05, 1] }}
-                      transition={{ repeat: Infinity, duration: 1.5 }}
-                      className="w-24 h-24 bg-gradient-to-br from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700 text-white rounded-full flex items-center justify-center mx-auto mb-6 transition-all shadow-2xl shadow-gray-500/50"
-                    >
-                      <IconPlayerStop className="w-12 h-12" />
-                    </motion.button>
-                    <p className="text-3xl font-mono text-red-400 font-bold">
-                      {formatTime(recordingTime)}
-                    </p>
-                  </>
-                )}
-                <p className="text-sm text-purple-200 mt-4">
-                  {isRecording ? 'جاري التسجيل...' : 'انقر للبدء'}
-                </p>
-              </div>
-            </motion.div>
-
-            {/* File Upload */}
-            <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.2 }}
-              className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 shadow-2xl"
-            >
-              <h2 className="text-2xl font-bold text-white mb-6">رفع ملف صوتي</h2>
-              
-              {/* Dialect Selector */}
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-purple-200 mb-3">
-                  اللهجة:
-                </label>
+              {/* Dialect */}
+              <FormField label="لهجة التسجيل">
                 <select
                   value={selectedDialect}
                   onChange={(e) => setSelectedDialect(e.target.value)}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent backdrop-blur-sm"
-                  dir="rtl"
+                  className="inp"
                 >
                   <option value="auto">كشف تلقائي</option>
                   <option value="egyptian">مصري</option>
@@ -1371,420 +780,502 @@ export default function ClinicalNotes() {
                   <option value="gulf">خليجي</option>
                   <option value="msa">فصحى</option>
                 </select>
-              </div>
+              </FormField>
 
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="audio/*"
-                multiple
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-              <motion.button
-                onClick={() => fileInputRef.current?.click()}
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                className="w-full bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold py-4 px-6 rounded-xl transition-all shadow-lg hover:shadow-blue-500/50 flex items-center justify-center gap-3"
-              >
-                <IconUpload className="w-5 h-5" />
-                اختر ملفات
-              </motion.button>
-              <p className="text-xs text-purple-300 mt-3 text-center">
-                يدعم: MP3, WAV, M4A, WebM
-              </p>
-            </motion.div>
-
-            {/* Stats */}
-            <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.3 }}
-              className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 shadow-2xl"
-            >
-              <h2 className="text-2xl font-bold text-white mb-6">الإحصائيات</h2>
-              <div className="space-y-4">
-                {statsCards.map((stat, index) => (
-                  <motion.div
-                    key={stat.label}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.4 + index * 0.05 }}
-                    className={`bg-gradient-to-r ${stat.color} rounded-xl p-4`}
-                  >
-                    <div className="flex justify-between items-center">
-                      <span className="text-white text-sm font-medium">{stat.label}</span>
-                      <span className="text-white text-2xl font-bold">{stat.value}</span>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-            </motion.div>
+            </div>
           </div>
 
-          {/* Right Panel - Recordings List & Details */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Recordings List */}
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.2 }}
-              className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 shadow-2xl"
+          {/* Patient Files — collapsible */}
+          <div className="bg-white/[0.04] border border-white/10 rounded-2xl overflow-hidden">
+            <button
+              onClick={() => setShowPatientFiles((p) => !p)}
+              className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
             >
-              <h2 className="text-2xl font-bold text-white mb-6">التسجيلات</h2>
-              <div className="space-y-3 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
-                {recordings.length === 0 ? (
-                  <div className="text-center py-12">
-                    <IconFileText className="w-16 h-16 text-purple-300/50 mx-auto mb-4" />
-                    <p className="text-purple-200">لا توجد تسجيلات بعد</p>
-                  </div>
-                ) : (
-                  recordings.map((recording, index) => (
-                    <motion.div
-                      key={recording.id}
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: index * 0.05 }}
-                      onClick={() => {
-                        setSelectedRecording(recording);
-                        setEditedSoapNote('');
-                      }}
-                      className={`p-5 rounded-2xl border-2 cursor-pointer transition-all ${
-                        selectedRecording?.id === recording.id
-                          ? 'border-purple-400 bg-purple-500/20 shadow-lg shadow-purple-500/20'
-                          : 'border-white/20 bg-white/5 hover:border-purple-300 hover:bg-white/10'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex-1">
-                          <p className="font-semibold text-white mb-1">
-                            {recording.file.name}
-                          </p>
-                          <p className="text-sm text-purple-200">
-                            {recording.timestamp.toLocaleString('ar-EG')}
-                          </p>
-                        </div>
-                        <div>
-                          <span
-                            className={`px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 ${
-                              recording.status === 'completed'
-                                ? 'bg-green-500/20 text-green-300 border border-green-500/30'
-                                : recording.status === 'processing'
-                                ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
-                                : recording.status === 'error'
-                                ? 'bg-red-500/20 text-red-300 border border-red-500/30'
-                                : 'bg-gray-500/20 text-gray-300 border border-gray-500/30'
-                            }`}
-                          >
-                            {recording.status === 'completed' && <><IconCheck className="w-4 h-4" /> مكتمل</>}
-                            {recording.status === 'processing' && <><IconLoader2 className="w-4 h-4 animate-spin" /> جاري...</>}
-                            {recording.status === 'error' && <><IconX className="w-4 h-4" /> خطأ</>}
-                            {recording.status === 'pending' && <><IconClock className="w-4 h-4" /> في الانتظار</>}
-                          </span>
-                        </div>
-                      </div>
-                    </motion.div>
-                  ))
+              <div className="flex items-center gap-2">
+                <IconFileText className="w-4 h-4 text-slate-400" />
+                <span className="text-sm font-semibold text-slate-200">ملفات المريض</span>
+                {patientDocs.length > 0 && (
+                  <span className="text-xs bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded-full">
+                    {patientDocs.length}
+                  </span>
                 )}
               </div>
-            </motion.div>
-
-            {/* Recording Details */}
-            <AnimatePresence mode="wait">
-              {selectedRecording && (
+              {showPatientFiles
+                ? <IconChevronUp className="w-4 h-4 text-slate-500" />
+                : <IconChevronDown className="w-4 h-4 text-slate-500" />
+              }
+            </button>
+            <AnimatePresence>
+              {showPatientFiles && (
                 <motion.div
-                  key={selectedRecording.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  className="backdrop-blur-md bg-white/10 border border-white/20 rounded-3xl p-8 shadow-2xl"
+                  initial={{ height: 0 }}
+                  animate={{ height: 'auto' }}
+                  exit={{ height: 0 }}
+                  className="overflow-hidden"
                 >
-                  <h2 className="text-2xl font-bold text-white mb-6">التفاصيل</h2>
-
-                  {selectedRecording.status === 'processing' && (
-                    <div className="text-center py-12">
-                      <motion.div
-                        animate={{ rotate: 360 }}
-                        transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
-                        className="w-16 h-16 border-4 border-purple-500 border-t-transparent rounded-full mx-auto mb-6"
-                      />
-                      <p className="text-purple-200 text-lg">جاري معالجة التسجيل...</p>
-                    </div>
-                  )}
-
-                  {selectedRecording.status === 'error' && (
-                    <div className="bg-red-500/20 border border-red-500/30 rounded-2xl p-6">
-                      <div className="flex items-center gap-3 text-red-300">
-                        <IconX className="w-6 h-6" />
-                        <p className="font-medium">
-                          حدث خطأ: {selectedRecording.error}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedRecording.status === 'completed' && (
-                    <div className="space-y-6">
-                      {/* Transcript */}
-                      <div>
-                        <h3 className="font-semibold text-purple-200 mb-3 flex items-center gap-2">
-                          <IconFileText className="w-5 h-5" />
-                          النص المكتوب:
-                        </h3>
-                        <div className="bg-white/5 border border-white/10 rounded-2xl p-5 max-h-48 overflow-y-auto custom-scrollbar backdrop-blur-sm">
-                          <p className="text-white leading-relaxed">
-                            {selectedRecording.transcript}
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* SOAP Note */}
-                      <div>
-                        <h3 className="font-semibold text-purple-200 mb-3 flex items-center gap-2">
-                          <IconFileText className="w-5 h-5" />
-                          ملاحظة SOAP:
-                        </h3>
-                        <textarea
-                          value={editedSoapNote || selectedRecording.soapNote}
-                          onChange={(e) => {
-                            setEditedSoapNote(e.target.value);
-                            // Start tracking review time on first edit
-                            if (!selectedRecording.reviewStartTime) {
-                              setRecordings((prev) =>
-                                prev.map((r) =>
-                                  r.id === selectedRecording.id
-                                    ? { ...r, reviewStartTime: Date.now() }
-                                    : r
-                                )
-                              );
-                            }
-                          }}
-                          className="w-full bg-white/5 border border-white/20 rounded-2xl p-5 text-white leading-relaxed font-['Tajawal',sans-serif] focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent backdrop-blur-sm custom-scrollbar resize-none"
-                          rows={12}
-                          dir="rtl"
-                        />
-                      </div>
-
-                      {selectedRecording.soapJson && (
-                        <div>
-                          <h3 className="font-semibold text-purple-200 mb-3 flex items-center gap-2">
-                            <IconFileText className="w-5 h-5" />
-                            JSON الناتج:
-                          </h3>
-                          <pre className="bg-black/30 border border-white/10 rounded-2xl p-4 text-xs text-purple-100 overflow-auto max-h-64">
-                            {JSON.stringify(selectedRecording.soapJson, null, 2)}
-                          </pre>
-                        </div>
-                      )}
-
-                      {selectedRecording.noteId && (
-                        <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
-                          <h3 className="font-semibold text-purple-200 mb-4 flex items-center gap-2">
-                            <IconMicrophone className="w-5 h-5" />
-                            استكمال حقل ناقص بالصوت
-                          </h3>
-                          <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-                            <div>
-                              <label className="block text-xs text-purple-200 mb-2">شجرة الحقول</label>
-                              <div className="bg-black/20 border border-white/10 rounded-xl p-3 max-h-64 overflow-y-auto custom-scrollbar space-y-2">
-                                {selectedRecording.soapJson ? (
-                                  renderJsonTree(selectedRecording.soapJson)
-                                ) : (
-                                  <p className="text-xs text-purple-200">لا يوجد JSON متاح</p>
-                                )}
-                              </div>
-                            </div>
-                            <div className="space-y-3">
-                              <div className="text-xs text-purple-200">
-                                الحقل المختار: <span className="text-white">{selectedFieldPath || 'غير محدد'}</span>
-                              </div>
-                              <div>
-                                <label className="block text-xs text-purple-200 mb-2">طريقة التحديث</label>
-                                <select
-                                  value={fieldUpdateMode}
-                                  onChange={(e) => setFieldUpdateMode(e.target.value as 'append' | 'replace')}
-                                  className="w-full bg-white/10 border border-white/20 rounded-xl p-3 text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                                >
-                                  <option value="append" className="text-black">إضافة</option>
-                                  <option value="replace" className="text-black">استبدال</option>
-                                </select>
-                              </div>
-                              <div>
-                                <label className="block text-xs text-purple-200 mb-2">تحديث بالنص</label>
-                                <textarea
-                                  value={fieldUpdateText}
-                                  onChange={(e) => setFieldUpdateText(e.target.value)}
-                                  className="w-full bg-white/10 border border-white/20 rounded-xl p-3 text-white focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-                                  rows={4}
-                                  placeholder="أضف المعلومة المطلوبة هنا"
-                                />
-                              </div>
-                              <motion.button
-                                onClick={submitFieldTextUpdate}
-                                whileHover={{ scale: 1.02 }}
-                                whileTap={{ scale: 0.98 }}
-                                className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white font-bold py-3 px-5 rounded-xl transition-all shadow-lg hover:shadow-blue-500/50"
-                              >
-                                تحديث بالنص
-                              </motion.button>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-4 mt-4">
-                            {!isFieldRecording ? (
-                              <motion.button
-                                onClick={startFieldRecording}
-                                whileHover={{ scale: 1.02 }}
-                                whileTap={{ scale: 0.98 }}
-                                className="bg-gradient-to-r from-purple-500 to-purple-600 text-white font-bold py-3 px-5 rounded-xl transition-all shadow-lg hover:shadow-purple-500/50 flex items-center gap-2"
-                              >
-                                <IconMicrophone className="w-5 h-5" />
-                                تسجيل المعلومة
-                              </motion.button>
-                            ) : (
-                              <motion.button
-                                onClick={stopFieldRecording}
-                                whileHover={{ scale: 1.02 }}
-                                whileTap={{ scale: 0.98 }}
-                                className="bg-gradient-to-r from-red-500 to-red-600 text-white font-bold py-3 px-5 rounded-xl transition-all shadow-lg hover:shadow-red-500/50 flex items-center gap-2"
-                              >
-                                <IconPlayerStop className="w-5 h-5" />
-                                إيقاف ({formatTime(fieldRecordingTime)})
-                              </motion.button>
-                            )}
-                            {fieldUpdateStatus === 'processing' && (
-                              <span className="text-xs text-purple-200 flex items-center gap-2">
-                                <IconLoader2 className="w-4 h-4 animate-spin" />
-                                جارِ التحديث...
-                              </span>
-                            )}
-                            {fieldUpdateStatus === 'done' && (
-                              <span className="text-xs text-green-300 flex items-center gap-2">
-                                <IconCheck className="w-4 h-4" />
-                                تم تحديث الحقل
-                              </span>
+                  <div className="px-4 pb-4">
+                    {!patientId ? (
+                      <p className="text-xs text-slate-500 py-2">اختر مريضاً أولاً</p>
+                    ) : patientDocs.length === 0 ? (
+                      <p className="text-xs text-slate-500 py-2">لا توجد ملفات لهذا المريض</p>
+                    ) : (
+                      <div className="space-y-2 max-h-52 overflow-y-auto custom-scrollbar">
+                        {patientDocs.slice(0, 6).map((doc) => (
+                          <div
+                            key={doc.id}
+                            className="bg-white/5 border border-white/10 rounded-xl p-3"
+                          >
+                            <p className="text-xs font-semibold text-slate-300 truncate">
+                              {doc.title || 'وثيقة'}
+                            </p>
+                            {(doc.summaryText || doc.summary_text) && (
+                              <p className="text-xs text-slate-500 mt-1 line-clamp-2">
+                                {doc.summaryText || doc.summary_text}
+                              </p>
                             )}
                           </div>
-
-                          {fieldUpdateError && (
-                            <p className="text-xs text-red-300 mt-3">{fieldUpdateError}</p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Actions */}
-                      <div className="flex gap-4 pt-4">
-                        <motion.button
-                          onClick={async () => {
-                            const finalText = editedSoapNote || selectedRecording.soapNote || '';
-                            await recordReviewMetrics(selectedRecording, true, finalText);
-                            await saveToEHR();
-                            setRecordings((prev) =>
-                              prev.map((r) =>
-                                r.id === selectedRecording.id ? { ...r, status: 'completed' } : r
-                              )
-                            );
-                          }}
-                          disabled={isSaving}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                          className="flex-1 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 disabled:from-gray-500 disabled:to-gray-600 disabled:cursor-not-allowed text-white font-bold py-4 px-6 rounded-xl transition-all shadow-lg hover:shadow-green-500/50 flex items-center justify-center gap-3"
-                        >
-                          {isSaving ? (
-                            <>
-                              <IconLoader2 className="w-5 h-5 animate-spin" />
-                              جاري الحفظ...
-                            </>
-                          ) : (
-                            <>
-                              <IconCheck className="w-5 h-5" />
-                              قبول وحفظ
-                            </>
-                          )}
-                        </motion.button>
-                        <motion.button
-                          onClick={async () => {
-                            const finalText = editedSoapNote || selectedRecording.soapNote || '';
-                            await recordReviewMetrics(selectedRecording, false, finalText);
-                            if (selectedRecording.noteId) {
-                              await api.rejectSOAPNote(selectedRecording.noteId);
-                            }
-                            showToast('success', 'تم رفض الملاحظة');
-                          }}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                          className="flex-1 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-bold py-4 px-6 rounded-xl transition-all shadow-lg hover:shadow-red-500/50 flex items-center justify-center gap-3"
-                        >
-                          <IconX className="w-5 h-5" />
-                          رفض
-                        </motion.button>
-                        <motion.button
-                          onClick={() => {
-                            const finalText = editedSoapNote || selectedRecording.soapNote || '';
-                            const blob = new Blob([finalText], { type: 'text/plain;charset=utf-8' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = `soap-${selectedRecording.id}.txt`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                          }}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                          className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold py-4 px-6 rounded-xl transition-all shadow-lg hover:shadow-blue-500/50"
-                          title="تنزيل"
-                        >
-                          <IconFileDownload className="w-5 h-5" />
-                        </motion.button>
+                        ))}
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
+
+          {/* Session stats */}
+          {recordings.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: 'إجمالي', val: recordings.length, color: 'text-white' },
+                { label: 'مكتمل', val: recordings.filter((r) => r.status === 'completed').length, color: 'text-emerald-300' },
+                { label: 'معالجة', val: recordings.filter((r) => r.status === 'processing').length, color: 'text-yellow-300' },
+                { label: 'خطأ', val: recordings.filter((r) => r.status === 'error').length, color: 'text-red-300' },
+              ].map((s) => (
+                <div key={s.label} className="bg-white/[0.04] border border-white/10 rounded-xl p-3 text-center">
+                  <p className={`text-xl font-bold ${s.color}`}>{s.val}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{s.label}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+        </div>
+
+        {/* ══════════════════════════════════════════════
+            CENTER PANEL — Audio Input + Transcript
+            ══════════════════════════════════════════════ */}
+        <div className="space-y-3">
+
+          {/* Recording Controls */}
+          <div className="bg-white/[0.04] border border-white/10 rounded-2xl overflow-hidden">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10">
+              <IconMicrophone className="w-4 h-4 text-slate-400" />
+              <span className="text-sm font-semibold text-slate-200">تسجيل الجلسة</span>
+            </div>
+            <div className="p-4">
+              <div className="flex gap-3 mb-4">
+                {/* Live record button */}
+                {!isRecording ? (
+                  <motion.button
+                    onClick={startRecording}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.97 }}
+                    className="flex-1 flex flex-col items-center justify-center gap-1.5 py-5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-2xl text-red-300 transition-all group"
+                  >
+                    <div className="w-10 h-10 rounded-full bg-red-500/20 group-hover:bg-red-500/30 flex items-center justify-center transition-colors">
+                      <IconMicrophone className="w-5 h-5" />
+                    </div>
+                    <span className="text-xs font-bold">تسجيل مباشر</span>
+                  </motion.button>
+                ) : (
+                  <motion.button
+                    onClick={stopRecording}
+                    animate={{ scale: [1, 1.02, 1] }}
+                    transition={{ repeat: Infinity, duration: 1.2 }}
+                    className="flex-1 flex flex-col items-center justify-center gap-1.5 py-5 bg-red-500/20 border border-red-500/50 rounded-2xl text-red-300"
+                  >
+                    <div className="w-10 h-10 rounded-full bg-red-500/30 flex items-center justify-center">
+                      <IconPlayerStop className="w-5 h-5" />
+                    </div>
+                    <span className="text-sm font-mono font-bold">{formatTime(recordingTime)}</span>
+                    <span className="text-xs opacity-70">اضغط للإيقاف</span>
+                  </motion.button>
+                )}
+
+                {/* Upload button */}
+                <motion.button
+                  onClick={() => fileInputRef.current?.click()}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.97 }}
+                  className="flex-1 flex flex-col items-center justify-center gap-1.5 py-5 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-2xl text-blue-300 transition-all group"
+                >
+                  <div className="w-10 h-10 rounded-full bg-blue-500/20 group-hover:bg-blue-500/30 flex items-center justify-center transition-colors">
+                    <IconUpload className="w-5 h-5" />
+                  </div>
+                  <span className="text-xs font-bold">رفع ملف</span>
+                  <span className="text-xs opacity-50">MP3 WAV M4A</span>
+                </motion.button>
+                <input ref={fileInputRef} type="file" accept="audio/*" multiple onChange={handleFileUpload} className="hidden" />
+              </div>
+
+              {/* Recording list */}
+              {recordings.length === 0 ? (
+                <div className="text-center py-8 border border-dashed border-white/10 rounded-xl">
+                  <IconMicrophone className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+                  <p className="text-sm text-slate-500">سجِّل أو ارفع ملفاً للبدء</p>
+                  <p className="text-xs text-slate-600 mt-1">تأكد من اختيار المريض أولاً</p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-72 overflow-y-auto custom-scrollbar">
+                  {recordings.map((rec) => (
+                    <button
+                      key={rec.id}
+                      onClick={() => setSelectedRecording(rec)}
+                      className={`w-full text-right flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all ${
+                        selectedRecording?.id === rec.id
+                          ? 'border-purple-500/60 bg-purple-500/10'
+                          : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/20'
+                      }`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{rec.file.name}</p>
+                        <p className="text-xs text-slate-500">{rec.timestamp.toLocaleString('ar-EG')}</p>
+                      </div>
+                      <StatusBadge status={rec.status} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Transcript panel */}
+          <AnimatePresence mode="wait">
+            {selectedRecording && (
+              <motion.div
+                key={selectedRecording.id}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="bg-white/[0.04] border border-white/10 rounded-2xl overflow-hidden"
+              >
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10">
+                  <IconFileText className="w-4 h-4 text-slate-400" />
+                  <span className="text-sm font-semibold text-slate-200">النص المفرَّغ</span>
+                  {selectedRecording.dialect && selectedRecording.dialect !== 'auto' && (
+                    <span className="text-xs bg-white/10 text-slate-400 px-2 py-0.5 rounded-full mr-auto">
+                      {selectedRecording.dialect === 'egyptian' ? 'مصري'
+                        : selectedRecording.dialect === 'levantine' ? 'شامي'
+                        : selectedRecording.dialect === 'gulf' ? 'خليجي'
+                        : selectedRecording.dialect}
+                    </span>
+                  )}
+                </div>
+                <div className="p-4">
+                  {selectedRecording.status === 'processing' ? (
+                    <div className="flex items-center gap-3 py-6 justify-center text-slate-400">
+                      <IconLoader2 className="w-5 h-5 animate-spin" />
+                      <span className="text-sm">جارٍ التفريغ والتحليل...</span>
+                    </div>
+                  ) : selectedRecording.status === 'error' ? (
+                    <div className="flex items-start gap-2 bg-red-500/10 border border-red-500/30 rounded-xl p-3">
+                      <IconX className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                      <p className="text-sm text-red-300">{selectedRecording.error}</p>
+                    </div>
+                  ) : selectedRecording.transcript ? (
+                    <div className="bg-slate-800/50 border border-white/[0.08] rounded-xl p-4 max-h-60 overflow-y-auto custom-scrollbar">
+                      <p className="text-sm text-slate-300 leading-loose whitespace-pre-wrap">
+                        {selectedRecording.transcript}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500 text-center py-4">لا يوجد نص مفرَّغ</p>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+        </div>
+
+        {/* ══════════════════════════════════════════════
+            RIGHT PANEL — SOAP Editor
+            ══════════════════════════════════════════════ */}
+        <div className="space-y-3">
+
+          {!hasNote ? (
+            // Empty state
+            <div className="bg-white/[0.04] border border-white/10 rounded-2xl p-8 text-center">
+              <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mx-auto mb-4">
+                <IconFileText className="w-8 h-8 text-slate-600" />
+              </div>
+              <p className="text-base font-semibold text-slate-300 mb-2">
+                ملاحظة SOAP
+              </p>
+              <p className="text-sm text-slate-500 leading-relaxed">
+                سجِّل أو ارفع ملفاً صوتياً لجلسة المريض<br />
+                وسيقوم النظام بتوليد الملاحظة تلقائياً
+              </p>
+              {!patientId && (
+                <p className="text-xs text-amber-400 mt-3 bg-amber-400/10 border border-amber-400/20 rounded-lg px-3 py-2">
+                  ⚠ اختر مريضاً من الإعدادات أولاً
+                </p>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* SOAP section header */}
+              <div className="flex items-center justify-between px-1">
+                <span className="text-sm font-semibold text-slate-300">ملاحظة SOAP</span>
+                {selectedRecording?.noteId && (
+                  <span className="text-xs text-slate-500">
+                    انقر على 🎤 بجانب أي قسم لتحديثه صوتياً
+                  </span>
+                )}
+              </div>
+
+              {/* 4 SOAP sections */}
+              {SOAP_SECTIONS.map((section) => (
+                <SoapSectionCard
+                  key={section.key}
+                  section={section}
+                  value={soapSections[section.key]}
+                  onChange={(v) => {
+                    setSoapSections((p) => ({ ...p, [section.key]: v }));
+                    if (selectedRecording && !selectedRecording.reviewStartTime) {
+                      setSelectedRecording((p) => p ? { ...p, reviewStartTime: Date.now() } : p);
+                    }
+                  }}
+                  isRecording={sectionRecording === section.key}
+                  isUpdating={sectionUpdating === section.key}
+                  recordingTime={sectionRecording === section.key ? sectionRecordingTime : 0}
+                  onStartRecording={() => startSectionRecording(section.key)}
+                  onStopRecording={stopSectionRecording}
+                  canRecord={!!selectedRecording?.noteId}
+                />
+              ))}
+
+              {/* Action bar */}
+              <div className="flex gap-2 pt-1">
+                <motion.button
+                  onClick={saveToEHR}
+                  disabled={isSaving || !canSave}
+                  whileHover={{ scale: canSave ? 1.01 : 1 }}
+                  whileTap={{ scale: canSave ? 0.99 : 1 }}
+                  className="flex-1 flex items-center justify-center gap-2 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed rounded-xl font-bold text-sm transition-colors shadow-lg shadow-emerald-900/40"
+                >
+                  {isSaving
+                    ? <><IconLoader2 className="w-4 h-4 animate-spin" /> جارٍ الحفظ...</>
+                    : <><IconCheck className="w-4 h-4" /> قبول وإرسال للسجل</>
+                  }
+                </motion.button>
+
+                <button
+                  onClick={rejectNote}
+                  title="رفض الملاحظة"
+                  className="px-4 py-3 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-xl text-red-400 hover:text-red-300 transition-colors"
+                >
+                  <IconX className="w-4 h-4" />
+                </button>
+
+                <button
+                  onClick={downloadNote}
+                  title="تنزيل"
+                  className="px-4 py-3 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-xl text-blue-400 hover:text-blue-300 transition-colors"
+                >
+                  <IconFileDownload className="w-4 h-4" />
+                </button>
+              </div>
+            </>
+          )}
+
         </div>
       </div>
 
-      {/* Toast Notifications */}
+      {/* ── Toast ── */}
       <AnimatePresence>
         {toast && (
           <motion.div
-            initial={{ opacity: 0, y: 50, x: '-50%' }}
+            initial={{ opacity: 0, y: 40, x: '-50%' }}
             animate={{ opacity: 1, y: 0, x: '-50%' }}
-            exit={{ opacity: 0, y: 50, x: '-50%' }}
-            className={`fixed bottom-8 left-1/2 z-50 flex items-center gap-3 px-6 py-4 rounded-2xl shadow-2xl text-white font-bold text-sm ${
+            exit={{ opacity: 0, y: 40, x: '-50%' }}
+            className={`fixed bottom-6 left-1/2 z-50 flex items-center gap-2 px-5 py-3 rounded-xl shadow-2xl text-sm font-bold ${
               toast.type === 'success'
-                ? 'bg-gradient-to-r from-green-500 to-green-600 shadow-green-500/40'
-                : 'bg-gradient-to-r from-red-500 to-red-600 shadow-red-500/40'
+                ? 'bg-emerald-600 shadow-emerald-900/60'
+                : 'bg-red-600 shadow-red-900/60'
             }`}
           >
-            {toast.type === 'success' ? (
-              <IconCheck className="w-5 h-5 shrink-0" />
-            ) : (
-              <IconX className="w-5 h-5 shrink-0" />
-            )}
+            {toast.type === 'success'
+              ? <IconCheck className="w-4 h-4 shrink-0" />
+              : <IconX className="w-4 h-4 shrink-0" />
+            }
             {toast.message}
           </motion.div>
         )}
       </AnimatePresence>
 
       <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 8px;
+        .inp {
+          width: 100%;
+          padding: 0.5rem 0.75rem;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 0.75rem;
+          color: white;
+          font-size: 0.875rem;
+          font-family: 'Tajawal', sans-serif;
+          transition: all 0.15s;
+          outline: none;
         }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(255, 255, 255, 0.05);
-          border-radius: 10px;
+        .inp:focus {
+          border-color: rgba(168,85,247,0.5);
+          box-shadow: 0 0 0 2px rgba(168,85,247,0.2);
         }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(168, 85, 247, 0.5);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(168, 85, 247, 0.7);
-        }
+        .inp option { background: #1e293b; color: white; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
       `}</style>
+    </div>
+  );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function FormField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-400 mb-1.5">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: AudioRecording['status'] }) {
+  if (status === 'completed')
+    return (
+      <span className="shrink-0 text-[11px] px-2 py-0.5 bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 rounded-full flex items-center gap-1">
+        <IconCheck className="w-3 h-3" />مكتمل
+      </span>
+    );
+  if (status === 'processing')
+    return (
+      <span className="shrink-0 text-[11px] px-2 py-0.5 bg-yellow-500/15 text-yellow-300 border border-yellow-500/30 rounded-full flex items-center gap-1">
+        <IconLoader2 className="w-3 h-3 animate-spin" />معالجة
+      </span>
+    );
+  if (status === 'error')
+    return (
+      <span className="shrink-0 text-[11px] px-2 py-0.5 bg-red-500/15 text-red-300 border border-red-500/30 rounded-full flex items-center gap-1">
+        <IconX className="w-3 h-3" />خطأ
+      </span>
+    );
+  return (
+    <span className="shrink-0 text-[11px] px-2 py-0.5 bg-slate-500/15 text-slate-400 border border-slate-500/30 rounded-full flex items-center gap-1">
+      <IconClock className="w-3 h-3" />انتظار
+    </span>
+  );
+}
+
+function MetricCard({
+  label, value, color,
+}: { label: string; value: string | number; color: string }) {
+  const palette: Record<string, string> = {
+    purple: 'text-purple-300',
+    emerald: 'text-emerald-300',
+    blue: 'text-blue-300',
+    amber: 'text-amber-300',
+  };
+  return (
+    <div className="bg-white/[0.04] border border-white/10 rounded-xl p-3">
+      <p className="text-xs text-slate-500 mb-0.5">{label}</p>
+      <p className={`text-2xl font-bold ${palette[color] ?? 'text-white'}`}>{value}</p>
+    </div>
+  );
+}
+
+function SoapSectionCard({
+  section,
+  value,
+  onChange,
+  isRecording,
+  isUpdating,
+  recordingTime,
+  onStartRecording,
+  onStopRecording,
+  canRecord,
+}: {
+  section: typeof SOAP_SECTIONS[number];
+  value: string;
+  onChange: (v: string) => void;
+  isRecording: boolean;
+  isUpdating: boolean;
+  recordingTime: number;
+  onStartRecording: () => void;
+  onStopRecording: () => void;
+  canRecord: boolean;
+}) {
+  return (
+    <div className={`border ${section.border} rounded-2xl overflow-hidden`}>
+      {/* Section header */}
+      <div className={`${section.header} flex items-center justify-between px-4 py-2.5`}>
+        <div className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${section.dot}`} />
+          <span className={`text-sm font-bold ${section.badge}`}>{section.label}</span>
+          <span className="text-xs text-slate-500 hidden sm:block">{section.desc}</span>
+        </div>
+
+        {/* Voice mic per section */}
+        {canRecord && (
+          <div className="flex items-center gap-2">
+            {isUpdating && (
+              <span className="text-xs text-slate-400 flex items-center gap-1">
+                <IconLoader2 className="w-3 h-3 animate-spin" />
+                يعالج...
+              </span>
+            )}
+            {!isRecording ? (
+              <button
+                onClick={onStartRecording}
+                disabled={isUpdating}
+                title="تحديث هذا القسم بالصوت"
+                className={`p-1.5 rounded-lg hover:bg-white/20 transition-all disabled:opacity-30 ${section.badge} bg-white/10`}
+              >
+                <IconMicrophone className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <button
+                onClick={onStopRecording}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-500/25 border border-red-500/40 text-red-300 text-xs font-mono animate-pulse"
+              >
+                <IconPlayerStop className="w-3 h-3" />
+                {formatTime(recordingTime)}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Section textarea */}
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full px-4 py-3 ${section.bg} text-sm text-slate-200 leading-loose resize-none focus:outline-none focus:ring-2 ${section.ring} focus:ring-inset`}
+        rows={4}
+        dir="rtl"
+        placeholder={section.placeholder}
+      />
+
+      {/* Word count */}
+      {value && (
+        <div className={`${section.bg} px-4 pb-2 text-right`}>
+          <span className="text-[11px] text-slate-600">
+            {value.trim().split(/\s+/).filter(Boolean).length} كلمة
+          </span>
+        </div>
+      )}
     </div>
   );
 }
