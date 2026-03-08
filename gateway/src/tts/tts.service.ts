@@ -4,6 +4,7 @@
  * Communicates with TTS microservice for speech synthesis
  * Week 3 Day 16 (Oct 10, 2025)
  */
+import * as http from 'http';
 import { Injectable, Logger } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { InternalHttpClient } from '../http/internal-http-client.service';
@@ -36,41 +37,62 @@ export class TtsService {
 
   /**
    * Synthesize speech from text
-   * Returns base64 audio (mulaw/mp3/wav depending on engine)
+   * Uses native node:http to avoid Axios retry body-serialization bug (Axios 1.x)
    */
   async synthesize(
     text: string,
     sessionId?: string,
     voice?: string,
   ): Promise<{ audioBase64: string; format?: string }> {
-    try {
-      const corr = uuidv4();
-      const client = this.http.getClient({
-        baseUrl: this.serviceUrl,
-        serviceName: 'tts',
-        timeoutMs: 30000, // XTTS Arabic GPU inference ~1-2s; 30s safety margin
-      });
-      const response = await client.post(
-        `/synthesize`,
+    const corr = uuidv4();
+    const body = JSON.stringify({ text, sessionId, voice });
+    const url = new URL(this.serviceUrl);
+    const hostname = url.hostname;
+    const port = parseInt(url.port || '5002', 10);
+
+    return new Promise((resolve, reject) => {
+      const req = http.request(
         {
-          text,
-          sessionId,
-          voice,
-        } as SynthesizeRequest,
-        {
-          headers: { 'x-correlation-id': corr },
+          hostname,
+          port,
+          path: '/synthesize',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+            'x-internal-secret': this.internalSecret,
+            'x-correlation-id': corr,
+          },
+          timeout: 30000,
+        },
+        (res) => {
+          let raw = '';
+          res.on('data', (chunk) => (raw += chunk));
+          res.on('end', () => {
+            if (res.statusCode === 200) {
+              const j = JSON.parse(raw);
+              this.logger.log(`Synthesized ${text.length} chars`);
+              resolve({ audioBase64: j.audio, format: j.format || 'mulaw' });
+            } else {
+              this.logger.error(
+                `TTS synthesis failed: ${res.statusCode} ${raw.substring(0, 200)}`,
+              );
+              reject(new Error(`TTS ${res.statusCode}`));
+            }
+          });
         },
       );
-
-      this.logger.log(`Synthesized ${text.length} chars`);
-      return {
-        audioBase64: response.data.audio,
-        format: response.data.format || 'mulaw',
-      };
-    } catch (error) {
-      this.logger.error(`TTS synthesis failed: ${error}`);
-      throw error;
-    }
+      req.on('error', (e) => {
+        this.logger.error(`TTS request error: ${e.message}`);
+        reject(e);
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('TTS request timeout'));
+      });
+      req.write(body);
+      req.end();
+    });
   }
 
   /**
