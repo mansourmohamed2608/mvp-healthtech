@@ -306,8 +306,9 @@ def _normalize_voice_id(voice: Optional[str]) -> str:
         return EGTTS_VOICE_ID
     if lowered in {"saudi", "ksa", "gulf", "gcc", SAUDI_VOICE_ID.lower(), "saudi_tts"}:
         return SAUDI_VOICE_ID
+    # Preserve edge voice IDs as-is so _should_use_edge() can route them correctly
     if lowered in {v.lower() for v in EDGE_VOICES}:
-        return DEFAULT_VOICE
+        return raw
     return raw
 
 

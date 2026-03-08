@@ -168,7 +168,7 @@ const VoiceAgentClean = () => {
       // VA speaks: typewrite + TTS in parallel
       setDemoPhase('va');
       setDemoTypeText('');
-      const ttsPromise = api.synthesizeSpeech(step.va, 'saudi-tts').catch(() => null);
+      const ttsPromise = api.synthesizeSpeech(step.va, 'ar-SA-HamedNeural').catch(() => null);
       await typewrite(step.va, demoAbortRef);
       if (demoAbortRef.current) break;
 
