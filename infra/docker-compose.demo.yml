@@ -192,7 +192,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ['1']
               capabilities: [gpu]
         limits:
           memory: 8G
@@ -203,7 +203,7 @@ services:
       - EDGE_TTS_ALLOWED=true
       - TTS_EDGE_VOICE=ar-SA-HamedNeural
       - TTS_TIMEOUT_SECONDS=30
-      - CUDA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=0
     volumes:
       - tts_models:/app/models
     restart: unless-stopped
