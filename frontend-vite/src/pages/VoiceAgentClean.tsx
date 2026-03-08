@@ -153,18 +153,10 @@ const VoiceAgentClean = () => {
     setDemoTypeText('');
     setDemoStep(-1);
     setDemoPhase('idle');
-
-    // Pre-generate ALL Saudi XTTS audio in parallel before the demo starts
-    // so each step plays instantly without waiting for slow CPU inference
-    setDemoPreloading(true);
-    setCallStatus('connecting');
-    const ttsCache = await Promise.all(
-      DEMO_SCRIPT.map(step => api.synthesizeSpeech(step.va, 'saudi-tts').catch(() => null))
-    );
     setDemoPreloading(false);
-    if (demoAbortRef.current) { setCallStatus('idle'); return; }
 
-    await new Promise(r => setTimeout(r, 600));
+    setCallStatus('connecting');
+    await new Promise(r => setTimeout(r, 800));
     if (demoAbortRef.current) { setCallStatus('idle'); return; }
     setCallStatus('connected');
     await new Promise(r => setTimeout(r, 400));
@@ -174,18 +166,26 @@ const VoiceAgentClean = () => {
       const step = DEMO_SCRIPT[i];
       setDemoStep(i);
 
-      // VA speaks: typewrite (audio already cached)
+      // VA speaks: start TTS synthesis and typewrite simultaneously.
+      // Synthesis runs on CPU (20-30s); typewrite animation is ~3-4s.
+      // Both complete before audio plays, giving natural pacing.
       setDemoPhase('va');
       setDemoTypeText('');
-      await typewrite(step.va, demoAbortRef);
+      setDemoPreloading(true); // show audio-generating indicator
+
+      const [ttsRes] = await Promise.all([
+        api.synthesizeSpeech(step.va, 'saudi-tts').catch(() => null),
+        typewrite(step.va, demoAbortRef),
+      ]);
+
+      setDemoPreloading(false);
       if (demoAbortRef.current) break;
 
       setDemoConvo(prev => [...prev, { role: 'va', text: step.va }]);
       setDemoTypeText('');
 
-      // Play Ahmed Saudi TTS from pre-generated cache
+      // Play Ahmed Saudi TTS
       try {
-        const ttsRes = ttsCache[i];
         if (ttsRes && (ttsRes as any).audio) {
           await playMulawAudio((ttsRes as any).audio, (ttsRes as any).sampleRate || 8000);
         }
@@ -543,9 +543,7 @@ const VoiceAgentClean = () => {
                 {callStatus === 'connected'
                   ? (language === 'ar' ? 'متصل' : 'Connected')
                   : callStatus === 'connecting'
-                    ? (demoPreloading
-                        ? (language === 'ar' ? 'جاري تحضير صوت أحمد...' : 'Preparing Saudi voice...')
-                        : (language === 'ar' ? 'جاري الاتصال...' : 'Connecting...'))
+                    ? (language === 'ar' ? 'جاري الاتصال...' : 'Connecting...')
                     : callStatus === 'disconnected'
                       ? (language === 'ar' ? 'انتهت المكالمة' : 'Call Ended')
                       : (language === 'ar' ? 'جاهز' : 'Ready')}
@@ -591,9 +589,7 @@ const VoiceAgentClean = () => {
                   </div>
                 </div>
                 <p className="text-sm font-medium text-green-500">
-                  {demoPreloading
-                    ? (language === 'ar' ? 'جاري تحضير صوت أحمد...' : 'Preparing Saudi voice...')
-                    : (language === 'ar' ? 'جاري الاتصال بليان...' : 'Calling Leyan...')}
+                  {language === 'ar' ? 'جاري الاتصال بليان...' : 'Calling Leyan...'}
                 </p>
               </div>
             )}
@@ -618,14 +614,26 @@ const VoiceAgentClean = () => {
 
             {/* Live typewriting VA bubble */}
             {demoTypeText && (
-              <div className="flex justify-start">
-                <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold mr-2 mt-1 flex-shrink-0">ل</div>
-                <div className="max-w-[78%] rounded-2xl rounded-tl-sm px-4 py-2.5 bg-emerald-600 text-white">
-                  <p className="text-sm leading-relaxed" dir="rtl">
-                    {demoTypeText}
-                    <span className="inline-block w-0.5 h-4 bg-white opacity-80 animate-pulse ml-0.5 align-middle" />
-                  </p>
+              <div className="flex flex-col justify-start gap-1">
+                <div className="flex justify-start">
+                  <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold mr-2 mt-1 flex-shrink-0">ل</div>
+                  <div className="max-w-[78%] rounded-2xl rounded-tl-sm px-4 py-2.5 bg-emerald-600 text-white">
+                    <p className="text-sm leading-relaxed" dir="rtl">
+                      {demoTypeText}
+                      <span className="inline-block w-0.5 h-4 bg-white opacity-80 animate-pulse ml-0.5 align-middle" />
+                    </p>
+                  </div>
                 </div>
+                {demoPreloading && (
+                  <div className="flex justify-start ml-9">
+                    <span className={clsx('text-xs flex items-center gap-1', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
+                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                      {language === 'ar' ? 'جاري توليد صوت أحمد...' : "Generating Ahmed's voice..."}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -693,9 +701,7 @@ const VoiceAgentClean = () => {
             {callStatus === 'connecting' && (
               <button disabled className="w-full flex items-center justify-center gap-2 py-4 rounded-xl font-bold text-base bg-yellow-500/20 text-yellow-500 cursor-not-allowed">
                 <IconLoader2 size={20} className="animate-spin" />
-                {demoPreloading
-                  ? (language === 'ar' ? 'جاري تحضير صوت أحمد...' : 'Preparing Saudi voice...')
-                  : (language === 'ar' ? 'جاري الاتصال...' : 'Connecting...')}
+                {language === 'ar' ? 'جاري الاتصال...' : 'Connecting...'}
               </button>
             )}
             {callStatus === 'connected' && (
