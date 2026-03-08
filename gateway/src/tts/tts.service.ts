@@ -48,7 +48,7 @@ export class TtsService {
       const client = this.http.getClient({
         baseUrl: this.serviceUrl,
         serviceName: 'tts',
-        timeoutMs: 90000, // XTTS Arabic inference can take 30-60s on CPU
+        timeoutMs: 30000, // XTTS Arabic GPU inference ~1-2s; 30s safety margin
       });
       const response = await client.post(
         `/synthesize`,

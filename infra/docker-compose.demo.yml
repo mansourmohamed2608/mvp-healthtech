@@ -181,19 +181,29 @@ services:
       retries: 10
       start_period: 600s  # 10 minutes for first-time model download
 
-  # ============ TTS SERVICE (CPU) ============
-  # edge-tts - cloud-based, no GPU needed
+  # ============ TTS SERVICE (GPU 1) ============
+  # Saudi XTTS on GPU — ~1-2s per sentence instead of 20-30s on CPU
   tts:
     build: ../services/tts
     ports:
       - "127.0.0.1:5002:5002"   # loopback only — enables SSH tunnel for demo
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 8G
     environment:
       - INTERNAL_SECRET=${INTERNAL_SECRET}
       - TTS_ENGINE=xtts
       - TTS_MODEL_DIR=/app/models
       - EDGE_TTS_ALLOWED=true
       - TTS_EDGE_VOICE=ar-SA-HamedNeural
-      - TTS_TIMEOUT_SECONDS=45
+      - TTS_TIMEOUT_SECONDS=30
+      - CUDA_VISIBLE_DEVICES=1
     volumes:
       - tts_models:/app/models
     restart: unless-stopped
