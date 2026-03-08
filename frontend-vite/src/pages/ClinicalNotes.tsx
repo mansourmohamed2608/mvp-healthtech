@@ -18,6 +18,9 @@ import {
   IconUser,
   IconPlus,
   IconStethoscope,
+  IconEdit,
+  IconLayoutGrid,
+  IconCode,
 } from '@tabler/icons-react';
 import api from '../utils/api';
 import { useAuthStore } from '@store/authStore';
@@ -125,6 +128,16 @@ const parseSoapSections = (soapJson: any, soapNote: string): SoapSections => {
   };
 };
 
+const sanitizeError = (err: any): string => {
+  const msg = String(err?.message || '').toLowerCase();
+  if (msg.includes('downstream') || msg.includes('502') || msg.includes('503') || msg.includes('econnrefused'))
+    return 'تعذر الاتصال بالخادم. تأكد من تشغيل الخدمة وحاول مجدداً.';
+  if (msg.includes('401') || msg.includes('unauthorized')) return 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجدداً';
+  if (msg.includes('409') || msg.includes('conflict')) return 'يوجد سجل بنفس البيانات';
+  if (msg.includes('400') || msg.includes('bad request')) return 'بيانات غير صحيحة، تحقق من المدخلات';
+  return err?.message || 'حدث خطأ غير متوقع';
+};
+
 // ─── SOAP Section Config ──────────────────────────────────────────────────────
 
 const SOAP_SECTIONS = [
@@ -178,6 +191,23 @@ const SOAP_SECTIONS = [
   },
 ] as const;
 
+// ─── Built-in Template Library ─────────────────────────────────────────────
+
+const BUILTIN_TEMPLATES = [
+  { id: 'standard-soap',  name: 'SOAP القياسي',      nameEn: 'Standard SOAP',  icon: '📋', color: 'purple',  desc: 'القالب العام: ذاتي • موضوعي • تقييم • خطة',     template: { style: 'standard',    sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'compact-soap',   name: 'SOAP المختصر',       nameEn: 'Compact SOAP',   icon: '⚡', color: 'blue',    desc: 'نسخة موجزة للزيارات السريعة',                  template: { style: 'compact',     sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'psychiatric',    name: 'الطب النفسي',         nameEn: 'Psychiatric',    icon: '🧠', color: 'indigo',  desc: 'يشمل تقييم الحالة العقلية والمخاطر',            template: { style: 'psychiatric', sections: ['subjective','objective','assessment','plan'], extras: ['mentalStatus','risk'] } },
+  { id: 'pediatric',      name: 'طب الأطفال',          nameEn: 'Pediatric',      icon: '👶', color: 'emerald', desc: 'مخصص للمرضى دون سن 18',                         template: { style: 'pediatric',   sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'emergency',      name: 'الطوارئ',             nameEn: 'Emergency',      icon: '🚨', color: 'red',     desc: 'قالب سريع لحالات الإسعاف والطوارئ',             template: { style: 'emergency',   sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'dap',            name: 'قالب DAP',            nameEn: 'DAP Note',       icon: '📄', color: 'amber',   desc: 'بيانات • تقييم • خطة (شائع في الإرشاد)',        template: { style: 'dap',         sections: ['data','assessment','plan'] } },
+  { id: 'birp',           name: 'قالب BIRP',           nameEn: 'BIRP Note',      icon: '🔍', color: 'teal',    desc: 'سلوك • تدخل • استجابة • خطة',                  template: { style: 'birp',        sections: ['behavior','intervention','response','plan'] } },
+  { id: 'progress',       name: 'ملاحظة المتابعة',      nameEn: 'Progress Note',  icon: '📈', color: 'cyan',    desc: 'متابعة تطور حالة المريض وعلاجه',                template: { style: 'progress',    sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'cardiology',     name: 'القلب والأوعية',       nameEn: 'Cardiology',     icon: '❤️', color: 'rose',    desc: 'يشمل مؤشرات القلب التفصيلية',                  template: { style: 'cardiology',  sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'dermatology',    name: 'الجلدية',              nameEn: 'Dermatology',    icon: '🔬', color: 'orange',  desc: 'وصف تفصيلي للحالة الجلدية',                    template: { style: 'dermatology', sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'obstetrics',     name: 'النساء والتوليد',       nameEn: 'OB/GYN',         icon: '🤰', color: 'pink',    desc: 'مخصص لطب التوليد وأمراض النساء',               template: { style: 'obstetrics',  sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'orthopedics',    name: 'العظام والمفاصل',       nameEn: 'Orthopedics',    icon: '🦴', color: 'slate',   desc: 'يشمل تقييم الحركة والألم',                      template: { style: 'orthopedics', sections: ['subjective','objective','assessment','plan'] } },
+] as const;
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ClinicalNotes() {
@@ -215,6 +245,16 @@ export default function ClinicalNotes() {
   const [sectionRecordingTime, setSectionRecordingTime] = useState(0);
   const [sectionUpdating, setSectionUpdating] = useState<keyof SoapSections | null>(null);
 
+  // Template manager
+  const [showTemplateManager, setShowTemplateManager] = useState(false);
+  const [templateTab, setTemplateTab] = useState<'builtin' | 'upload' | 'custom'>('builtin');
+  const [customTemplateName, setCustomTemplateName] = useState('');
+  const [customTemplateText, setCustomTemplateText] = useState('');
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [templateError, setTemplateError] = useState('');
+  const [selectedTemplateJson, setSelectedTemplateJson] = useState<Record<string, any> | null>(null);
+  const [selectedTemplateName, setSelectedTemplateName] = useState('');
+
   // Patient files
   const [showPatientFiles, setShowPatientFiles] = useState(false);
   const [patientDocs, setPatientDocs] = useState<any[]>([]);
@@ -237,6 +277,7 @@ export default function ClinicalNotes() {
   const sectionAudioChunksRef = useRef<Blob[]>([]);
   const sectionTimerRef = useRef<number | null>(null);
   const recordingDurationRef = useRef(0);
+  const templateFileInputRef = useRef<HTMLInputElement>(null);
 
   // ─── Effects ─────────────────────────────────────────────────────────────
 
@@ -272,6 +313,39 @@ export default function ClinicalNotes() {
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
     setTimeout(() => setToast(null), 4000);
+  };
+
+  // ─── Template save helpers ──────────────────────────────────────────────
+
+  const createCustomTemplate = async (name: string, templateObj: Record<string, any>) => {
+    setTemplateSaving(true);
+    setTemplateError('');
+    try {
+      await api.createSoapTemplate({ name, template: templateObj });
+      await loadTemplates();
+      setShowTemplateManager(false);
+      setCustomTemplateName('');
+      setCustomTemplateText('');
+      showToast('success', `تم حفظ القالب "${name}" بنجاح`);
+    } catch (err: any) {
+      setTemplateError(sanitizeError(err));
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
+  const handleTemplateFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      const name = customTemplateName.trim() || file.name.replace(/\.[^.]+$/, '');
+      await createCustomTemplate(name, json);
+    } catch {
+      setTemplateError('الملف غير صالح. يجب أن يكون بتنسيق JSON صحيح.');
+    }
+    if (templateFileInputRef.current) templateFileInputRef.current.value = '';
   };
 
   // ─── Load data ────────────────────────────────────────────────────────────
@@ -340,7 +414,7 @@ export default function ClinicalNotes() {
       setPatientError('');
     } catch (err: any) {
       setPatientStatus('error');
-      setPatientError(err.message || 'فشل إنشاء المريض');
+      setPatientError(sanitizeError(err));
     }
   };
 
@@ -426,6 +500,7 @@ export default function ClinicalNotes() {
         patientId,
         practitionerId,
         templateId: selectedTemplateId || undefined,
+        templateJson: selectedTemplateJson || undefined,
         patientName,
         providerName,
         dateOfVisit,
@@ -689,9 +764,6 @@ export default function ClinicalNotes() {
                     <IconPlus className="w-4 h-4" />
                   </button>
                 </div>
-                {patientStatus === 'error' && (
-                  <p className="text-xs text-red-400 mt-1">{patientError}</p>
-                )}
               </FormField>
 
               {/* Add patient form */}
@@ -753,19 +825,37 @@ export default function ClinicalNotes() {
               </FormField>
 
               {/* Template */}
-              {templates.length > 0 && (
-                <FormField label="قالب الملاحظة">
+              <FormField label="قالب الملاحظة">
+                <div className="flex gap-2">
                   <select
                     value={selectedTemplateId}
-                    onChange={(e) => setSelectedTemplateId(e.target.value)}
-                    className="inp"
+                    onChange={(e) => {
+                      setSelectedTemplateId(e.target.value);
+                      setSelectedTemplateJson(null);
+                      setSelectedTemplateName('');
+                    }}
+                    className="inp flex-1"
                   >
+                    <option value="">— اختر قالباً —</option>
                     {templates.map((t) => (
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
-                </FormField>
-              )}
+                  <button
+                    onClick={() => setShowTemplateManager(true)}
+                    title="مكتبة القوالب"
+                    className="p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-slate-400 hover:text-purple-300 transition-all"
+                  >
+                    <IconLayoutGrid className="w-4 h-4" />
+                  </button>
+                </div>
+                {selectedTemplateName && !selectedTemplateId && (
+                  <p className="text-xs text-purple-400 mt-1 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 inline-block" />
+                    قالب نشط: {selectedTemplateName}
+                  </p>
+                )}
+              </FormField>
 
               {/* Dialect */}
               <FormField label="لهجة التسجيل">
@@ -1093,6 +1183,44 @@ export default function ClinicalNotes() {
         </div>
       </div>
 
+      {/* ── Template Manager Modal ── */}
+      <AnimatePresence>
+        {showTemplateManager && (
+          <TemplateManagerModal
+            tab={templateTab}
+            onTabChange={setTemplateTab}
+            templates={templates}
+            builtinTemplates={BUILTIN_TEMPLATES}
+            customTemplateName={customTemplateName}
+            customTemplateText={customTemplateText}
+            templateSaving={templateSaving}
+            templateError={templateError}
+            templateFileInputRef={templateFileInputRef}
+            onClose={() => { setShowTemplateManager(false); setTemplateError(''); }}
+            onNameChange={setCustomTemplateName}
+            onTextChange={setCustomTemplateText}
+            onFileUpload={handleTemplateFileUpload}
+            onSaveCustom={async () => {
+              if (!customTemplateName.trim()) { setTemplateError('أدخل اسم القالب'); return; }
+              try {
+                const json = JSON.parse(customTemplateText);
+                await createCustomTemplate(customTemplateName.trim(), json);
+              } catch {
+                setTemplateError('تنسيق JSON غير صحيح. تحقق من البنية.');
+              }
+            }}
+            onSelectBuiltin={(t) => {
+              setSelectedTemplateJson(t.template as Record<string, any>);
+              setSelectedTemplateName(t.name);
+              setSelectedTemplateId('');
+              setShowTemplateManager(false);
+              showToast('success', `تم تفعيل قالب: ${t.name}`);
+            }}
+            onSaveBuiltin={(t) => createCustomTemplate(t.name, t.template as Record<string, any>)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* ── Toast ── */}
       <AnimatePresence>
         {toast && (
@@ -1276,6 +1404,250 @@ function SoapSectionCard({
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Template Manager Modal ────────────────────────────────────────────────────
+
+const COLOR_MAP: Record<string, { bg: string; text: string; border: string }> = {
+  purple:  { bg: 'bg-purple-500/10',  text: 'text-purple-300',  border: 'border-purple-500/30' },
+  blue:    { bg: 'bg-blue-500/10',    text: 'text-blue-300',    border: 'border-blue-500/30' },
+  indigo:  { bg: 'bg-indigo-500/10',  text: 'text-indigo-300',  border: 'border-indigo-500/30' },
+  emerald: { bg: 'bg-emerald-500/10', text: 'text-emerald-300', border: 'border-emerald-500/30' },
+  red:     { bg: 'bg-red-500/10',     text: 'text-red-300',     border: 'border-red-500/30' },
+  amber:   { bg: 'bg-amber-500/10',   text: 'text-amber-300',   border: 'border-amber-500/30' },
+  teal:    { bg: 'bg-teal-500/10',    text: 'text-teal-300',    border: 'border-teal-500/30' },
+  cyan:    { bg: 'bg-cyan-500/10',    text: 'text-cyan-300',    border: 'border-cyan-500/30' },
+  rose:    { bg: 'bg-rose-500/10',    text: 'text-rose-300',    border: 'border-rose-500/30' },
+  orange:  { bg: 'bg-orange-500/10',  text: 'text-orange-300',  border: 'border-orange-500/30' },
+  pink:    { bg: 'bg-pink-500/10',    text: 'text-pink-300',    border: 'border-pink-500/30' },
+  slate:   { bg: 'bg-slate-500/10',   text: 'text-slate-300',   border: 'border-slate-500/30' },
+};
+
+function TemplateManagerModal({
+  tab, onTabChange, templates, builtinTemplates,
+  customTemplateName, customTemplateText,
+  templateSaving, templateError, templateFileInputRef,
+  onClose, onNameChange, onTextChange, onFileUpload,
+  onSaveCustom, onSelectBuiltin, onSaveBuiltin,
+}: {
+  tab: 'builtin' | 'upload' | 'custom';
+  onTabChange: (t: 'builtin' | 'upload' | 'custom') => void;
+  templates: Array<{ id: string; name: string }>;
+  builtinTemplates: typeof BUILTIN_TEMPLATES;
+  customTemplateName: string;
+  customTemplateText: string;
+  templateSaving: boolean;
+  templateError: string;
+  templateFileInputRef: React.RefObject<HTMLInputElement>;
+  onClose: () => void;
+  onNameChange: (v: string) => void;
+  onTextChange: (v: string) => void;
+  onFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onSaveCustom: () => void;
+  onSelectBuiltin: (t: typeof BUILTIN_TEMPLATES[number]) => void;
+  onSaveBuiltin: (t: typeof BUILTIN_TEMPLATES[number]) => Promise<void>;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      dir="rtl"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        className="bg-slate-900 border border-white/15 rounded-2xl w-full max-w-3xl max-h-[88vh] flex flex-col shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+          <div>
+            <h2 className="text-lg font-bold text-white">مكتبة القوالب</h2>
+            <p className="text-xs text-slate-500 mt-0.5">اختر قالباً جاهزاً أو أنشئ قالبك الخاص</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-colors"
+          >
+            <IconX className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-2 px-6 pt-4">
+          {([
+            { key: 'builtin' as const, label: 'قوالب جاهزة',  icon: <IconLayoutGrid className="w-4 h-4" /> },
+            { key: 'upload'  as const, label: 'رفع ملف JSON', icon: <IconUpload className="w-4 h-4" /> },
+            { key: 'custom'  as const, label: 'قالب مخصص',    icon: <IconCode className="w-4 h-4" /> },
+          ]).map((t) => (
+            <button
+              key={t.key}
+              onClick={() => onTabChange(t.key)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                tab === t.key
+                  ? 'bg-purple-500/20 border border-purple-500/40 text-purple-200'
+                  : 'bg-white/5 border border-white/10 text-slate-400 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              {t.icon} {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+
+          {/* ── Tab: Built-in ── */}
+          {tab === 'builtin' && (
+            <div>
+              <p className="text-xs text-slate-500 mb-4">
+                اضغط <strong className="text-slate-300">تفعيل</strong> لاستخدام القالب فوراً أو
+                <strong className="text-slate-300"> حفظ</strong> لإضافته لقائمتك الدائمة
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {builtinTemplates.map((t) => {
+                  const c = COLOR_MAP[t.color] ?? COLOR_MAP.slate;
+                  return (
+                    <div key={t.id} className={`${c.bg} ${c.border} border rounded-xl p-4 flex flex-col gap-2`}>
+                      <span className="text-2xl">{t.icon}</span>
+                      <div>
+                        <p className={`text-sm font-bold ${c.text}`}>{t.name}</p>
+                        <p className="text-[11px] text-slate-500 leading-tight mt-0.5">{t.desc}</p>
+                        <p className="text-[10px] text-slate-600 mt-0.5 font-mono">{t.nameEn}</p>
+                      </div>
+                      <div className="flex gap-2 mt-auto">
+                        <button
+                          onClick={() => onSelectBuiltin(t)}
+                          className={`flex-1 py-1.5 text-xs font-bold rounded-lg border ${c.bg} ${c.border} ${c.text} hover:opacity-80 transition-opacity`}
+                        >
+                          ⚡ تفعيل
+                        </button>
+                        <button
+                          onClick={() => onSaveBuiltin(t)}
+                          className="flex-1 py-1.5 text-xs font-bold rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:bg-white/10 hover:text-white transition-all"
+                        >
+                          💾 حفظ
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ── Tab: Upload ── */}
+          {tab === 'upload' && (
+            <div className="max-w-md mx-auto space-y-4">
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
+                <p className="text-sm text-blue-200 font-semibold mb-1">كيفية رفع قالب</p>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  ارفع ملف <code className="text-blue-300 font-mono">.json</code> يحتوي على بنية القالب.
+                  يمكنك تصدير قالب موجود من أي نظام EHR أو إنشاؤه يدوياً.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">اسم القالب (اختياري)</label>
+                <input
+                  value={customTemplateName}
+                  onChange={(e) => onNameChange(e.target.value)}
+                  className="inp"
+                  placeholder="سيُستخدم اسم الملف إن تُرك فارغاً"
+                />
+              </div>
+              <button
+                onClick={() => templateFileInputRef.current?.click()}
+                className="w-full flex flex-col items-center gap-3 py-10 border-2 border-dashed border-white/20 hover:border-purple-500/50 rounded-xl text-slate-400 hover:text-white transition-all group"
+              >
+                <div className="w-12 h-12 rounded-full bg-white/5 group-hover:bg-purple-500/10 flex items-center justify-center transition-colors">
+                  <IconUpload className="w-6 h-6" />
+                </div>
+                <div className="text-center">
+                  <p className="text-sm font-bold">اضغط لاختيار ملف JSON</p>
+                  <p className="text-xs opacity-60 mt-0.5">الحد الأقصى 1 MB</p>
+                </div>
+              </button>
+              <input
+                ref={templateFileInputRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={onFileUpload}
+              />
+              {templateError && (
+                <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2">{templateError}</p>
+              )}
+            </div>
+          )}
+
+          {/* ── Tab: Custom ── */}
+          {tab === 'custom' && (
+            <div className="space-y-4">
+              <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4">
+                <p className="text-sm text-purple-200 font-semibold mb-1">إنشاء قالب مخصص</p>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  عرِّف قالبك بتنسيق JSON. اضغط <strong className="text-slate-300">استيراد مثال</strong> للبدء.
+                  الأقسام المتاحة: <code className="text-emerald-300 font-mono">subjective, objective, assessment, plan, data, behavior, intervention, response</code>
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">اسم القالب *</label>
+                <input
+                  value={customTemplateName}
+                  onChange={(e) => onNameChange(e.target.value)}
+                  className="inp"
+                  placeholder="مثال: قالب طب الأسرة"
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-medium text-slate-400">بنية القالب (JSON)</label>
+                  <button
+                    onClick={() => onTextChange('{\n  "style": "standard",\n  "sections": ["subjective", "objective", "assessment", "plan"],\n  "prompts": {\n    "subjective": "شكوى المريض الرئيسية...",\n    "objective": "الفحص السريري والعلامات الحيوية...",\n    "assessment": "التشخيص والتقييم السريري...",\n    "plan": "الخطة العلاجية والمتابعة..."\n  }\n}')}
+                    className="text-xs text-purple-400 hover:text-purple-300 transition-colors"
+                  >
+                    <IconEdit className="w-3 h-3 inline ml-1" />
+                    استيراد مثال
+                  </button>
+                </div>
+                <textarea
+                  value={customTemplateText}
+                  onChange={(e) => onTextChange(e.target.value)}
+                  className="w-full h-56 px-4 py-3 bg-slate-800/60 border border-white/10 rounded-xl text-sm text-emerald-300 leading-relaxed resize-none focus:outline-none focus:border-purple-500/50 focus:ring-2 focus:ring-purple-500/20 font-mono"
+                  placeholder={'{}  '}
+                  dir="ltr"
+                  spellCheck={false}
+                />
+              </div>
+              {templateError && (
+                <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2">{templateError}</p>
+              )}
+              <button
+                onClick={onSaveCustom}
+                disabled={templateSaving}
+                className="w-full py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-700 disabled:text-slate-500 rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"
+              >
+                {templateSaving
+                  ? <><IconLoader2 className="w-4 h-4 animate-spin" /> جارٍ الحفظ...</>
+                  : <><IconCheck className="w-4 h-4" /> حفظ القالب</>
+                }
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Footer: saved templates */}
+        {templates.length > 0 && (
+          <div className="px-6 py-3 border-t border-white/10">
+            <p className="text-xs text-slate-500">
+              قوالبك المحفوظة: {templates.map((t) => t.name).join(' • ')}
+            </p>
+          </div>
+        )}
+      </motion.div>
     </div>
   );
 }
