@@ -146,6 +146,16 @@ const VoiceAgentClean = () => {
     }
   }, []);
 
+  // Strip punctuation that confuses Arabic TTS models (em/en dashes, smart quotes, ellipsis)
+  const sanitizeForTTS = useCallback((text: string): string =>
+    text
+      .replace(/[—–]/g, '، ')   // em/en dash → Arabic comma pause
+      .replace(/\.\.\./g, ' ')  // ellipsis → space
+      .replace(/["""'']/g, '')  // smart quotes
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+  , []);
+
   // ── Fully hardcoded scripted demo — looks like a real call ───────────────
   const runScriptedDemo = useCallback(async () => {
     demoAbortRef.current = false;
@@ -161,30 +171,46 @@ const VoiceAgentClean = () => {
     setCallStatus('connected');
     await new Promise(r => setTimeout(r, 400));
 
+    // Prefetch: synthesize step i+1 audio while step i is playing + in listening phase.
+    // Most steps will have their audio ready before the next VA turn starts, hiding latency.
+    let prefetchedTts: any = null;
+
     for (let i = 0; i < DEMO_SCRIPT.length; i++) {
       if (demoAbortRef.current) break;
       const step = DEMO_SCRIPT[i];
       setDemoStep(i);
 
-      // VA speaks: start TTS synthesis and typewrite simultaneously.
-      // Synthesis runs on CPU (20-30s); typewrite animation is ~3-4s.
-      // Both complete before audio plays, giving natural pacing.
+      // VA speaks: use prefetched audio if available, otherwise synthesize now in parallel
+      // with the typewrite animation so the user sees text while audio loads.
       setDemoPhase('va');
       setDemoTypeText('');
-      setDemoPreloading(true); // show audio-generating indicator
 
-      const [ttsRes] = await Promise.all([
-        api.synthesizeSpeech(step.va, 'saudi-tts').catch(() => null),
-        typewrite(step.va, demoAbortRef),
-      ]);
+      const cleanText = sanitizeForTTS(step.va);
+      let ttsRes: any = null;
 
-      setDemoPreloading(false);
+      if (prefetchedTts !== null) {
+        // Audio was prefetched during the previous listening gap — no wait needed
+        ttsRes = prefetchedTts;
+        prefetchedTts = null;
+        setDemoPreloading(false);
+        await typewrite(cleanText, demoAbortRef);
+      } else {
+        // No prefetch available (first step or prefetch failed) — synthesize in parallel
+        setDemoPreloading(true);
+        const [res] = await Promise.all([
+          api.synthesizeSpeech(cleanText, 'saudi-tts').catch(() => null),
+          typewrite(cleanText, demoAbortRef),
+        ]);
+        ttsRes = res;
+        setDemoPreloading(false);
+      }
+
       if (demoAbortRef.current) break;
 
       setDemoConvo(prev => [...prev, { role: 'va', text: step.va }]);
       setDemoTypeText('');
 
-      // Play Ahmed Saudi TTS
+      // Play TTS audio (awaits until audio fully finishes before continuing)
       try {
         if (ttsRes && (ttsRes as any).audio) {
           await playMulawAudio((ttsRes as any).audio, (ttsRes as any).sampleRate || 8000);
@@ -192,13 +218,23 @@ const VoiceAgentClean = () => {
       } catch { /* non-fatal */ }
       if (demoAbortRef.current) break;
 
-      // Patient turn: 2 second pause then auto-advance
       if (step.patient) {
+        // Listening phase: run patient pause and prefetch next VA audio in parallel
         setDemoPhase('listening');
-        await new Promise(r => setTimeout(r, 2000));
+        const nextStep = (DEMO_SCRIPT as readonly { va: string; patient: string | null }[])[i + 1] ?? null;
+        const [, nextTts] = await Promise.all([
+          new Promise(r => setTimeout(r, LISTEN_MS)),
+          nextStep
+            ? api.synthesizeSpeech(sanitizeForTTS(nextStep.va), 'saudi-tts').catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        prefetchedTts = nextTts;
         if (demoAbortRef.current) break;
         setDemoConvo(prev => [...prev, { role: 'patient', text: step.patient as string }]);
         await new Promise(r => setTimeout(r, 400));
+      } else {
+        // Last step: small buffer after audio so AudioContext finishes cleanly
+        await new Promise(r => setTimeout(r, 600));
       }
       if (demoAbortRef.current) break;
     }
@@ -216,7 +252,7 @@ const VoiceAgentClean = () => {
         }
       }
     }
-  }, [playMulawAudio, typewrite]);
+  }, [playMulawAudio, typewrite, sanitizeForTTS]);
 
   const stopDemo = useCallback(() => {
     demoAbortRef.current = true;

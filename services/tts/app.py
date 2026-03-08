@@ -100,7 +100,7 @@ SAUDI_REVISION = os.getenv("SAUDI_TTS_REVISION", "f99ffe0")
 SAUDI_SPEAKER_FILE = os.getenv("SAUDI_TTS_SPEAKER_FILE", "speaker.wav")
 SAUDI_TEMPERATURE = float(os.getenv("SAUDI_TEMPERATURE", "0.50"))
 TTS_MODEL_DIR = Path(os.getenv("TTS_MODEL_DIR", str(Path(__file__).parent / "models")))
-TTS_TIMEOUT_SECONDS = float(os.getenv("TTS_TIMEOUT_SECONDS", "10"))
+TTS_TIMEOUT_SECONDS = float(os.getenv("TTS_TIMEOUT_SECONDS", "45"))
 EDGE_OUTPUT_FORMAT = "riff-16khz-16bit-mono-pcm"
 
 if TTS_ENGINE == "xtts" and not XTTS_AVAILABLE:
@@ -533,6 +533,16 @@ async def ready():
 async def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+def _clean_tts_text(text: str) -> str:
+    """Normalize text before synthesis: remove punctuation that confuses Arabic TTS models."""
+    import re
+    text = re.sub(r'[\u2014\u2013]', '\u060c ', text)  # em/en dash → Arabic comma + space
+    text = re.sub(r'\.{2,}', ' ', text)               # ellipsis / repeated dots → space
+    text = re.sub(r'[\u201c\u201d\u2018\u2019"]', '', text)  # smart / straight quotes
+    text = re.sub(r'\s{2,}', ' ', text)
+    return text.strip()
+
+
 @app.post("/synthesize")
 async def synthesize(request: SynthesizeRequest):
     """
@@ -547,9 +557,11 @@ async def synthesize(request: SynthesizeRequest):
     if len(request.text) > 1000:
         raise HTTPException(status_code=400, detail="Text too long")
 
+    clean_text = _clean_tts_text(request.text)
+
     try:
         mulaw_bytes = await asyncio.wait_for(
-            _run_tts_engine(request.text, request.voice),
+            _run_tts_engine(clean_text, request.voice),
             timeout=TTS_TIMEOUT_SECONDS,
         )
         duration = time.time() - start_time
