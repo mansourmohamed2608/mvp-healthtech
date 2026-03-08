@@ -125,11 +125,9 @@ const VoiceAgentClean = () => {
       const src = ctx.createBufferSource();
       src.buffer = buf;
       src.connect(ctx.destination);
-      setDemoAudioPlaying(true);
       src.start();
       await new Promise<void>(r => { src.onended = () => r(); });
     } catch { /* non-fatal */ }
-    finally { setDemoAudioPlaying(false); }
   }, []);
 
   // Auto-scroll conversation panel
