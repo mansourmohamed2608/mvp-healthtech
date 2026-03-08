@@ -55,6 +55,7 @@ const VoiceAgentClean = () => {
   const [demoPhase, setDemoPhase] = useState<'idle' | 'va' | 'listening' | 'done'>('idle');
   const [demoConvo, setDemoConvo] = useState<{ role: 'va' | 'patient'; text: string }[]>([]);
   const [demoTypeText, setDemoTypeText] = useState('');
+  const [demoPreloading, setDemoPreloading] = useState(false);
   const [callSeconds, setCallSeconds] = useState(0);
   const demoAbortRef = useRef(false);
   const demoEndRef = useRef<HTMLDivElement>(null);
@@ -153,9 +154,17 @@ const VoiceAgentClean = () => {
     setDemoStep(-1);
     setDemoPhase('idle');
 
-    // Connecting phase
+    // Pre-generate ALL Saudi XTTS audio in parallel before the demo starts
+    // so each step plays instantly without waiting for slow CPU inference
+    setDemoPreloading(true);
     setCallStatus('connecting');
-    await new Promise(r => setTimeout(r, 1800));
+    const ttsCache = await Promise.all(
+      DEMO_SCRIPT.map(step => api.synthesizeSpeech(step.va, 'saudi-tts').catch(() => null))
+    );
+    setDemoPreloading(false);
+    if (demoAbortRef.current) { setCallStatus('idle'); return; }
+
+    await new Promise(r => setTimeout(r, 600));
     if (demoAbortRef.current) { setCallStatus('idle'); return; }
     setCallStatus('connected');
     await new Promise(r => setTimeout(r, 400));
@@ -165,19 +174,18 @@ const VoiceAgentClean = () => {
       const step = DEMO_SCRIPT[i];
       setDemoStep(i);
 
-      // VA speaks: typewrite + TTS in parallel
+      // VA speaks: typewrite (audio already cached)
       setDemoPhase('va');
       setDemoTypeText('');
-      const ttsPromise = api.synthesizeSpeech(step.va, 'ar-SA-HamedNeural').catch(() => null);
       await typewrite(step.va, demoAbortRef);
       if (demoAbortRef.current) break;
 
       setDemoConvo(prev => [...prev, { role: 'va', text: step.va }]);
       setDemoTypeText('');
 
-      // Play Ahmed Saudi TTS
+      // Play Ahmed Saudi TTS from pre-generated cache
       try {
-        const ttsRes = await ttsPromise;
+        const ttsRes = ttsCache[i];
         if (ttsRes && (ttsRes as any).audio) {
           await playMulawAudio((ttsRes as any).audio, (ttsRes as any).sampleRate || 8000);
         }
@@ -535,7 +543,9 @@ const VoiceAgentClean = () => {
                 {callStatus === 'connected'
                   ? (language === 'ar' ? 'متصل' : 'Connected')
                   : callStatus === 'connecting'
-                    ? (language === 'ar' ? 'جاري الاتصال...' : 'Connecting...')
+                    ? (demoPreloading
+                        ? (language === 'ar' ? 'جاري تحضير صوت أحمد...' : 'Preparing Saudi voice...')
+                        : (language === 'ar' ? 'جاري الاتصال...' : 'Connecting...'))
                     : callStatus === 'disconnected'
                       ? (language === 'ar' ? 'انتهت المكالمة' : 'Call Ended')
                       : (language === 'ar' ? 'جاهز' : 'Ready')}
@@ -581,7 +591,9 @@ const VoiceAgentClean = () => {
                   </div>
                 </div>
                 <p className="text-sm font-medium text-green-500">
-                  {language === 'ar' ? 'جاري الاتصال بليان...' : 'Calling Leyan...'}
+                  {demoPreloading
+                    ? (language === 'ar' ? 'جاري تحضير صوت أحمد...' : 'Preparing Saudi voice...')
+                    : (language === 'ar' ? 'جاري الاتصال بليان...' : 'Calling Leyan...')}
                 </p>
               </div>
             )}
@@ -681,7 +693,9 @@ const VoiceAgentClean = () => {
             {callStatus === 'connecting' && (
               <button disabled className="w-full flex items-center justify-center gap-2 py-4 rounded-xl font-bold text-base bg-yellow-500/20 text-yellow-500 cursor-not-allowed">
                 <IconLoader2 size={20} className="animate-spin" />
-                {language === 'ar' ? 'جاري الاتصال...' : 'Connecting...'}
+                {demoPreloading
+                  ? (language === 'ar' ? 'جاري تحضير صوت أحمد...' : 'Preparing Saudi voice...')
+                  : (language === 'ar' ? 'جاري الاتصال...' : 'Connecting...')}
               </button>
             )}
             {callStatus === 'connected' && (
