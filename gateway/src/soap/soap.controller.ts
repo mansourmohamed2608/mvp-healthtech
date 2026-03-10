@@ -35,34 +35,98 @@ import { AsrService } from '../asr/asr.service';
 import { randomUUID } from 'crypto';
 
 class CreateSoapDto {
+  @IsNotEmpty()
+  @IsString()
   transcript!: string;
-  sessionId!: string;
+
+  @IsOptional()
+  @IsString()
+  sessionId?: string;
+
+  @IsOptional()
   patientContext?: any;
+
+  @IsNotEmpty()
+  @IsString()
   patientId!: string;
+
+  @IsNotEmpty()
+  @IsString()
   practitionerId!: string;
+
+  @IsOptional()
+  @IsString()
   encounterId?: string;
+
+  @IsOptional()
+  @IsString()
   templateId?: string;
+
+  @IsOptional()
   templateJson?: Record<string, any>;
+
+  @IsOptional()
+  @IsString()
   patientName?: string;
+
+  @IsOptional()
+  @IsString()
   providerName?: string;
+
+  @IsOptional()
+  @IsString()
   dateOfVisit?: string;
 }
 
 class UpdateSoapFieldDto {
+  @IsNotEmpty()
+  @IsString()
   fieldPath!: string;
+
+  @IsOptional()
+  @IsString()
   audio?: string;
+
+  @IsOptional()
+  @IsString()
   transcript?: string;
+
+  @IsOptional()
+  @IsString()
   mode?: 'append' | 'replace';
+
+  @IsOptional()
+  @IsString()
   valueType?: 'string' | 'list';
+
+  @IsOptional()
+  @IsString()
   dialect?: string;
+
+  @IsOptional()
+  @IsString()
   language?: string;
 }
 
 class UpdateSoapSectionsDto {
+  @IsOptional()
+  @IsString()
   soapText?: string;
+
+  @IsOptional()
+  @IsString()
   subjective?: string;
+
+  @IsOptional()
+  @IsString()
   objective?: string;
+
+  @IsOptional()
+  @IsString()
   assessment?: string;
+
+  @IsOptional()
+  @IsString()
   plan?: string;
 }
 
