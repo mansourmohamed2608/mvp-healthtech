@@ -2,6 +2,7 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import { json, urlencoded } from 'express';
 import morgan from 'morgan';
 import helmet from 'helmet';
 import { LatencyMiddleware } from './middleware/latency.middleware';
@@ -66,6 +67,10 @@ async function bootstrap() {
       'x-correlation-id',
     ],
   });
+
+  // Raise body-parser limits — audio sessions can be hundreds of MB as base64
+  app.use(json({ limit: '500mb' }));
+  app.use(urlencoded({ limit: '500mb', extended: true }));
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
