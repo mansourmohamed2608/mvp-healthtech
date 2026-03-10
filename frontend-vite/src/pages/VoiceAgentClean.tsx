@@ -550,9 +550,6 @@ const VoiceAgentClean = () => {
           <h1 className="text-2xl lg:text-3xl font-bold">
             {language === 'ar' ? 'ليان | مساعدة بيميدكس' : 'Leyan | Bimedx Assistant'}
           </h1>
-          <p className={clsx('text-sm mt-0.5', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
-            {language === 'ar' ? 'المساعدة الصوتية الذكية لحجز المواعيد' : 'AI voice assistant · appointment booking'}
-          </p>
         </div>
       </div>
 

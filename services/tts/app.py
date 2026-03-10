@@ -94,11 +94,13 @@ DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", SAUDI_VOICE_ID)
 EGTTS_REPO_ID = os.getenv("EGTTS_REPO_ID", "OmarSamir/EGTTS-V0.1")
 EGTTS_REVISION = os.getenv("EGTTS_REVISION") or None
 EGTTS_SPEAKER_FILE = os.getenv("EGTTS_SPEAKER_FILE", "speaker_reference.wav")
-EGTTS_TEMPERATURE = float(os.getenv("EGTTS_TEMPERATURE", "0.55"))
+EGTTS_TEMPERATURE = float(os.getenv("EGTTS_TEMPERATURE", "0.40"))
+EGTTS_REPETITION_PENALTY = float(os.getenv("EGTTS_REPETITION_PENALTY", "10.0"))
 SAUDI_REPO_ID = os.getenv("SAUDI_TTS_REPO_ID", "AhmedEladl/saudi-tts")
 SAUDI_REVISION = os.getenv("SAUDI_TTS_REVISION", "f99ffe0")
 SAUDI_SPEAKER_FILE = os.getenv("SAUDI_TTS_SPEAKER_FILE", "speaker.wav")
-SAUDI_TEMPERATURE = float(os.getenv("SAUDI_TEMPERATURE", "0.50"))
+SAUDI_TEMPERATURE = float(os.getenv("SAUDI_TEMPERATURE", "0.40"))
+SAUDI_REPETITION_PENALTY = float(os.getenv("SAUDI_REPETITION_PENALTY", "10.0"))
 TTS_MODEL_DIR = Path(os.getenv("TTS_MODEL_DIR", str(Path(__file__).parent / "models")))
 TTS_TIMEOUT_SECONDS = float(os.getenv("TTS_TIMEOUT_SECONDS", "45"))
 EDGE_OUTPUT_FORMAT = "riff-16khz-16bit-mono-pcm"
@@ -262,7 +264,20 @@ def _load_xtts_state(kind: str) -> dict:
     return state
 
 
-def _xtts_generate(text: str, kind: str, temperature: float) -> bytes:
+def _trim_trailing_silence(wav: np.ndarray, sample_rate: int, threshold: float = 0.008, pad_secs: float = 0.25) -> np.ndarray:
+    """Remove near-silent tail that often carries XTTS hallucinated tokens."""
+    energy = np.abs(wav)
+    active = np.where(energy > threshold)[0]
+    if len(active) == 0:
+        return wav
+    last_active = active[-1]
+    end = min(last_active + int(pad_secs * sample_rate), len(wav))
+    # Never return less than 0.3 s to avoid clipping real speech
+    end = max(end, int(0.3 * sample_rate))
+    return wav[:end]
+
+
+def _xtts_generate(text: str, kind: str, temperature: float, repetition_penalty: float = 10.0) -> bytes:
     state = _load_xtts_state(kind)
     model = state["model"]
     gpt_cond_latent = state["latents"]
@@ -276,12 +291,15 @@ def _xtts_generate(text: str, kind: str, temperature: float) -> bytes:
         gpt_cond_latent=gpt_cond_latent,
         speaker_embedding=speaker_embedding,
         temperature=temperature,
+        repetition_penalty=repetition_penalty,
+        top_k=50,
+        top_p=0.85,
     )
     wav = out.get("wav")
     # Use explicit length check — numpy arrays raise ValueError on `not array`
     if wav is None or (hasattr(wav, "__len__") and len(wav) == 0):
         return _silence_mulaw()
-    audio_np = np.array(wav)
+    audio_np = _trim_trailing_silence(np.array(wav), XTTS_SAMPLE_RATE)
     audio_int16 = (audio_np * 32767).astype(np.int16)
     pcm_bytes = audio_int16.tobytes()
     pcm_8k, _ = audioop.ratecv(pcm_bytes, 2, 1, XTTS_SAMPLE_RATE, TWILIO_SAMPLE_RATE, None)
@@ -395,7 +413,7 @@ async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
     voice_id = _normalize_voice_id(voice)
     if voice_id == EGTTS_VOICE_ID:
         try:
-            result = await asyncio.to_thread(_xtts_generate, text, "egtts", EGTTS_TEMPERATURE)
+            result = await asyncio.to_thread(_xtts_generate, text, "egtts", EGTTS_TEMPERATURE, EGTTS_REPETITION_PENALTY)
             logger.info("TTS engine used: xtts-egtts")
             return result
         except Exception as e:
@@ -415,7 +433,7 @@ async def _run_tts_engine(text: str, voice: Optional[str]) -> bytes:
         return _silence_mulaw()
     if voice_id == SAUDI_VOICE_ID:
         try:
-            result = await asyncio.to_thread(_xtts_generate, text, "saudi", SAUDI_TEMPERATURE)
+            result = await asyncio.to_thread(_xtts_generate, text, "saudi", SAUDI_TEMPERATURE, SAUDI_REPETITION_PENALTY)
             logger.info("TTS engine used: xtts-saudi")
             return result
         except Exception as e:
