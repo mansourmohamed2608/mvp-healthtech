@@ -136,7 +136,7 @@ export class SoapController {
     this.soapClient = this.http.getClient({
       baseUrl: this.soapServiceUrl,
       serviceName: 'soap',
-      timeoutMs: 180_000, // 3 min — LLM-backed generation requires multiple inference calls
+      timeoutMs: 300_000, // 5 min — LLM-backed generation requires multiple inference calls
       retries: 0,         // no retries to avoid duplicate note creation
     });
     this.fhirClient = this.http.getClient({
