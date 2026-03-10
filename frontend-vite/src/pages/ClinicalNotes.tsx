@@ -105,13 +105,14 @@ const buildSoapText = (s: { subjective?: any; objective?: any; assessment?: any;
 const parseSoapSections = (soapJson: any, soapNote: string): SoapSections => {
   if (soapJson) {
     const src = soapJson.soap_note || soapJson;
-    return {
-      subjective: src.subjective || src.S || '',
-      objective: src.objective || src.O || '',
-      assessment: src.assessment || src.A || '',
-      plan: src.plan || src.P || '',
-    };
+    // Only use the JSON path when keys are plain strings (not nested objects from soap_json template)
+    const s = typeof src.subjective === 'string' ? src.subjective : typeof src.S === 'string' ? src.S : '';
+    const o = typeof src.objective === 'string' ? src.objective : typeof src.O === 'string' ? src.O : '';
+    const a = typeof src.assessment === 'string' ? src.assessment : typeof src.A === 'string' ? src.A : '';
+    const p = typeof src.plan === 'string' ? src.plan : typeof src.P === 'string' ? src.P : '';
+    if (s || o || a || p) return { subjective: s, objective: o, assessment: a, plan: p };
   }
+  // Fallback: parse from the formatted soapNote text built from the response's top-level string fields
   const text = soapNote || '';
   const getSection = (label: string, next: string) => {
     const start = text.indexOf(`${label}:\n`);
