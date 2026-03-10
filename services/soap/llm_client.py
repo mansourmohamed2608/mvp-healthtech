@@ -4,7 +4,7 @@ import httpx
 
 
 class LlmClient:
-    def __init__(self, base_url: str, internal_secret: str, timeout_seconds: float = 30.0):
+    def __init__(self, base_url: str, internal_secret: str, timeout_seconds: float = 200.0):
         self.base_url = base_url.rstrip("/")
         self.internal_secret = internal_secret
         self.timeout_seconds = timeout_seconds

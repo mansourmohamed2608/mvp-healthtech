@@ -517,7 +517,7 @@ export default function ClinicalNotes() {
       setStatus(patch);
       setSelectedRecording({ ...recording, ...patch } as AudioRecording);
     } catch (err: any) {
-      const patch = { status: 'error' as const, error: err.message };
+      const patch = { status: 'error' as const, error: sanitizeError(err) };
       setRecordings((p) => p.map((r) => r.id === recording.id ? { ...r, ...patch } : r));
       if (selectedRecording?.id === recording.id || !selectedRecording) {
         setSelectedRecording({ ...recording, ...patch });
