@@ -111,6 +111,8 @@ export class AsrService {
     const client = this.http.getClient({
       baseUrl: process.env.ASR_SERVICE_URL || '',
       serviceName: 'asr',
+      timeoutMs: 300_000, // 5 min — CPU inference can take 30-120s
+      retries: 0,         // no retries for long-running transcription
     });
 
     // Twilio sends raw µ-law audio which soundfile cannot decode directly.
