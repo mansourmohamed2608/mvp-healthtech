@@ -24,6 +24,7 @@ class SoapSections:
 
 def parse_soap_lines(text: str) -> SoapSections:
     fields = {"subjective": "", "objective": "", "assessment": "", "plan": ""}
+    _PLACEHOLDER_MARKS = ("<one sentence", "<one word", "example output", "here is an example")
     for line in text.splitlines():
         line = line.strip()
         if ":" not in line:
@@ -31,7 +32,11 @@ def parse_soap_lines(text: str) -> SoapSections:
         label, value = line.split(":", 1)
         key = label.strip().lower()
         if key in fields:
-            fields[key] = value.strip()
+            v = value.strip()
+            # Skip if the LLM echoed a format placeholder or example header
+            if v.lower().startswith(_PLACEHOLDER_MARKS):
+                continue
+            fields[key] = v
 
     if not any(fields.values()):
         parts = [p.strip() for p in text.split("\n\n") if p.strip()]
