@@ -11,19 +11,50 @@ import { TenantGuard } from '../auth/tenant.guard';
 import { wrapError, camelResponse } from '../utils/http-utils';
 import type { Request } from 'express';
 import { MetricsController } from '../metrics/metrics.controller';
+import {
+  IsBoolean,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 class TranscribeDto {
+  @IsNotEmpty()
+  @IsString()
   audio: string;
+
+  @IsOptional()
+  @IsString()
   callSid?: string;
+
+  @IsOptional()
+  @IsString()
   dialect?: string;
+
+  @IsOptional()
+  @IsString()
   language?: string;
+
+  @IsOptional()
+  @IsBoolean()
   enableDiarization?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   diarizeFirst?: boolean;
 }
 
 class StreamDto {
+  @IsNotEmpty()
+  @IsString()
   audio: string;
+
+  @IsNotEmpty()
+  @IsString()
   callSid: string;
+
+  @IsOptional()
+  @IsString()
   dialect?: string;
 }
 
