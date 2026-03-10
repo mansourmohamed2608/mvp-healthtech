@@ -69,6 +69,8 @@ services:
       - TRANSFORMERS_CACHE=/cache
       - OTEL_ENABLED=true
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
+      - HF_TOKEN=${HF_TOKEN}
+      - HUGGINGFACE_HUB_TOKEN=${HF_TOKEN}
     volumes:
       - ../services/asr:/app
       - huggingface_cache:/cache
