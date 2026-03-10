@@ -35,98 +35,34 @@ import { AsrService } from '../asr/asr.service';
 import { randomUUID } from 'crypto';
 
 class CreateSoapDto {
-  @IsNotEmpty()
-  @IsString()
   transcript!: string;
-
-  @IsOptional()
-  @IsString()
-  sessionId?: string;
-
-  @IsOptional()
+  sessionId!: string;
   patientContext?: any;
-
-  @IsNotEmpty()
-  @IsString()
   patientId!: string;
-
-  @IsNotEmpty()
-  @IsString()
   practitionerId!: string;
-
-  @IsOptional()
-  @IsString()
   encounterId?: string;
-
-  @IsOptional()
-  @IsString()
   templateId?: string;
-
-  @IsOptional()
   templateJson?: Record<string, any>;
-
-  @IsOptional()
-  @IsString()
   patientName?: string;
-
-  @IsOptional()
-  @IsString()
   providerName?: string;
-
-  @IsOptional()
-  @IsString()
   dateOfVisit?: string;
 }
 
 class UpdateSoapFieldDto {
-  @IsNotEmpty()
-  @IsString()
   fieldPath!: string;
-
-  @IsOptional()
-  @IsString()
   audio?: string;
-
-  @IsOptional()
-  @IsString()
   transcript?: string;
-
-  @IsOptional()
-  @IsString()
   mode?: 'append' | 'replace';
-
-  @IsOptional()
-  @IsString()
   valueType?: 'string' | 'list';
-
-  @IsOptional()
-  @IsString()
   dialect?: string;
-
-  @IsOptional()
-  @IsString()
   language?: string;
 }
 
 class UpdateSoapSectionsDto {
-  @IsOptional()
-  @IsString()
   soapText?: string;
-
-  @IsOptional()
-  @IsString()
   subjective?: string;
-
-  @IsOptional()
-  @IsString()
   objective?: string;
-
-  @IsOptional()
-  @IsString()
   assessment?: string;
-
-  @IsOptional()
-  @IsString()
   plan?: string;
 }
 
@@ -790,6 +726,8 @@ export class SoapController {
 
   private async validateEntities(patientId?: string, clinicianId?: string) {
     if (!this.pool) return;
+    const UUID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (patientId) {
       const res = await this.pool.query(
         'SELECT id FROM patients WHERE id = $1',
@@ -798,7 +736,10 @@ export class SoapController {
       if (res.rowCount === 0)
         throw new BadRequestException('Invalid patientId');
     }
-    if (clinicianId) {
+    // Only validate clinicianId against the clinicians table if it looks like a
+    // UUID — non-UUID values (e.g. username "demo") are stored as-is in the
+    // TEXT clinician_id column and don't need a foreign-key check here.
+    if (clinicianId && UUID_RE.test(clinicianId)) {
       const res = await this.pool.query(
         'SELECT id FROM clinicians WHERE id = $1',
         [clinicianId],
