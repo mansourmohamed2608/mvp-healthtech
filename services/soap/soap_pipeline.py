@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -258,7 +259,7 @@ async def split_subjective(llm: LlmClient, text: str, session_id: str | None) ->
             "content": f"Subjective sentence:\n{text}\n\nReturn JSON only.",
         },
     ]
-    raw = await llm.generate(messages, max_new_tokens=320, temperature=0.0, session_id=session_id)
+    raw = await llm.generate(messages, max_new_tokens=96, temperature=0.0, session_id=session_id)
     obj, err = extract_json(raw)
     if err or obj is None:
         return {"chief_complaint": text, "hpi": "", "ros": ""}
@@ -280,7 +281,7 @@ async def split_plan(llm: LlmClient, text: str, session_id: str | None) -> Dict[
             "content": f"Plan sentence:\n{text}\n\nReturn JSON only.",
         },
     ]
-    raw = await llm.generate(messages, max_new_tokens=320, temperature=0.0, session_id=session_id)
+    raw = await llm.generate(messages, max_new_tokens=96, temperature=0.0, session_id=session_id)
     obj, err = extract_json(raw)
     if err or obj is None:
         return {"instructions": [text], "follow_up": "", "patient_education": []}
@@ -353,7 +354,7 @@ async def generate_structured_note(
 ) -> Dict[str, Any]:
     context_block = ""
     if patient_context:
-        context_block = f"\n\nPatient context:\n{json.dumps(patient_context, ensure_ascii=False)}"
+        context_block = f"\n\nPatient context:\n{json.dumps(patient_context, ensure_ascii=False, default=str)}"
     messages = [
         {"role": "system", "content": SOAP_SYSTEM_PROMPT},
         {
@@ -367,8 +368,10 @@ async def generate_structured_note(
     ]
     soap_text = await llm.generate(messages, max_new_tokens=220, temperature=0.0, session_id=session_id)
     sections = parse_soap_lines(soap_text)
-    subj_split = await split_subjective(llm, sections.subjective, session_id)
-    plan_split = await split_plan(llm, sections.plan, session_id)
+    subj_split, plan_split = await asyncio.gather(
+        split_subjective(llm, sections.subjective, session_id),
+        split_plan(llm, sections.plan, session_id),
+    )
     context = build_context(sections, subj_split, plan_split, patient_name, date_of_visit, provider_name)
     note_json = render_template(template, context)
     return {
