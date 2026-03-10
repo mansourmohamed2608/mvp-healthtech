@@ -92,6 +92,7 @@ services:
       - QDRANT_COLLECTION=va_rag
       - OTEL_ENABLED=true
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
+      - LLM_TIMEOUT_SECONDS=180
     volumes:
       - ../services/llm:/app
       - ../services/llm/data:/app/data
@@ -132,6 +133,7 @@ services:
       - INTERNAL_SECRET=${INTERNAL_SECRET:?set INTERNAL_SECRET}
       - OTEL_ENABLED=true
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
+      - LLM_SERVICE_URL=http://llm:5001
     volumes:
       - ../services/soap:/app
 
