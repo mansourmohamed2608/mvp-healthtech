@@ -35,16 +35,37 @@ import { AsrService } from '../asr/asr.service';
 import { randomUUID } from 'crypto';
 
 class CreateSoapDto {
+  @IsNotEmpty() @IsString()
   transcript!: string;
-  sessionId!: string;
+
+  @IsOptional() @IsString()
+  sessionId?: string;
+
+  @IsOptional()
   patientContext?: any;
+
+  @IsNotEmpty() @IsString()
   patientId!: string;
+
+  @IsNotEmpty() @IsString()
   practitionerId!: string;
+
+  @IsOptional() @IsString()
   encounterId?: string;
+
+  @IsOptional() @IsString()
   templateId?: string;
+
+  @IsOptional()
   templateJson?: Record<string, any>;
+
+  @IsOptional() @IsString()
   patientName?: string;
+
+  @IsOptional() @IsString()
   providerName?: string;
+
+  @IsOptional() @IsString()
   dateOfVisit?: string;
 }
 
@@ -115,6 +136,8 @@ export class SoapController {
     this.soapClient = this.http.getClient({
       baseUrl: this.soapServiceUrl,
       serviceName: 'soap',
+      timeoutMs: 180_000, // 3 min — LLM-backed generation requires multiple inference calls
+      retries: 0,         // no retries to avoid duplicate note creation
     });
     this.fhirClient = this.http.getClient({
       baseUrl: process.env.FHIR_SERVICE_URL || 'http://localhost:5004',
