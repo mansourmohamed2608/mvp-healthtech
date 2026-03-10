@@ -1178,7 +1178,9 @@ async def save_note(note: Dict[str, Any]) -> SOAPResponse:
         # If either INSERT fails the whole transaction rolls back — no unaudited PHI.
         async with conn.transaction():
             # RLS: tell Postgres which tenant this request belongs to
-            await conn.execute("SET LOCAL app.tenant_id = $1", tenant_id)
+            # asyncpg does not support parameters in SET LOCAL, so sanitize manually
+            _safe_tid = "".join(c for c in (tenant_id or "default") if c.isalnum() or c in "-_.") or "default"
+            await conn.execute(f"SET LOCAL app.tenant_id = '{_safe_tid}'")
             row = await conn.fetchrow(
                 """
                 INSERT INTO soap_notes (session_id, patient_id, clinician_id, template_id, status, raw_transcript, soap_json,
@@ -1233,14 +1235,16 @@ async def fetch_notes(tenant_id: str = "default", status: Optional[str] = None, 
     query += " ORDER BY created_at DESC"
     async with _pool.acquire() as conn:  # type: ignore
         async with conn.transaction():
-            await conn.execute("SET LOCAL app.tenant_id = $1", tenant_id)
+            _safe_tid = "".join(c for c in (tenant_id or "default") if c.isalnum() or c in "-_.") or "default"
+            await conn.execute(f"SET LOCAL app.tenant_id = '{_safe_tid}'")
             rows = await conn.fetch(query, *params)
     return [record_to_model(r).dict() for r in rows]
 
 async def fetch_note(note_id: str, tenant_id: str = "default") -> Optional[SOAPResponse]:
     async with _pool.acquire() as conn:  # type: ignore
         async with conn.transaction():
-            await conn.execute("SET LOCAL app.tenant_id = $1", tenant_id)
+            _safe_tid = "".join(c for c in (tenant_id or "default") if c.isalnum() or c in "-_.") or "default"
+            await conn.execute(f"SET LOCAL app.tenant_id = '{_safe_tid}'")
             row = await conn.fetchrow("SELECT * FROM soap_notes WHERE id = $1", note_id)
     if not row:
         return None
@@ -1249,7 +1253,8 @@ async def fetch_note(note_id: str, tenant_id: str = "default") -> Optional[SOAPR
 async def update_status(note_id: str, status: str, tenant_id: str = "default") -> Optional[SOAPResponse]:
     async with _pool.acquire() as conn:  # type: ignore
         async with conn.transaction():
-            await conn.execute("SET LOCAL app.tenant_id = $1", tenant_id)
+            _safe_tid = "".join(c for c in (tenant_id or "default") if c.isalnum() or c in "-_.") or "default"
+            await conn.execute(f"SET LOCAL app.tenant_id = '{_safe_tid}'")
             row = await conn.fetchrow(
                 "UPDATE soap_notes SET status=$2, updated_at=now() WHERE id=$1 RETURNING *",
                 note_id,
