@@ -13,6 +13,12 @@ import {
   Req,
   ForbiddenException,
 } from '@nestjs/common';
+import {
+  IsString,
+  IsOptional,
+  IsBoolean,
+  IsNotEmpty,
+} from 'class-validator';
 import axios from 'axios';
 import { createClient } from 'redis';
 import { InternalHttpClient } from '../http/internal-http-client.service';
@@ -61,18 +67,23 @@ class UpdateSoapSectionsDto {
 }
 
 class PatientCreateDto {
+  @IsString()
+  @IsNotEmpty()
   displayName!: string;
+
+  @IsOptional()
+  @IsString()
   externalId?: string;
 }
 
 class PatientDocumentDto {
-  title?: string;
-  content?: string;
-  contentBase64?: string;
-  fileName?: string;
-  contentType?: string;
-  source?: string;
-  summarize?: boolean;
+  @IsOptional() @IsString() title?: string;
+  @IsOptional() @IsString() content?: string;
+  @IsOptional() @IsString() contentBase64?: string;
+  @IsOptional() @IsString() fileName?: string;
+  @IsOptional() @IsString() contentType?: string;
+  @IsOptional() @IsString() source?: string;
+  @IsOptional() @IsBoolean() summarize?: boolean;
 }
 
 @UseGuards(JwtAuthGuard, TenantGuard)
