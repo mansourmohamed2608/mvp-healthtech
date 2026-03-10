@@ -548,7 +548,7 @@ const VoiceAgentClean = () => {
         )}>ل</div>
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold">
-            {language === 'ar' ? 'ليان — مساعدة بيميدكس' : 'Leyan — Bimedx Assistant'}
+            {language === 'ar' ? 'ليان | مساعدة بيميدكس' : 'Leyan | Bimedx Assistant'}
           </h1>
           <p className={clsx('text-sm mt-0.5', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
             {language === 'ar' ? 'المساعدة الصوتية الذكية لحجز المواعيد' : 'AI voice assistant · appointment booking'}
@@ -606,7 +606,7 @@ const VoiceAgentClean = () => {
                 </div>
                 <div>
                   <p className="font-semibold text-base">
-                    {language === 'ar' ? 'ليان — مستشفى بيميدكس' : 'Leyan — Bimedx Hospital'}
+                    {language === 'ar' ? 'ليان | مستشفى بيميدكس' : 'Leyan | Bimedx Hospital'}
                   </p>
                   <p className={clsx('text-sm mt-1', theme === 'dark' ? 'text-gray-400' : 'text-gray-500')}>
                     {language === 'ar' ? 'اضغط "اتصل" للبدء' : 'Press "Call" to start'}
@@ -832,28 +832,13 @@ const VoiceAgentClean = () => {
                   ? <span className="text-xs font-semibold text-emerald-500 flex items-center gap-1" dir="rtl">
                       <span className="text-emerald-400 text-xs">✓</span> {value}
                     </span>
-                  : <span className={clsx('text-xs', theme === 'dark' ? 'text-gray-600' : 'text-gray-300')}>—</span>
+                  : <span className={clsx('text-xs', theme === 'dark' ? 'text-gray-600' : 'text-gray-300')}>·</span>
                 }
               </div>
             ))}
           </div>
 
-          {/* Presenter cue — shows next patient line during listening phase */}
-          {callStatus === 'connected' && demoPhase === 'listening'
-            && demoStep >= 0 && demoStep < DEMO_SCRIPT.length
-            && (DEMO_SCRIPT[demoStep] as any).patient && (
-            <div className={clsx(
-              'px-4 py-3 border-t text-right',
-              theme === 'dark' ? 'border-gray-700 bg-gray-900/30' : 'border-gray-100 bg-gray-50'
-            )}>
-              <p className={clsx('text-xs mb-1', theme === 'dark' ? 'text-gray-500' : 'text-gray-400')} dir="rtl">
-                💬 {language === 'ar' ? 'قل الآن:' : 'Say now:'}
-              </p>
-              <p className="text-xs text-emerald-500 font-medium" dir="rtl">
-                {(DEMO_SCRIPT[demoStep] as any).patient}
-              </p>
-            </div>
-          )}
+
         </div>
 
       </div>
