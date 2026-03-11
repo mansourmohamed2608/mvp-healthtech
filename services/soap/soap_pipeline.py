@@ -365,9 +365,9 @@ async def generate_structured_note(
         {
             "role": "user",
             "content": (
-                "Arabic dialogue:\n\n"
+                "Here is the Arabic patient-doctor dialogue to document:\n\n"
                 f"{transcript}{context_block}\n\n"
-                "Return the SOAP notes in the exact format described."
+                "Now write the four SOAP lines about the patient in this dialogue."
             ),
         },
     ]
