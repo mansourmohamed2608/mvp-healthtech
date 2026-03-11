@@ -261,17 +261,21 @@ async def split_subjective(llm: LlmClient, text: str, session_id: str | None) ->
         {"role": "system", "content": SUBJECTIVE_SPLIT_PROMPT},
         {
             "role": "user",
-            "content": f"Subjective sentence:\n{text}\n\nReturn JSON only.",
+            "content": (
+                "Here is one Subjective sentence from SOAP notes in ENGLISH:\n\n"
+                f"{text}\n\n"
+                "Return ONLY the JSON object with Chief Complaint, HPI, and ROS, as specified."
+            ),
         },
     ]
-    raw = await llm.generate(messages, max_new_tokens=96, temperature=0.0, session_id=session_id)
+    raw = await llm.generate(messages, max_new_tokens=320, temperature=0.0, session_id=session_id)
     obj, err = extract_json(raw)
     if err or obj is None:
         return {"chief_complaint": text, "hpi": "", "ros": ""}
     return {
-        "chief_complaint": str(obj.get("chief_complaint", "") or text),
-        "hpi": str(obj.get("hpi", "") or ""),
-        "ros": str(obj.get("ros", "") or ""),
+        "chief_complaint": str(obj.get("Chief Complaint", "") or obj.get("chief_complaint", "") or text),
+        "hpi": str(obj.get("HPI", "") or obj.get("hpi", "") or ""),
+        "ros": str(obj.get("ROS", "") or obj.get("ros", "") or ""),
     }
 
 
@@ -283,17 +287,21 @@ async def split_plan(llm: LlmClient, text: str, session_id: str | None) -> Dict[
         {"role": "system", "content": PLAN_SPLIT_PROMPT},
         {
             "role": "user",
-            "content": f"Plan sentence:\n{text}\n\nReturn JSON only.",
+            "content": (
+                "Here is one Plan sentence from SOAP notes in ENGLISH:\n\n"
+                f"{text}\n\n"
+                "Return ONLY the JSON object with Instructions, Follow-Up, and Patient Education, as specified."
+            ),
         },
     ]
-    raw = await llm.generate(messages, max_new_tokens=96, temperature=0.0, session_id=session_id)
+    raw = await llm.generate(messages, max_new_tokens=320, temperature=0.0, session_id=session_id)
     obj, err = extract_json(raw)
     if err or obj is None:
         return {"instructions": [text], "follow_up": "", "patient_education": []}
 
-    instructions = _normalize_list(obj.get("instructions"), fallback=text)
-    education = _normalize_list(obj.get("patient_education"), fallback="")
-    follow_up = obj.get("follow_up", "")
+    instructions = _normalize_list(obj.get("Instructions", obj.get("instructions")), fallback=text)
+    education = _normalize_list(obj.get("Patient Education", obj.get("patient_education")), fallback="")
+    follow_up = obj.get("Follow-Up", obj.get("follow_up", ""))
     if not isinstance(follow_up, str):
         follow_up = ""
     return {
@@ -365,9 +373,9 @@ async def generate_structured_note(
         {
             "role": "user",
             "content": (
-                "Here is the Arabic patient-doctor dialogue to document:\n\n"
+                "Here is an Arabic patient\u2013clinician dialogue (from ASR):\n\n"
                 f"{transcript}{context_block}\n\n"
-                "Now write the four SOAP lines about the patient in this dialogue."
+                "Return the notes in the exact format and labels described."
             ),
         },
     ]
