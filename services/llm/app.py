@@ -253,6 +253,7 @@ print("Model loaded successfully!")
 def _blocking_generate(prompt: str, max_new_tokens: int = 192) -> dict:
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=768)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    input_len = len(inputs["input_ids"][0])
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
@@ -263,10 +264,11 @@ def _blocking_generate(prompt: str, max_new_tokens: int = 192) -> dict:
             pad_token_id=tokenizer.eos_token_id,
             use_cache=True,
         )
-    decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    new_token_ids = outputs[0][input_len:]
+    decoded = tokenizer.decode(new_token_ids, skip_special_tokens=True)
     return {
         "decoded": decoded,
-        "input_len": len(inputs["input_ids"][0]),
+        "input_len": input_len,
         "output_len": len(outputs[0]),
     }
 
@@ -299,6 +301,7 @@ def _blocking_generate_prompt(
 ) -> dict:
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    input_len = len(inputs["input_ids"][0])
     do_sample = temperature > 0
     with torch.no_grad():
         outputs = model.generate(
@@ -310,10 +313,12 @@ def _blocking_generate_prompt(
             pad_token_id=tokenizer.eos_token_id,
             use_cache=True,
         )
-    decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    # Decode only the newly generated tokens, not the full prompt+output
+    new_token_ids = outputs[0][input_len:]
+    decoded = tokenizer.decode(new_token_ids, skip_special_tokens=True)
     return {
         "decoded": decoded,
-        "input_len": len(inputs["input_ids"][0]),
+        "input_len": input_len,
         "output_len": len(outputs[0]),
     }
 
