@@ -7,8 +7,10 @@ from typing import Any, Dict, List, Tuple
 from llm_client import LlmClient
 from soap_prompts import (
     SOAP_SYSTEM_PROMPT,
+    DETAILED_SOAP_SYSTEM_PROMPT,
     SUBJECTIVE_SPLIT_PROMPT,
     PLAN_SPLIT_PROMPT,
+    VITALS_EXTRACT_PROMPT,
     FIELD_UPDATE_PROMPT,
 )
 from template_engine import render_template
@@ -311,6 +313,47 @@ async def split_plan(llm: LlmClient, text: str, session_id: str | None) -> Dict[
     }
 
 
+async def extract_vitals(llm: LlmClient, objective_text: str, session_id: str | None) -> Dict[str, str]:
+    """Extract vital signs from objective text using LLM."""
+    if not objective_text.strip():
+        return {}
+    messages = [
+        {"role": "system", "content": VITALS_EXTRACT_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Here is one Objective sentence from SOAP notes in ENGLISH:\n\n"
+                f"{objective_text}\n\n"
+                "Return ONLY the JSON object with vital signs as specified."
+            ),
+        },
+    ]
+    raw = await llm.generate(messages, max_new_tokens=120, temperature=0.0, session_id=session_id)
+    obj, err = extract_json(raw)
+    if err or obj is None:
+        return {}
+    result: Dict[str, str] = {}
+    for key in ("BP", "HR", "Temp", "RR", "SpO2"):
+        val = obj.get(key, "")
+        if isinstance(val, str) and val.strip():
+            result[key.lower()] = val.strip()
+    return result
+
+
+def _is_detailed_template(template: Dict[str, Any]) -> bool:
+    """Return True if the template uses deeply nested sub-sections (detailed/PDF style).
+
+    A template is considered detailed when any of the primary SOAP section keys
+    (Subjective or Objective) is a nested dict rather than a plain string placeholder.
+    The compact template keeps those sections as flat string placeholders; only Plan
+    is a shallow dict in the compact case.
+    """
+    for key in ("Subjective", "subjective", "Objective", "objective"):
+        if isinstance(template.get(key), dict):
+            return True
+    return False
+
+
 def build_context(
     sections: SoapSections,
     subj_split: Dict[str, str],
@@ -318,7 +361,16 @@ def build_context(
     patient_name: str,
     date_of_visit: str,
     provider_name: str,
+    vitals: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
+    v = vitals or {}
+    clarification: List[str] = []
+    if not any(v.get(k) for k in ("bp", "hr", "temp", "rr", "spo2")):
+        clarification.append("Vital signs not documented.")
+    clarification.extend([
+        "Medications not specified.",
+        "ICD-10-AM codes not assigned.",
+    ])
     return {
         "patient_name": patient_name,
         "date_of_visit": date_of_visit,
@@ -333,11 +385,11 @@ def build_context(
         "plan_instructions": plan_split.get("instructions", []),
         "plan_follow_up": plan_split.get("follow_up", ""),
         "plan_education": plan_split.get("patient_education", []),
-        "vital_bp": "",
-        "vital_hr": "",
-        "vital_temp": "",
-        "vital_rr": "",
-        "vital_spo2": "",
+        "vital_bp": v.get("bp", ""),
+        "vital_hr": v.get("hr", ""),
+        "vital_temp": v.get("temp", ""),
+        "vital_rr": v.get("rr", ""),
+        "vital_spo2": v.get("spo2", ""),
         "objective_cardio": "",
         "objective_resp": "",
         "objective_heent": "",
@@ -347,11 +399,7 @@ def build_context(
         "objective_ext": "",
         "icd_codes": [],
         "provider_signature": "",
-        "clarification_needed": [
-            "Vital signs not documented.",
-            "Medications not specified.",
-            "ICD-10-AM codes not assigned.",
-        ],
+        "clarification_needed": clarification,
     }
 
 
@@ -368,8 +416,13 @@ async def generate_structured_note(
     context_block = ""
     if patient_context:
         context_block = f"\n\nPatient context:\n{json.dumps(patient_context, ensure_ascii=False, default=str)}"
+
+    is_detailed = _is_detailed_template(template)
+    system_prompt = DETAILED_SOAP_SYSTEM_PROMPT if is_detailed else SOAP_SYSTEM_PROMPT
+    max_tokens = 480 if is_detailed else 220
+
     messages = [
-        {"role": "system", "content": SOAP_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": (
@@ -379,13 +432,26 @@ async def generate_structured_note(
             ),
         },
     ]
-    soap_text = await llm.generate(messages, max_new_tokens=220, temperature=0.0, session_id=session_id)
+    soap_text = await llm.generate(messages, max_new_tokens=max_tokens, temperature=0.0, session_id=session_id)
     sections = parse_soap_lines(soap_text)
-    subj_split, plan_split = await asyncio.gather(
-        split_subjective(llm, sections.subjective, session_id),
-        split_plan(llm, sections.plan, session_id),
+
+    # For detailed templates, also extract vitals from the objective text
+    if is_detailed:
+        subj_split, plan_split, vitals = await asyncio.gather(
+            split_subjective(llm, sections.subjective, session_id),
+            split_plan(llm, sections.plan, session_id),
+            extract_vitals(llm, sections.objective, session_id),
+        )
+    else:
+        vitals = {}
+        subj_split, plan_split = await asyncio.gather(
+            split_subjective(llm, sections.subjective, session_id),
+            split_plan(llm, sections.plan, session_id),
+        )
+
+    context = build_context(
+        sections, subj_split, plan_split, patient_name, date_of_visit, provider_name, vitals
     )
-    context = build_context(sections, subj_split, plan_split, patient_name, date_of_visit, provider_name)
     note_json = render_template(template, context)
     return {
         "sections": sections,

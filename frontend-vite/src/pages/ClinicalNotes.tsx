@@ -105,11 +105,19 @@ const buildSoapText = (s: { subjective?: any; objective?: any; assessment?: any;
 const parseSoapSections = (soapJson: any, soapNote: string): SoapSections => {
   if (soapJson) {
     const src = soapJson.soap_note || soapJson;
-    // Only use the JSON path when keys are plain strings (not nested objects from soap_json template)
-    const s = typeof src.subjective === 'string' ? src.subjective : typeof src.S === 'string' ? src.S : '';
-    const o = typeof src.objective === 'string' ? src.objective : typeof src.O === 'string' ? src.O : '';
-    const a = typeof src.assessment === 'string' ? src.assessment : typeof src.A === 'string' ? src.A : '';
-    const p = typeof src.plan === 'string' ? src.plan : typeof src.P === 'string' ? src.P : '';
+    // Handle both lowercase (api response fields) and capitalized (rendered template) keys
+    const s = typeof src.subjective === 'string' ? src.subjective
+            : typeof src.Subjective === 'string' ? src.Subjective
+            : typeof src.S === 'string' ? src.S : '';
+    const o = typeof src.objective === 'string' ? src.objective
+            : typeof src.Objective === 'string' ? src.Objective
+            : typeof src.O === 'string' ? src.O : '';
+    const a = typeof src.assessment === 'string' ? src.assessment
+            : typeof src.Assessment === 'string' ? src.Assessment
+            : typeof src.A === 'string' ? src.A : '';
+    // Plan may be a nested dict in detailed templates; extract raw plan string
+    const planRaw = src.plan ?? src.Plan ?? src.P;
+    const p = typeof planRaw === 'string' ? planRaw : '';
     if (s || o || a || p) return { subjective: s, objective: o, assessment: a, plan: p };
   }
   // Fallback: parse from the formatted soapNote text built from the response's top-level string fields
@@ -194,19 +202,21 @@ const SOAP_SECTIONS = [
 
 // ─── Built-in Template Library ─────────────────────────────────────────────
 
+// Templates with a `backendTemplateId` are resolved via the DB template on the server.
+// Templates without it send their `template` JSON directly.
 const BUILTIN_TEMPLATES = [
-  { id: 'standard-soap',  name: 'SOAP القياسي',      nameEn: 'Standard SOAP',  icon: '📋', color: 'purple',  desc: 'القالب العام: ذاتي • موضوعي • تقييم • خطة',     template: { style: 'standard',    sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'compact-soap',   name: 'SOAP المختصر',       nameEn: 'Compact SOAP',   icon: '⚡', color: 'blue',    desc: 'نسخة موجزة للزيارات السريعة',                  template: { style: 'compact',     sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'psychiatric',    name: 'الطب النفسي',         nameEn: 'Psychiatric',    icon: '🧠', color: 'indigo',  desc: 'يشمل تقييم الحالة العقلية والمخاطر',            template: { style: 'psychiatric', sections: ['subjective','objective','assessment','plan'], extras: ['mentalStatus','risk'] } },
-  { id: 'pediatric',      name: 'طب الأطفال',          nameEn: 'Pediatric',      icon: '👶', color: 'emerald', desc: 'مخصص للمرضى دون سن 18',                         template: { style: 'pediatric',   sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'emergency',      name: 'الطوارئ',             nameEn: 'Emergency',      icon: '🚨', color: 'red',     desc: 'قالب سريع لحالات الإسعاف والطوارئ',             template: { style: 'emergency',   sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'dap',            name: 'قالب DAP',            nameEn: 'DAP Note',       icon: '📄', color: 'amber',   desc: 'بيانات • تقييم • خطة (شائع في الإرشاد)',        template: { style: 'dap',         sections: ['data','assessment','plan'] } },
-  { id: 'birp',           name: 'قالب BIRP',           nameEn: 'BIRP Note',      icon: '🔍', color: 'teal',    desc: 'سلوك • تدخل • استجابة • خطة',                  template: { style: 'birp',        sections: ['behavior','intervention','response','plan'] } },
-  { id: 'progress',       name: 'ملاحظة المتابعة',      nameEn: 'Progress Note',  icon: '📈', color: 'cyan',    desc: 'متابعة تطور حالة المريض وعلاجه',                template: { style: 'progress',    sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'cardiology',     name: 'القلب والأوعية',       nameEn: 'Cardiology',     icon: '❤️', color: 'rose',    desc: 'يشمل مؤشرات القلب التفصيلية',                  template: { style: 'cardiology',  sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'dermatology',    name: 'الجلدية',              nameEn: 'Dermatology',    icon: '🔬', color: 'orange',  desc: 'وصف تفصيلي للحالة الجلدية',                    template: { style: 'dermatology', sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'obstetrics',     name: 'النساء والتوليد',       nameEn: 'OB/GYN',         icon: '🤰', color: 'pink',    desc: 'مخصص لطب التوليد وأمراض النساء',               template: { style: 'obstetrics',  sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'orthopedics',    name: 'العظام والمفاصل',       nameEn: 'Orthopedics',    icon: '🦴', color: 'slate',   desc: 'يشمل تقييم الحركة والألم',                      template: { style: 'orthopedics', sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'standard-soap',  backendTemplateId: 'pdf_style_v1', name: 'SOAP القياسي',      nameEn: 'Standard SOAP',  icon: '📋', color: 'purple',  desc: 'القالب العام: ذاتي • موضوعي • تقييم • خطة',     template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'compact-soap',   backendTemplateId: 'compact_v1',   name: 'SOAP المختصر',       nameEn: 'Compact SOAP',   icon: '⚡', color: 'blue',    desc: 'نسخة موجزة للزيارات السريعة',                  template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'psychiatric',    name: 'الطب النفسي',         nameEn: 'Psychiatric',    icon: '🧠', color: 'indigo',  desc: 'يشمل تقييم الحالة العقلية والمخاطر',            template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}', 'Mental Status': 'Not assessed.', 'Risk Assessment': 'Not assessed.' } },
+  { id: 'pediatric',      name: 'طب الأطفال',          nameEn: 'Pediatric',      icon: '👶', color: 'emerald', desc: 'مخصص للمرضى دون سن 18',                         template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'emergency',      name: 'الطوارئ',             nameEn: 'Emergency',      icon: '🚨', color: 'red',     desc: 'قالب سريع لحالات الإسعاف والطوارئ',             template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'dap',            name: 'قالب DAP',            nameEn: 'DAP Note',       icon: '📄', color: 'amber',   desc: 'بيانات • تقييم • خطة (شائع في الإرشاد)',        template: { Data: '{{subjective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'birp',           name: 'قالب BIRP',           nameEn: 'BIRP Note',      icon: '🔍', color: 'teal',    desc: 'سلوك • تدخل • استجابة • خطة',                  template: { Behavior: '{{subjective}}', Intervention: '{{objective}}', Response: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'progress',       name: 'ملاحظة المتابعة',      nameEn: 'Progress Note',  icon: '📈', color: 'cyan',    desc: 'متابعة تطور حالة المريض وعلاجه',                template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'cardiology',     name: 'القلب والأوعية',       nameEn: 'Cardiology',     icon: '❤️', color: 'rose',    desc: 'يشمل مؤشرات القلب التفصيلية',                  template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'dermatology',    name: 'الجلدية',              nameEn: 'Dermatology',    icon: '🔬', color: 'orange',  desc: 'وصف تفصيلي للحالة الجلدية',                    template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'obstetrics',     name: 'النساء والتوليد',       nameEn: 'OB/GYN',         icon: '🤰', color: 'pink',    desc: 'مخصص لطب التوليد وأمراض النساء',               template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'orthopedics',    name: 'العظام والمفاصل',       nameEn: 'Orthopedics',    icon: '🦴', color: 'slate',   desc: 'يشمل تقييم الحركة والألم',                      template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
 ] as const;
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -1211,9 +1221,16 @@ export default function ClinicalNotes() {
               }
             }}
             onSelectBuiltin={(t) => {
-              setSelectedTemplateJson(t.template as Record<string, any>);
+              if ('backendTemplateId' in t) {
+                // Use the DB-backed template by ID so the correct server template is applied
+                setSelectedTemplateId(t.backendTemplateId);
+                setSelectedTemplateJson(null);
+              } else {
+                // No DB equivalent — send the template JSON directly
+                setSelectedTemplateJson(t.template as Record<string, any>);
+                setSelectedTemplateId('');
+              }
               setSelectedTemplateName(t.name);
-              setSelectedTemplateId('');
               setShowTemplateManager(false);
               showToast('success', `تم تفعيل قالب: ${t.name}`);
             }}
@@ -1607,7 +1624,7 @@ function TemplateManagerModal({
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="block text-xs font-medium text-slate-400">بنية القالب (JSON)</label>
                   <button
-                    onClick={() => onTextChange('{\n  "style": "standard",\n  "sections": ["subjective", "objective", "assessment", "plan"],\n  "prompts": {\n    "subjective": "شكوى المريض الرئيسية...",\n    "objective": "الفحص السريري والعلامات الحيوية...",\n    "assessment": "التشخيص والتقييم السريري...",\n    "plan": "الخطة العلاجية والمتابعة..."\n  }\n}')}
+                    onClick={() => onTextChange('{\n  "Subjective": "{{subjective}}",\n  "Objective": "{{objective}}",\n  "Assessment": "{{assessment}}",\n  "Plan": {\n    "Instructions": "{{plan_instructions}}",\n    "Follow-Up": "{{plan_follow_up}}",\n    "Patient Education": "{{plan_education}}"\n  }\n}')}
                     className="text-xs text-purple-400 hover:text-purple-300 transition-colors"
                   >
                     <IconEdit className="w-3 h-3 inline ml-1" />
