@@ -105,11 +105,19 @@ const buildSoapText = (s: { subjective?: any; objective?: any; assessment?: any;
 const parseSoapSections = (soapJson: any, soapNote: string): SoapSections => {
   if (soapJson) {
     const src = soapJson.soap_note || soapJson;
-    // Only use the JSON path when keys are plain strings (not nested objects from soap_json template)
-    const s = typeof src.subjective === 'string' ? src.subjective : typeof src.S === 'string' ? src.S : '';
-    const o = typeof src.objective === 'string' ? src.objective : typeof src.O === 'string' ? src.O : '';
-    const a = typeof src.assessment === 'string' ? src.assessment : typeof src.A === 'string' ? src.A : '';
-    const p = typeof src.plan === 'string' ? src.plan : typeof src.P === 'string' ? src.P : '';
+    // Handle both lowercase (api response fields) and capitalized (rendered template) keys
+    const s = typeof src.subjective === 'string' ? src.subjective
+            : typeof src.Subjective === 'string' ? src.Subjective
+            : typeof src.S === 'string' ? src.S : '';
+    const o = typeof src.objective === 'string' ? src.objective
+            : typeof src.Objective === 'string' ? src.Objective
+            : typeof src.O === 'string' ? src.O : '';
+    const a = typeof src.assessment === 'string' ? src.assessment
+            : typeof src.Assessment === 'string' ? src.Assessment
+            : typeof src.A === 'string' ? src.A : '';
+    // Plan may be a nested dict in detailed templates; extract raw plan string
+    const planRaw = src.plan ?? src.Plan ?? src.P;
+    const p = typeof planRaw === 'string' ? planRaw : '';
     if (s || o || a || p) return { subjective: s, objective: o, assessment: a, plan: p };
   }
   // Fallback: parse from the formatted soapNote text built from the response's top-level string fields
@@ -194,19 +202,21 @@ const SOAP_SECTIONS = [
 
 // ─── Built-in Template Library ─────────────────────────────────────────────
 
+// Templates with a `backendTemplateId` are resolved via the DB template on the server.
+// Templates without it send their `template` JSON directly.
 const BUILTIN_TEMPLATES = [
-  { id: 'standard-soap',  name: 'SOAP القياسي',      nameEn: 'Standard SOAP',  icon: '📋', color: 'purple',  desc: 'القالب العام: ذاتي • موضوعي • تقييم • خطة',     template: { style: 'standard',    sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'compact-soap',   name: 'SOAP المختصر',       nameEn: 'Compact SOAP',   icon: '⚡', color: 'blue',    desc: 'نسخة موجزة للزيارات السريعة',                  template: { style: 'compact',     sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'psychiatric',    name: 'الطب النفسي',         nameEn: 'Psychiatric',    icon: '🧠', color: 'indigo',  desc: 'يشمل تقييم الحالة العقلية والمخاطر',            template: { style: 'psychiatric', sections: ['subjective','objective','assessment','plan'], extras: ['mentalStatus','risk'] } },
-  { id: 'pediatric',      name: 'طب الأطفال',          nameEn: 'Pediatric',      icon: '👶', color: 'emerald', desc: 'مخصص للمرضى دون سن 18',                         template: { style: 'pediatric',   sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'emergency',      name: 'الطوارئ',             nameEn: 'Emergency',      icon: '🚨', color: 'red',     desc: 'قالب سريع لحالات الإسعاف والطوارئ',             template: { style: 'emergency',   sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'dap',            name: 'قالب DAP',            nameEn: 'DAP Note',       icon: '📄', color: 'amber',   desc: 'بيانات • تقييم • خطة (شائع في الإرشاد)',        template: { style: 'dap',         sections: ['data','assessment','plan'] } },
-  { id: 'birp',           name: 'قالب BIRP',           nameEn: 'BIRP Note',      icon: '🔍', color: 'teal',    desc: 'سلوك • تدخل • استجابة • خطة',                  template: { style: 'birp',        sections: ['behavior','intervention','response','plan'] } },
-  { id: 'progress',       name: 'ملاحظة المتابعة',      nameEn: 'Progress Note',  icon: '📈', color: 'cyan',    desc: 'متابعة تطور حالة المريض وعلاجه',                template: { style: 'progress',    sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'cardiology',     name: 'القلب والأوعية',       nameEn: 'Cardiology',     icon: '❤️', color: 'rose',    desc: 'يشمل مؤشرات القلب التفصيلية',                  template: { style: 'cardiology',  sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'dermatology',    name: 'الجلدية',              nameEn: 'Dermatology',    icon: '🔬', color: 'orange',  desc: 'وصف تفصيلي للحالة الجلدية',                    template: { style: 'dermatology', sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'obstetrics',     name: 'النساء والتوليد',       nameEn: 'OB/GYN',         icon: '🤰', color: 'pink',    desc: 'مخصص لطب التوليد وأمراض النساء',               template: { style: 'obstetrics',  sections: ['subjective','objective','assessment','plan'] } },
-  { id: 'orthopedics',    name: 'العظام والمفاصل',       nameEn: 'Orthopedics',    icon: '🦴', color: 'slate',   desc: 'يشمل تقييم الحركة والألم',                      template: { style: 'orthopedics', sections: ['subjective','objective','assessment','plan'] } },
+  { id: 'standard-soap',  backendTemplateId: 'pdf_style_v1', name: 'SOAP القياسي',      nameEn: 'Standard SOAP',  icon: '📋', color: 'purple',  desc: 'القالب العام: ذاتي • موضوعي • تقييم • خطة',     template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'compact-soap',   backendTemplateId: 'compact_v1',   name: 'SOAP المختصر',       nameEn: 'Compact SOAP',   icon: '⚡', color: 'blue',    desc: 'نسخة موجزة للزيارات السريعة',                  template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'psychiatric',    name: 'الطب النفسي',         nameEn: 'Psychiatric',    icon: '🧠', color: 'indigo',  desc: 'يشمل تقييم الحالة العقلية والمخاطر',            template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}', 'Mental Status': 'Not assessed.', 'Risk Assessment': 'Not assessed.' } },
+  { id: 'pediatric',      name: 'طب الأطفال',          nameEn: 'Pediatric',      icon: '👶', color: 'emerald', desc: 'مخصص للمرضى دون سن 18',                         template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'emergency',      name: 'الطوارئ',             nameEn: 'Emergency',      icon: '🚨', color: 'red',     desc: 'قالب سريع لحالات الإسعاف والطوارئ',             template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'dap',            name: 'قالب DAP',            nameEn: 'DAP Note',       icon: '📄', color: 'amber',   desc: 'بيانات • تقييم • خطة (شائع في الإرشاد)',        template: { Data: '{{subjective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'birp',           name: 'قالب BIRP',           nameEn: 'BIRP Note',      icon: '🔍', color: 'teal',    desc: 'سلوك • تدخل • استجابة • خطة',                  template: { Behavior: '{{subjective}}', Intervention: '{{objective}}', Response: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'progress',       name: 'ملاحظة المتابعة',      nameEn: 'Progress Note',  icon: '📈', color: 'cyan',    desc: 'متابعة تطور حالة المريض وعلاجه',                template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'cardiology',     name: 'القلب والأوعية',       nameEn: 'Cardiology',     icon: '❤️', color: 'rose',    desc: 'يشمل مؤشرات القلب التفصيلية',                  template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'dermatology',    name: 'الجلدية',              nameEn: 'Dermatology',    icon: '🔬', color: 'orange',  desc: 'وصف تفصيلي للحالة الجلدية',                    template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'obstetrics',     name: 'النساء والتوليد',       nameEn: 'OB/GYN',         icon: '🤰', color: 'pink',    desc: 'مخصص لطب التوليد وأمراض النساء',               template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
+  { id: 'orthopedics',    name: 'العظام والمفاصل',       nameEn: 'Orthopedics',    icon: '🦴', color: 'slate',   desc: 'يشمل تقييم الحركة والألم',                      template: { Subjective: '{{subjective}}', Objective: '{{objective}}', Assessment: '{{assessment}}', Plan: '{{plan}}' } },
 ] as const;
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -268,6 +278,7 @@ export default function ClinicalNotes() {
   // UI
   const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [showDetailedNote, setShowDetailedNote] = useState(false);
 
   // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -1177,6 +1188,16 @@ export default function ClinicalNotes() {
                 >
                   <IconFileDownload className="w-4 h-4" />
                 </button>
+
+                {selectedRecording?.soapJson && Object.keys(selectedRecording.soapJson).length > 4 && (
+                  <button
+                    onClick={() => setShowDetailedNote(true)}
+                    title="عرض الملاحظة التفصيلية"
+                    className="px-4 py-3 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 rounded-xl text-purple-400 hover:text-purple-300 transition-colors"
+                  >
+                    <IconFileText className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -1211,13 +1232,33 @@ export default function ClinicalNotes() {
               }
             }}
             onSelectBuiltin={(t) => {
-              setSelectedTemplateJson(t.template as Record<string, any>);
+              if ('backendTemplateId' in t) {
+                // Use the DB-backed template by ID so the correct server template is applied
+                setSelectedTemplateId(t.backendTemplateId);
+                setSelectedTemplateJson(null);
+              } else {
+                // No DB equivalent — send the template JSON directly
+                setSelectedTemplateJson(t.template as Record<string, any>);
+                setSelectedTemplateId('');
+              }
               setSelectedTemplateName(t.name);
-              setSelectedTemplateId('');
               setShowTemplateManager(false);
               showToast('success', `تم تفعيل قالب: ${t.name}`);
             }}
             onSaveBuiltin={(t) => createCustomTemplate(t.name, t.template as Record<string, any>)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ── Detailed Note Viewer Modal ── */}
+      <AnimatePresence>
+        {showDetailedNote && selectedRecording?.soapJson && (
+          <DetailedNoteViewer
+            soapJson={selectedRecording.soapJson}
+            patientName={patientName}
+            providerName={providerName}
+            dateOfVisit={dateOfVisit}
+            onClose={() => setShowDetailedNote(false)}
           />
         )}
       </AnimatePresence>
@@ -1607,7 +1648,7 @@ function TemplateManagerModal({
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="block text-xs font-medium text-slate-400">بنية القالب (JSON)</label>
                   <button
-                    onClick={() => onTextChange('{\n  "style": "standard",\n  "sections": ["subjective", "objective", "assessment", "plan"],\n  "prompts": {\n    "subjective": "شكوى المريض الرئيسية...",\n    "objective": "الفحص السريري والعلامات الحيوية...",\n    "assessment": "التشخيص والتقييم السريري...",\n    "plan": "الخطة العلاجية والمتابعة..."\n  }\n}')}
+                    onClick={() => onTextChange('{\n  "Subjective": "{{subjective}}",\n  "Objective": "{{objective}}",\n  "Assessment": "{{assessment}}",\n  "Plan": {\n    "Instructions": "{{plan_instructions}}",\n    "Follow-Up": "{{plan_follow_up}}",\n    "Patient Education": "{{plan_education}}"\n  }\n}')}
                     className="text-xs text-purple-400 hover:text-purple-300 transition-colors"
                   >
                     <IconEdit className="w-3 h-3 inline ml-1" />
@@ -1648,6 +1689,186 @@ function TemplateManagerModal({
             </p>
           </div>
         )}
+      </motion.div>
+    </div>
+  );
+}
+
+// ─── Detailed Note Viewer ──────────────────────────────────────────────────────
+
+/**
+ * Recursively renders a soap_json object as a formatted clinical note,
+ * matching the structure of the sample medical note (PDF Style).
+ */
+function SoapJsonNode({ data, depth = 0 }: { data: any; depth?: number }) {
+  if (data === null || data === undefined || data === '') return null;
+
+  if (Array.isArray(data)) {
+    const items = data.filter((v) => v !== null && v !== undefined && v !== '');
+    if (items.length === 0) return null;
+    return (
+      <ul className="space-y-1 mt-1">
+        {items.map((item, i) => (
+          <li key={i} className="flex gap-2 text-slate-200 text-sm leading-relaxed">
+            <span className="text-slate-500 shrink-0">•</span>
+            <span>{String(item)}</span>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (typeof data === 'object') {
+    return (
+      <div className={depth > 0 ? 'mt-2 space-y-3' : 'space-y-3'}>
+        {Object.entries(data).map(([key, value]) => {
+          if (value === null || value === undefined || value === '') return null;
+          if (Array.isArray(value) && value.length === 0) return null;
+          const isSection = depth === 0;
+          const isSubSection = depth === 1;
+          return (
+            <div key={key}>
+              {isSection ? (
+                <h3 className="text-base font-bold text-white border-b border-white/15 pb-1 mb-2">{key}</h3>
+              ) : isSubSection ? (
+                <h4 className="text-sm font-semibold text-purple-300 mb-1">{key}</h4>
+              ) : (
+                <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">{key}: </span>
+              )}
+              <SoapJsonNode data={value} depth={depth + 1} />
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // primitive (string / number)
+  const str = String(data).trim();
+  if (!str || str === 'Not mentioned.' || str === 'Not documented.') {
+    return <span className="text-slate-500 text-sm italic">{str || '—'}</span>;
+  }
+  return <p className="text-slate-200 text-sm leading-relaxed">{str}</p>;
+}
+
+function DetailedNoteViewer({
+  soapJson,
+  patientName,
+  providerName,
+  dateOfVisit,
+  onClose,
+}: {
+  soapJson: any;
+  patientName: string;
+  providerName: string;
+  dateOfVisit: string;
+  onClose: () => void;
+}) {
+  // Merge top-level header fields from component state as fallback
+  const note = {
+    ...soapJson,
+    'Patient Name': soapJson['Patient Name'] || patientName || '—',
+    'Date of Visit': soapJson['Date of Visit'] || dateOfVisit || '—',
+    'Provider Name and Credentials': soapJson['Provider Name and Credentials'] || providerName || '—',
+  };
+
+  // Skip internal helper fields that shouldn't render
+  const SKIP_KEYS = new Set(['Clarification Needed']);
+  const displayNote = Object.fromEntries(
+    Object.entries(note).filter(([k]) => !SKIP_KEYS.has(k))
+  );
+
+  const clarifItems: string[] = Array.isArray(note['Clarification Needed'])
+    ? note['Clarification Needed'].filter(Boolean)
+    : [];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+      dir="ltr"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 16 }}
+        className="bg-slate-900 border border-white/15 rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-purple-500/20 flex items-center justify-center">
+              <IconFileText className="w-5 h-5 text-purple-400" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-white">الملاحظة الطبية التفصيلية</h2>
+              <p className="text-xs text-slate-500">Full Clinical Note — PDF Style</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-colors"
+          >
+            <IconX className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-5">
+          {/* Top header row */}
+          <div className="grid grid-cols-3 gap-4 pb-4 border-b border-white/10">
+            {[
+              { label: 'Patient Name', value: displayNote['Patient Name'] },
+              { label: 'Date of Visit', value: displayNote['Date of Visit'] },
+              { label: 'Provider', value: displayNote['Provider Name and Credentials'] },
+            ].map(({ label, value }) => (
+              <div key={label}>
+                <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">{label}</p>
+                <p className="text-sm font-semibold text-white">{String(value || '—')}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Clinical sections */}
+          {Object.entries(displayNote)
+            .filter(([k]) => !['Patient Name', 'Date of Visit', 'Provider Name and Credentials', 'Provider Signature'].includes(k))
+            .map(([key, value]) => {
+              if (value === null || value === undefined) return null;
+              if (Array.isArray(value) && value.length === 0) return null;
+              if (typeof value === 'string' && !value.trim()) return null;
+              return (
+                <div key={key} className="space-y-1">
+                  <h3 className="text-base font-bold text-white border-b border-white/10 pb-1">{key}</h3>
+                  <SoapJsonNode data={value} depth={1} />
+                </div>
+              );
+            })}
+
+          {/* Provider signature */}
+          {(displayNote['Provider Signature'] || providerName) && (
+            <div className="pt-4 border-t border-white/10">
+              <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">Provider Signature</p>
+              <p className="text-sm font-semibold text-white">
+                {String(displayNote['Provider Signature'] || providerName)}
+              </p>
+            </div>
+          )}
+
+          {/* Clarification needed */}
+          {clarifItems.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 mt-2">
+              <p className="text-xs font-semibold text-amber-300 mb-2">⚠ Clarification Needed</p>
+              <ul className="space-y-1">
+                {clarifItems.map((item, i) => (
+                  <li key={i} className="text-sm text-amber-200 flex gap-2">
+                    <span className="text-amber-500">•</span>{item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
       </motion.div>
     </div>
   );
