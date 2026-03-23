@@ -369,6 +369,7 @@ async def generate_soap(req: SOAPRequest, request: Request):
         )
         sections = result["sections"]
         note_struct = result["note_json"]
+        note_codes = result.get("codes") or {}
     except httpx.TimeoutException:
         log_safe(logging.ERROR, "SOAP generation timeout talking to LLM", session_id=session_id)
         raise HTTPException(status_code=504, detail="LLM service timeout")
@@ -394,8 +395,8 @@ async def generate_soap(req: SOAPRequest, request: Request):
         "objective": sections.objective,
         "assessment": sections.assessment,
         "plan": sections.plan,
-        "icd_codes": note_struct.get("icd_codes") if isinstance(note_struct, dict) else [],
-        "cpt_codes": note_struct.get("cpt_codes") if isinstance(note_struct, dict) else [],
+        "icd_codes": note_codes.get("icd_codes") or (note_struct.get("icd_codes") if isinstance(note_struct, dict) else []) or [],
+        "cpt_codes": note_codes.get("cpt_codes") or (note_struct.get("cpt_codes") if isinstance(note_struct, dict) else []) or [],
         "tenant_id": tenant_id,
         "actor_id": actor_id,
     })

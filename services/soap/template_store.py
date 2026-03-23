@@ -18,7 +18,11 @@ class TemplateStore:
                     """
                     INSERT INTO soap_templates (id, name, template, is_system)
                     VALUES ($1, $2, $3, true)
-                    ON CONFLICT (id) DO NOTHING
+                    ON CONFLICT (id) DO UPDATE SET
+                      name = EXCLUDED.name,
+                      template = EXCLUDED.template,
+                      updated_at = now()
+                    WHERE soap_templates.is_system = true
                     """,
                     template["id"],
                     template["name"],

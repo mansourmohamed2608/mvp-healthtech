@@ -19,15 +19,20 @@ DETAILED_SOAP_SYSTEM_PROMPT = (
     "You are an expert clinician and clinical note writer.\n"
     "Convert the following Arabic patient\u2013clinician dialogue into comprehensive SOAP notes in ENGLISH.\n\n"
     "Write EXACTLY four sections in this order, each starting on its own line with the label:\n\n"
-    "Subjective: <2-4 sentences covering the patient's chief complaint, history of present illness, "
-    "onset/duration/severity, associated symptoms, and relevant review of systems>\n"
-    "Objective: <2-4 sentences covering vital signs (if mentioned), physical examination findings by system, "
-    "lab or imaging results (if mentioned), and any observable clinical data>\n"
-    "Assessment: <2-3 sentences summarizing the diagnosis or differential diagnoses and clinical impression; "
-    "include ICD-relevant condition names; do NOT describe treatments>\n"
-    "Plan: <2-4 sentences describing ordered tests, prescribed medications with dosages (if stated), "
-    "referrals, home care instructions, follow-up timing, and patient education points; "
-    "do NOT repeat diagnosis names>\n\n"
+    "Subjective: <2-5 sentences. Start with the patient's chief complaint. Then describe the history "
+    "of present illness covering onset, duration, severity, nature, modifying factors, behaviors, and "
+    "associated symptoms. End with a review-of-systems statement (positive or negative systemic findings).>\n"
+    "Objective: <2-4 sentences. Describe all clinical examination findings including physical signs "
+    "(e.g., inflammation, edema, tenderness), instrumental or procedural observations "
+    "(e.g., probing depths, imaging, diagnostic test results), and any measurable clinical data. "
+    "Include vital signs only if mentioned in the dialogue.>\n"
+    "Assessment: <2-3 sentences. Summarize the diagnosis or differential diagnoses using "
+    "clinical/ICD-relevant terminology. Include the primary diagnosis and any secondary conditions. "
+    "Do NOT describe treatments or procedures.>\n"
+    "Plan: <3-6 sentences. Describe in order: (1) the main therapeutic procedure(s) with brief "
+    "description, (2) specific patient instructions or home-care steps, (3) follow-up schedule "
+    "and monitoring, (4) patient education points about prognosis and adherence. "
+    "Do NOT repeat diagnosis names.>\n\n"
     "Rules:\n"
     "- Use only information clearly stated or strongly implied in the dialogue.\n"
     "- If a specific data point is not mentioned, omit it rather than fabricating.\n"
@@ -49,6 +54,10 @@ SUBJECTIVE_SPLIT_PROMPT = (
     '{\"Chief Complaint\": \"\", \"HPI\": \"\", \"ROS\": \"\"}\n\n'
     "RULES:\n"
     "- Use ONLY information present or strongly implied in the Subjective sentence.\n"
+    "- Chief Complaint: one short phrase stating the patient's primary reason for the visit.\n"
+    "- HPI: a detailed description of the current condition including onset, duration, severity, "
+    "nature, contributing behaviors, and associated symptoms. May be 2-3 sentences.\n"
+    "- ROS: one sentence summarizing positive or negative findings across body systems.\n"
     "- If HPI or ROS are not clearly present, leave them as \"\".\n"
     "- Output MUST be valid JSON: double quotes, no comments, no trailing commas, no markdown.\n"
     "- Output ONLY the JSON object, nothing else."
@@ -69,6 +78,24 @@ PLAN_SPLIT_PROMPT = (
     "- Output ONLY the JSON object, nothing else."
 )
 
+DETAILED_PLAN_SPLIT_PROMPT = (
+    "You are an expert clinician and clinical note writer.\n\n"
+    "TASK:\n"
+    "You receive a detailed Plan paragraph from SOAP notes in ENGLISH.\n\n"
+    "Output EXACTLY ONE JSON object with this structure:\n\n"
+    '{\"Instructions\": [\"\"], \"Follow-Up\": \"\", \"Patient Education\": [\"\"]}\n\n'
+    "RULES:\n"
+    '- \"Instructions\": up to 5 strings, each describing one therapeutic procedure, test, '
+    'medication, or specific home-care step. Each string should be descriptive (e.g., '
+    '"Non-Surgical Periodontal Therapy: deep cleaning of supragingival and subgingival areas").\n'
+    '- \"Follow-Up\": ONE phrase describing the follow-up schedule or reassessment plan.\n'
+    '- \"Patient Education\": up to 4 short phrases about warnings, lifestyle advice, '
+    'adherence instructions, or prognosis information communicated to the patient.\n'
+    "- Use ONLY information present or strongly implied in the Plan paragraph.\n"
+    "- Output MUST be valid JSON: double quotes, no comments, no trailing commas, no markdown.\n"
+    "- Output ONLY the JSON object, nothing else."
+)
+
 VITALS_EXTRACT_PROMPT = (
     "You are a clinical data extractor.\n"
     "You receive ONE Objective sentence from SOAP notes in ENGLISH.\n\n"
@@ -78,6 +105,26 @@ VITALS_EXTRACT_PROMPT = (
     '- Fill each key only if the value is clearly stated (e.g. "BP": "120/80 mmHg", "HR": "88 bpm").\n'
     '- Leave as "" if the vital is not mentioned.\n'
     "- Output MUST be valid JSON: double quotes, no comments, no trailing commas, no markdown.\n"
+    "- Output ONLY the JSON object, nothing else."
+)
+
+CODES_EXTRACT_PROMPT = (
+    "You are a clinical coding specialist with expertise in ICD-10-AM and CPT/SBS procedure codes.\n\n"
+    "TASK:\n"
+    "You receive an Assessment and Plan from SOAP notes in ENGLISH.\n"
+    "Extract or infer the most appropriate medical codes.\n\n"
+    "Output EXACTLY ONE JSON object with this structure:\n\n"
+    '{"icd_codes": [], "cpt_codes": []}\n\n'
+    "RULES:\n"
+    '- "icd_codes": list of strings in the format "CODE: Description" '
+    '(e.g., "K05.1: Chronic Gingivitis"). Include up to 5 codes for all documented diagnoses.\n'
+    '- "cpt_codes": list of strings in the format "CODE: Procedure Name" '
+    '(e.g., "97221-00-00: Non-Surgical Periodontal Therapy"). '
+    "Include codes for all procedures or treatments clearly described in the Plan. Up to 5 codes.\n"
+    "- Use ICD-10-AM coding conventions.\n"
+    "- Only include codes you are confident about given the clinical data.\n"
+    "- If no codes are identifiable for a category, leave the array empty.\n"
+    "- Output MUST be valid JSON: double quotes, no trailing commas, no markdown.\n"
     "- Output ONLY the JSON object, nothing else."
 )
 

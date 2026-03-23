@@ -10,7 +10,9 @@ from soap_prompts import (
     DETAILED_SOAP_SYSTEM_PROMPT,
     SUBJECTIVE_SPLIT_PROMPT,
     PLAN_SPLIT_PROMPT,
+    DETAILED_PLAN_SPLIT_PROMPT,
     VITALS_EXTRACT_PROMPT,
+    CODES_EXTRACT_PROMPT,
     FIELD_UPDATE_PROMPT,
 )
 from template_engine import render_template
@@ -281,22 +283,31 @@ async def split_subjective(llm: LlmClient, text: str, session_id: str | None) ->
     }
 
 
-async def split_plan(llm: LlmClient, text: str, session_id: str | None) -> Dict[str, Any]:
+async def split_plan(
+    llm: LlmClient,
+    text: str,
+    session_id: str | None,
+    detailed: bool = False,
+) -> Dict[str, Any]:
     if not text.strip():
         return {"instructions": [], "follow_up": "", "patient_education": []}
 
+    prompt = DETAILED_PLAN_SPLIT_PROMPT if detailed else PLAN_SPLIT_PROMPT
+    max_items = 5 if detailed else 3
+    max_tokens = 480 if detailed else 320
+
     messages = [
-        {"role": "system", "content": PLAN_SPLIT_PROMPT},
+        {"role": "system", "content": prompt},
         {
             "role": "user",
             "content": (
-                "Here is one Plan sentence from SOAP notes in ENGLISH:\n\n"
+                "Here is a Plan paragraph from SOAP notes in ENGLISH:\n\n"
                 f"{text}\n\n"
                 "Return ONLY the JSON object with Instructions, Follow-Up, and Patient Education, as specified."
             ),
         },
     ]
-    raw = await llm.generate(messages, max_new_tokens=320, temperature=0.0, session_id=session_id)
+    raw = await llm.generate(messages, max_new_tokens=max_tokens, temperature=0.0, session_id=session_id)
     obj, err = extract_json(raw)
     if err or obj is None:
         return {"instructions": [text], "follow_up": "", "patient_education": []}
@@ -307,9 +318,9 @@ async def split_plan(llm: LlmClient, text: str, session_id: str | None) -> Dict[
     if not isinstance(follow_up, str):
         follow_up = ""
     return {
-        "instructions": instructions[:3],
+        "instructions": instructions[:max_items],
         "follow_up": follow_up.strip(),
-        "patient_education": education[:3],
+        "patient_education": education[:max_items],
     }
 
 
@@ -339,6 +350,35 @@ async def extract_vitals(llm: LlmClient, objective_text: str, session_id: str | 
             result[key.lower()] = val.strip()
     return result
 
+async def extract_codes(
+    llm: LlmClient,
+    assessment_text: str,
+    plan_text: str,
+    session_id: str | None,
+) -> Dict[str, List[str]]:
+    """Extract ICD-10-AM and procedure (SBS/CPT) codes from assessment and plan text."""
+    combined = f"Assessment:\n{assessment_text}\n\nPlan:\n{plan_text}"
+    if not combined.strip():
+        return {"icd_codes": [], "cpt_codes": []}
+    messages = [
+        {"role": "system", "content": CODES_EXTRACT_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Here is the Assessment and Plan from SOAP notes in ENGLISH:\n\n"
+                f"{combined}\n\n"
+                "Return ONLY the JSON object with icd_codes and cpt_codes as specified."
+            ),
+        },
+    ]
+    raw = await llm.generate(messages, max_new_tokens=320, temperature=0.0, session_id=session_id)
+    obj, err = extract_json(raw)
+    if err or obj is None:
+        return {"icd_codes": [], "cpt_codes": []}
+    icd = _normalize_list(obj.get("icd_codes", obj.get("ICD_codes", [])))
+    cpt = _normalize_list(obj.get("cpt_codes", obj.get("CPT_codes", [])))
+    return {"icd_codes": icd[:5], "cpt_codes": cpt[:5]}
+
 
 def _is_detailed_template(template: Dict[str, Any]) -> bool:
     """Return True if the template uses deeply nested sub-sections (detailed/PDF style).
@@ -362,15 +402,20 @@ def build_context(
     date_of_visit: str,
     provider_name: str,
     vitals: Dict[str, str] | None = None,
+    codes: Dict[str, List[str]] | None = None,
 ) -> Dict[str, Any]:
     v = vitals or {}
+    c = codes or {}
+    icd_codes: List[str] = c.get("icd_codes", [])
+    cpt_codes: List[str] = c.get("cpt_codes", [])
     clarification: List[str] = []
     if not any(v.get(k) for k in ("bp", "hr", "temp", "rr", "spo2")):
         clarification.append("Vital signs not documented.")
     clarification.extend([
         "Medications not specified.",
-        "ICD-10-AM codes not assigned.",
     ])
+    if not icd_codes:
+        clarification.append("ICD-10-AM codes not assigned.")
     return {
         "patient_name": patient_name,
         "date_of_visit": date_of_visit,
@@ -397,7 +442,8 @@ def build_context(
         "objective_msk": "",
         "objective_neuro": "",
         "objective_ext": "",
-        "icd_codes": [],
+        "icd_codes": icd_codes,
+        "cpt_codes": cpt_codes,
         "provider_signature": "",
         "clarification_needed": clarification,
     }
@@ -419,7 +465,7 @@ async def generate_structured_note(
 
     is_detailed = _is_detailed_template(template)
     system_prompt = DETAILED_SOAP_SYSTEM_PROMPT if is_detailed else SOAP_SYSTEM_PROMPT
-    max_tokens = 480 if is_detailed else 220
+    max_tokens = 600 if is_detailed else 220
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -435,22 +481,25 @@ async def generate_structured_note(
     soap_text = await llm.generate(messages, max_new_tokens=max_tokens, temperature=0.0, session_id=session_id)
     sections = parse_soap_lines(soap_text)
 
-    # For detailed templates, also extract vitals from the objective text
+    # For detailed templates, run all enrichment steps in parallel
     if is_detailed:
-        subj_split, plan_split, vitals = await asyncio.gather(
+        subj_split, plan_split, vitals, codes = await asyncio.gather(
             split_subjective(llm, sections.subjective, session_id),
-            split_plan(llm, sections.plan, session_id),
+            split_plan(llm, sections.plan, session_id, detailed=True),
             extract_vitals(llm, sections.objective, session_id),
+            extract_codes(llm, sections.assessment, sections.plan, session_id),
         )
     else:
         vitals = {}
+        codes = {}
         subj_split, plan_split = await asyncio.gather(
             split_subjective(llm, sections.subjective, session_id),
             split_plan(llm, sections.plan, session_id),
         )
 
     context = build_context(
-        sections, subj_split, plan_split, patient_name, date_of_visit, provider_name, vitals
+        sections, subj_split, plan_split, patient_name, date_of_visit, provider_name,
+        vitals=vitals, codes=codes,
     )
     note_json = render_template(template, context)
     return {
@@ -459,4 +508,5 @@ async def generate_structured_note(
         "note_json": note_json,
         "subj_split": subj_split,
         "plan_split": plan_split,
+        "codes": codes,
     }
